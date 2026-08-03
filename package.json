@@ -35,6 +35,21 @@
       "types": "./dist/source.d.ts",
       "bun": "./src/source.ts",
       "import": "./dist/source.js"
+    },
+    "./providers": {
+      "types": "./dist/providers.d.ts",
+      "bun": "./src/providers.ts",
+      "import": "./dist/providers.js"
+    },
+    "./harness": {
+      "types": "./dist/harness.d.ts",
+      "bun": "./src/harness.ts",
+      "import": "./dist/harness.js"
+    },
+    "./agent": {
+      "types": "./dist/agent.d.ts",
+      "bun": "./src/agent.ts",
+      "import": "./dist/agent.js"
     }
   },
   "files": [

@@ -14,8 +14,18 @@ describe('parseArgs', () => {
   })
 
   test('reads every valued flag in both spellings', () => {
-    const spaced = parseArgs(['--source', 'repository', '--from', 'https://github.com/a/b', '--into', './x'])
-    const joined = parseArgs(['--source=repository', '--from=https://github.com/a/b', '--into=./x'])
+    const spaced = parseArgs([
+      '--agent', '--source', 'repository', '--from', 'https://github.com/a/b', '--into', './x',
+      '--agent-config', 'agent.json', '--provider', 'custom', '--model', 'model-id',
+      '--api-key-env', 'MODEL_KEY', '--base-url', 'https://models.example/v1',
+      '--protocol', 'messages', '--brief', 'Build it',
+    ])
+    const joined = parseArgs([
+      '--agent', '--source=repository', '--from=https://github.com/a/b', '--into=./x',
+      '--agent-config=agent.json', '--provider=custom', '--model=model-id',
+      '--api-key-env=MODEL_KEY', '--base-url=https://models.example/v1',
+      '--protocol=messages', '--brief=Build it',
+    ])
 
     expect(spaced.source).toBe('repository')
     expect(spaced.from).toBe('https://github.com/a/b')
@@ -28,6 +38,18 @@ describe('parseArgs', () => {
     expect(options.yes).toBe(true)
     expect(options.force).toBe(true)
     expect(parseArgs(['-y']).yes).toBe(true)
+    expect(parseArgs(['--agent', '--json', '--no-launch'])).toMatchObject({
+      agent: true,
+      json: true,
+      launch: false,
+    })
+    expect(parseArgs(['--agent', '--agent-config', '-']).agentConfig).toBe('-')
+  })
+
+  test('keeps --agent distinct from --yes and owns its options', () => {
+    expect(() => parseArgs(['--agent', '--yes'])).toThrow(/different no-prompt modes/)
+    expect(() => parseArgs(['--json'])).toThrow(/require --agent/)
+    expect(() => parseArgs(['--provider', 'openai'])).toThrow(/require --agent/)
   })
 
   test('keeps help and version', () => {
@@ -141,7 +163,11 @@ describe('helpText', () => {
   test('names the version, the four sources, and every stable flag', () => {
     expect(help).toContain('create-kei-game 9.9.9')
     for (const source of ['blank', 'template', 'local', 'repository']) expect(help).toContain(source)
-    for (const flag of ['--source', '--template', '--from', '--into', '--force', '--yes', '--help', '--version']) {
+    for (const flag of [
+      '--source', '--template', '--from', '--into', '--force', '--yes', '--agent',
+      '--agent-config', '--json', '--provider', '--model', '--api-key-env', '--base-url',
+      '--protocol', '--brief', '--no-launch', '--help', '--version',
+    ]) {
       expect(help).toContain(flag)
     }
   })
@@ -157,7 +183,8 @@ describe('helpText', () => {
 
   test('says what it does not do yet rather than implying it does', () => {
     expect(help).toContain('stops there')
-    expect(help).toContain('AI provider')
-    expect(help).toContain('M9')
+    expect(help).toContain('provider settings')
+    expect(help).toContain('model/tool loop')
+    expect(help).toContain('launch=true is reported as pending')
   })
 })

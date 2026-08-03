@@ -34,6 +34,18 @@ export interface CliOptions {
   yes: boolean
   /** Write the blank workspace into a directory that already has files in it. */
   force: boolean
+  /** Hard no-prompt mode for another program driving the harness. */
+  agent: boolean
+  agentConfig?: string
+  json: boolean
+  provider?: string
+  model?: string
+  apiKeyEnv?: string
+  baseUrl?: string
+  protocol?: string
+  brief?: string
+  /** Undefined means config/default; false is an explicit --no-launch. */
+  launch?: boolean
   help: boolean
   version: boolean
 }
@@ -49,6 +61,16 @@ const FLAGS = [
   '--from',
   '--into',
   '--force',
+  '--agent',
+  '--agent-config',
+  '--json',
+  '--provider',
+  '--model',
+  '--api-key-env',
+  '--base-url',
+  '--protocol',
+  '--brief',
+  '--no-launch',
   '--yes',
   '-y',
   '--help',
@@ -57,14 +79,33 @@ const FLAGS = [
   '-v',
 ]
 
-const VALUED = ['--source', '--template', '--from', '--into'] as const
+const VALUED = [
+  '--source',
+  '--template',
+  '--from',
+  '--into',
+  '--agent-config',
+  '--provider',
+  '--model',
+  '--api-key-env',
+  '--base-url',
+  '--protocol',
+  '--brief',
+] as const
 type ValuedFlag = (typeof VALUED)[number]
 
-const FIELD: Record<ValuedFlag, 'source' | 'template' | 'from' | 'into'> = {
+const FIELD: Record<ValuedFlag, keyof CliOptions> = {
   '--source': 'source',
   '--template': 'template',
   '--from': 'from',
   '--into': 'into',
+  '--agent-config': 'agentConfig',
+  '--provider': 'provider',
+  '--model': 'model',
+  '--api-key-env': 'apiKeyEnv',
+  '--base-url': 'baseUrl',
+  '--protocol': 'protocol',
+  '--brief': 'brief',
 }
 
 const EXAMPLE: Record<ValuedFlag, string> = {
@@ -72,10 +113,24 @@ const EXAMPLE: Record<ValuedFlag, string> = {
   '--template': '--template button',
   '--from': '--from https://github.com/keicoin-org/button.git',
   '--into': '--into ./games/mine',
+  '--agent-config': '--agent-config ./agent.json',
+  '--provider': '--provider openai',
+  '--model': '--model <model-id>',
+  '--api-key-env': '--api-key-env OPENAI_API_KEY',
+  '--base-url': '--base-url https://models.example/v1',
+  '--protocol': '--protocol responses',
+  '--brief': '--brief "Build a puzzle game"',
 }
 
 export function parseArgs(argv: readonly string[]): CliOptions {
-  const options: CliOptions = { yes: false, force: false, help: false, version: false }
+  const options: CliOptions = {
+    yes: false,
+    force: false,
+    agent: false,
+    json: false,
+    help: false,
+    version: false,
+  }
 
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!
@@ -96,12 +151,24 @@ export function parseArgs(argv: readonly string[]): CliOptions {
       case '--force':
         options.force = true
         continue
+      case '--agent':
+        options.agent = true
+        continue
+      case '--json':
+        options.json = true
+        continue
+      case '--no-launch':
+        options.launch = false
+        continue
     }
 
     const valued = VALUED.find((flag) => arg === flag)
     if (valued) {
       const value = argv[++index]
-      if (value === undefined || value.startsWith('-')) {
+      if (
+        value === undefined ||
+        (value.startsWith('-') && !(valued === '--agent-config' && value === '-'))
+      ) {
         fail(`${valued} needs a value after it, for example: ${EXAMPLE[valued]}.`)
       }
       assign(options, valued, value)
@@ -127,6 +194,23 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     options.name = arg
   }
 
+  const usesAgentOption =
+    options.agentConfig !== undefined ||
+    options.json ||
+    options.provider !== undefined ||
+    options.model !== undefined ||
+    options.apiKeyEnv !== undefined ||
+    options.baseUrl !== undefined ||
+    options.protocol !== undefined ||
+    options.brief !== undefined ||
+    options.launch !== undefined
+  if (usesAgentOption && !options.agent) {
+    fail('Agent provider, config, JSON, and launch options require --agent.')
+  }
+  if (options.agent && options.yes) {
+    fail('--agent and --yes are different no-prompt modes and cannot be combined.')
+  }
+
   return options
 }
 
@@ -143,7 +227,19 @@ function assign(options: CliOptions, flag: ValuedFlag, value: string): void {
     options.source = known
     return
   }
-  options[field] = value
+  switch (field) {
+    case 'template': options.template = value; return
+    case 'from': options.from = value; return
+    case 'into': options.into = value; return
+    case 'agentConfig': options.agentConfig = value; return
+    case 'provider': options.provider = value; return
+    case 'model': options.model = value; return
+    case 'apiKeyEnv': options.apiKeyEnv = value; return
+    case 'baseUrl': options.baseUrl = value; return
+    case 'protocol': options.protocol = value; return
+    case 'brief': options.brief = value; return
+    default: fail(`${flag} cannot be assigned.`)
+  }
 }
 
 /**
@@ -248,7 +344,18 @@ export function helpText(version: string): string {
     --force             Write a blank workspace into a directory that has files
                         in it. Overwrites files of the same name, deletes
                         nothing, and does not apply to a clone.
-    --yes, -y           Take the defaults and ask nothing. For CI and agents.
+    --yes, -y           Take source defaults and ask nothing. Not agent mode.
+    --agent             Hard no-prompt agent mode. Requires explicit inputs.
+    --agent-config <p>  JSON config path, or - for bounded stdin (64 KiB).
+    --json              Print exactly one JSON result or error in agent mode.
+    --provider <id>     anthropic, openai, zai, qwen, deepseek, openrouter,
+                        or custom.
+    --model <id>        Explicit model ID. There is no model default.
+    --api-key-env <n>   Name of an inherited environment variable, never a key.
+    --base-url <url>    HTTPS endpoint override; required by qwen and custom.
+    --protocol <name>   messages, responses, or chat_completions.
+    --brief <text>      What game to build.
+    --no-launch         Prepare and validate, but record launch as disabled.
     --help, -h          This.
     --version, -v       Print the version and exit.
 
@@ -256,10 +363,10 @@ export function helpText(version: string): string {
 
 ${templates}
 
-  What this does not do yet: choose an AI provider, hold any credentials, or run
-  the Kei terminal interface. Those are later work in M9. Today the command ends
-  once the project is on disk, and what it prepared is yours whether or not the
-  rest of the harness ever reaches you.
+  Agent mode validates provider settings and a game brief without storing key
+  material. The model/tool loop and Kei terminal interface are not implemented
+  yet, so launch=true is reported as pending and the command still stops after
+  preparing the project.
 
   https://keicoin.org
 `

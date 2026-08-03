@@ -259,6 +259,8 @@ export function createAgentRequest(
     into,
     force,
     yes: false,
+    agent: false,
+    json: false,
     help: false,
     version: false,
   }
