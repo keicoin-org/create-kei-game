@@ -176,10 +176,26 @@ describe('real prompt-free agent CLI', () => {
       ok: false,
       error: {
         code: 'api_key_env_unset',
-        message: 'Required environment variable DEFINITELY_MISSING_KEY is not set.',
+        message: 'Required provider API key environment variable is not set.',
         field: 'apiKeyEnv',
       },
     })
+    expect(missingEnv.stdout).not.toContain('DEFINITELY_MISSING_KEY')
+
+    const rawLookingEnv = await run(workspace(), [
+      'g', '--agent', '--json', '--source', 'blank', '--provider', 'openai', '--model', 'm',
+      '--api-key-env', 'ThisLooksLikeRawCredentialABC123', '--brief', 'b',
+    ])
+    expect(jsonLine(rawLookingEnv)).toEqual({
+      ok: false,
+      error: {
+        code: 'api_key_env_unset',
+        message: 'Required provider API key environment variable is not set.',
+        field: 'apiKeyEnv',
+      },
+    })
+    expect(rawLookingEnv.stdout).not.toContain('ThisLooksLikeRawCredentialABC123')
+    expect(rawLookingEnv.stderr).not.toContain('ThisLooksLikeRawCredentialABC123')
 
     const malformed = await run(workspace(), ['--agent', '--json', '--agent-config', '-'], { input: '{' })
     expect(jsonLine(malformed)).toMatchObject({ ok: false, error: { code: 'invalid_config' } })
@@ -237,7 +253,22 @@ describe('real human onboarding integration', () => {
       '--model', 'explicit-model', '--api-key-env', 'MISSING_HUMAN_KEY', '--brief', 'Build it.',
     ])
     expect(result.status).toBe(1)
-    expect(result.stdout).toContain('MISSING_HUMAN_KEY is not set')
+    expect(result.stdout).toContain('Required provider API key environment variable is not set.')
+    expect(result.stdout).not.toContain('MISSING_HUMAN_KEY')
+    expect(existsSync(join(directory, 'untouched'))).toBeFalse()
+  })
+
+  test('an env reference that looks like a raw credential is never echoed back when unset', async () => {
+    const directory = workspace()
+    const candidate = 'ThisLooksLikeRawCredentialABC123'
+    const result = await run(directory, [
+      'Human Game', '--source', 'blank', '--into', 'untouched', '--provider', 'openai',
+      '--model', 'explicit-model', '--api-key-env', candidate, '--brief', 'Build it.',
+    ])
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('Required provider API key environment variable is not set.')
+    expect(result.stdout).not.toContain(candidate)
+    expect(result.stderr).not.toContain(candidate)
     expect(existsSync(join(directory, 'untouched'))).toBeFalse()
   })
 

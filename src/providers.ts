@@ -210,10 +210,12 @@ export function requireApiKeyEnvironment(
     ? environment[provider.apiKeyEnv]
     : undefined
   if (typeof value !== 'string' || !value.trim()) {
+    // The configured name is an untrusted reference, sometimes a pasted credential by mistake.
+    // Never echo it back: only the stable code and field name are safe to report.
     throw new ProviderError(
       'api_key_env_unset',
-      `Required environment variable ${provider.apiKeyEnv} is not set.`,
-      { field: 'apiKeyEnv', envName: provider.apiKeyEnv },
+      'Required provider API key environment variable is not set.',
+      { field: 'apiKeyEnv' },
     )
   }
 }

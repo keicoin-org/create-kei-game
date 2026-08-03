@@ -123,9 +123,35 @@ describe('credential environment presence', () => {
   test.each([{}, { OPENAI_API_KEY: '' }, { OPENAI_API_KEY: '   ' }])(
     'rejects an absent or blank value without exposing it',
     (environment) => {
-      expect(() => requireApiKeyEnvironment(provider, environment)).toThrow(/OPENAI_API_KEY/)
+      expect(() => requireApiKeyEnvironment(provider, environment)).toThrow(/is not set/)
+      expect(() => requireApiKeyEnvironment(provider, environment)).not.toThrow(/OPENAI_API_KEY/)
     },
   )
+
+  test('never reflects the configured env reference name when it is unset, even when it looks like a raw credential', () => {
+    const candidate = 'ThisLooksLikeRawCredentialABC123'
+    const custom = resolveProvider({
+      provider: 'custom',
+      protocol: 'messages',
+      baseUrl: 'https://llm.example',
+      apiKeyEnv: candidate,
+    })
+    let caught: unknown
+    try {
+      requireApiKeyEnvironment(custom, {})
+      throw new Error('expected credential presence check to fail')
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(ProviderError)
+    const providerError = caught as InstanceType<typeof ProviderError>
+    expect(providerError.code).toBe('api_key_env_unset')
+    expect(providerError.details).toEqual({ field: 'apiKeyEnv' })
+    expect(providerError.message).not.toContain(candidate)
+    expect(String(providerError)).not.toContain(candidate)
+    expect(JSON.stringify(providerError)).not.toContain(candidate)
+    expect(JSON.stringify(providerError.details)).not.toContain(candidate)
+  })
 
   test.each(['constructor', '__proto__', 'toString'])(
     'reports inherited object property %s as unset instead of a stray runtime error',
