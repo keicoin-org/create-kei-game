@@ -40,7 +40,12 @@ export function createAsker(): Asker {
     )
   }
 
-  const readline = createInterface({ input: stdin, output: stdout })
+  // Bun's ambient stdin iterator currently differs from @types/node's stream
+  // iterator even though this is the same Node-compatible runtime object.
+  const readline = createInterface({
+    input: stdin as unknown as import('node:stream').Readable,
+    output: stdout as unknown as import('node:stream').Writable,
+  })
   return {
     async ask(question, fallback) {
       const asked = fallback === undefined ? `  ${question} ` : `  ${question} (${fallback}) `

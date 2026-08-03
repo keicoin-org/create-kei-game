@@ -5,10 +5,12 @@ can prepare a blank workspace, clone a Kei example, use a local project in
 place, or clone a GitHub or GitLab repository. Human onboarding and a strict,
 prompt-free agent interface both produce the same validated project plan.
 
-> **Current boundary:** the harness validates the source, provider settings,
-> credential environment reference, model ID, and game brief, then prepares the
-> project and stops. The model/tool loop, Kei terminal UI, and persisted workflow
-> do not exist yet. A reported `launch: "pending"` does not mean a model ran.
+> **Current boundary:** onboarding still validates and prepares the project,
+> then stops. A shared provider-agnostic TypeScript model/tool engine and
+> versioned long-running JSONL boundary now exist, with deterministic test
+> transports, cancellation, and resource bounds. No real provider adapter,
+> filesystem tool, Kei terminal UI, persistence, or automatic launch exists
+> yet. A reported `launch: "pending"` does not mean a model ran.
 
 > **Unpublished draft:** this branch is not the package currently served by npm.
 > Until this harness is released, run the checkout with Bun as shown below. Do
@@ -55,6 +57,22 @@ bun run src/index.ts -- "Tiny Quest" --agent --json --source blank \
 Agent mode never prompts and emits one JSON value when `--json` is present. See
 [Agent mode](docs/agent-mode.md) for config files, stdin, precedence, result
 shapes, and failure handling.
+
+## Shared engine boundary
+
+The future Kei TUI and automation use the same `EngineSession` through one
+JSONL process contract. The process supports multiple sessions, repeated turns,
+concurrent cancellation, and stable redacted failures. This unpublished
+checkpoint can exercise the framing, but intentionally has no provider network
+adapter, so a `turn` returns `transport_error`:
+
+```sh
+bun run src/runtime-main.ts
+```
+
+See [Engine JSONL protocol](docs/runtime-protocol.md) for copyable commands,
+events, limits, and recovery rules, and [Runtime threat model](docs/runtime-threat-model.md)
+for trust boundaries and requirements on future provider/tool adapters.
 
 ## Choose a starting point
 
@@ -140,7 +158,9 @@ bun run check
 ```
 
 The non-executing library entry points are `create-kei-game/source`,
-`create-kei-game/providers`, `create-kei-game/harness`, and
-`create-kei-game/agent`. Importing the package root executes the CLI.
+`create-kei-game/providers`, `create-kei-game/harness`,
+`create-kei-game/agent`, `create-kei-game/runtime`, and
+`create-kei-game/runtime-protocol`. Importing the package root executes the
+onboarding CLI. The separate `create-kei-game-engine` binary owns JSONL only.
 
 Kei: <https://keicoin.org>

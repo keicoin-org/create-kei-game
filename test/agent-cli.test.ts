@@ -294,7 +294,15 @@ test('package exposes non-executing library subpaths', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
     exports: Record<string, unknown>
   }
-  expect(Object.keys(manifest.exports)).toEqual(['.', './source', './providers', './harness', './agent'])
+  expect(Object.keys(manifest.exports)).toEqual([
+    '.',
+    './source',
+    './providers',
+    './harness',
+    './agent',
+    './runtime',
+    './runtime-protocol',
+  ])
   expect(JSON.stringify(manifest.exports['./harness'])).toContain('dist/harness.js')
   expect(JSON.stringify(manifest.exports['./agent'])).toContain('dist/agent.js')
   const probe = spawnSync(

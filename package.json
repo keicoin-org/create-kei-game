@@ -1,7 +1,7 @@
 {
   "name": "create-kei-game",
   "version": "0.2.0",
-  "description": "The Kei game-building harness. Today it prepares the project a game will be built in — blank, a published template, a local project, or a repository — and stops.",
+  "description": "The Kei game-building harness and its shared bounded creation-engine protocol.",
   "license": "MIT",
   "author": "Sano",
   "homepage": "https://github.com/keicoin-org/create-kei-game",
@@ -23,7 +23,8 @@
   ],
   "type": "module",
   "bin": {
-    "create-kei-game": "./dist/index.js"
+    "create-kei-game": "./dist/index.js",
+    "create-kei-game-engine": "./dist/runtime-main.js"
   },
   "exports": {
     ".": {
@@ -50,6 +51,16 @@
       "types": "./dist/agent.d.ts",
       "bun": "./src/agent.ts",
       "import": "./dist/agent.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "bun": "./src/runtime.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./runtime-protocol": {
+      "types": "./dist/runtime-protocol.d.ts",
+      "bun": "./src/runtime-protocol.ts",
+      "import": "./dist/runtime-protocol.js"
     }
   },
   "files": [

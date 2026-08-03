@@ -174,7 +174,7 @@ async function loadAgentConfig(path: string | undefined): Promise<AgentAnswers> 
   if (path === undefined) return {}
   try {
     const chunks = path === '-' ? stdin : createReadStream(path)
-    return await readAgentConfig(chunks as AsyncIterable<Uint8Array | string>)
+    return await readAgentConfig(chunks as unknown as AsyncIterable<Uint8Array | string>)
   } catch (error) {
     if (isSafeError(error)) throw error
     throw new AgentError('invalid_config', 'Agent config could not be read.', {

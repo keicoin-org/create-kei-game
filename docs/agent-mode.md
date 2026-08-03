@@ -10,7 +10,8 @@ published package until the harness is released.
 
 > Agent mode prepares and validates the project today. It does not call the
 > configured model or start a terminal UI. `launch: "pending"` describes future
-> intent, not a running process.
+> intent, not a running process. The shared engine and JSONL contract now exist
+> as a separate, provider-free boundary; see [Engine JSONL protocol](runtime-protocol.md).
 
 ## Fast path: flags only
 
