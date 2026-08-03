@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -205,6 +205,57 @@ describe('real prompt-free agent CLI', () => {
       },
     })
     expect(missing.stdout).not.toContain('private-name.json')
+  })
+})
+
+describe('real human onboarding integration', () => {
+  test('complete flags avoid readline, validate the shared plan, and report launch pending', async () => {
+    const directory = workspace()
+    const result = await run(
+      directory,
+      [
+        'Human Game', '--source', 'blank', '--into', 'game', '--provider', 'openai',
+        '--model', 'explicit-model', '--api-key-env', 'HUMAN_MODEL_KEY',
+        '--brief', 'Build a cooperative puzzle.',
+      ],
+      { environment: { HUMAN_MODEL_KEY: secret } },
+    )
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toContain('Provider: openai / explicit-model')
+    expect(result.stdout).toContain('Credential: inherited from HUMAN_MODEL_KEY')
+    expect(result.stdout).toContain('Launch: pending until the model runtime lands')
+    expect(result.stdout).toContain('No model or tool')
+    expect(result.stdout).not.toContain(secret)
+    expect(existsSync(join(directory, 'game', 'package.json'))).toBeTrue()
+  })
+
+  test('missing inherited env fails before the destination is created', async () => {
+    const directory = workspace()
+    const result = await run(directory, [
+      'Human Game', '--source', 'blank', '--into', 'untouched', '--provider', 'openai',
+      '--model', 'explicit-model', '--api-key-env', 'MISSING_HUMAN_KEY', '--brief', 'Build it.',
+    ])
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('MISSING_HUMAN_KEY is not set')
+    expect(existsSync(join(directory, 'untouched'))).toBeFalse()
+  })
+
+  test('complete source flags without provider answers still enter interactive onboarding', async () => {
+    const directory = workspace()
+    const result = await run(directory, ['Human Game', '--source', 'blank', '--into', 'untouched'])
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('--provider, --model, --api-key-env, and --brief')
+    expect(existsSync(join(directory, 'untouched'))).toBeFalse()
+  })
+
+  test('--yes retains prompt-free source-only preparation', async () => {
+    const directory = workspace()
+    const result = await run(directory, ['Legacy Game', '--yes', '--source', 'blank', '--into', 'legacy'])
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('Legacy Game')
+    expect(result.stdout).not.toContain('Provider:')
+    expect(existsSync(join(directory, 'legacy', 'package.json'))).toBeTrue()
   })
 })
 

@@ -49,7 +49,8 @@ describe('parseArgs', () => {
   test('keeps --agent distinct from --yes and owns its options', () => {
     expect(() => parseArgs(['--agent', '--yes'])).toThrow(/different no-prompt modes/)
     expect(() => parseArgs(['--json'])).toThrow(/require --agent/)
-    expect(() => parseArgs(['--provider', 'openai'])).toThrow(/require --agent/)
+    expect(parseArgs(['--provider', 'openai']).provider).toBe('openai')
+    expect(() => parseArgs(['--agent-config', 'agent.json'])).toThrow(/require --agent/)
   })
 
   test('keeps help and version', () => {

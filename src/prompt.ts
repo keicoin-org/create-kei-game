@@ -36,7 +36,7 @@ export type AskerFactory = () => Asker
 export function createAsker(): Asker {
   if (!stdin.isTTY) {
     fail(
-      'There is nothing to type into here, so the questions cannot be asked and this will not guess at them. Pass the answers instead: create-kei-game <project> --source blank, or --yes to take the defaults.',
+      'There is nothing to type into here, so the questions cannot be asked and this will not guess at them. For source-only preparation, pass create-kei-game <project> --source blank --yes. For full onboarding, also pass --provider, --model, --api-key-env, and --brief.',
     )
   }
 
@@ -52,6 +52,27 @@ export function createAsker(): Asker {
       readline.close()
     },
   }
+}
+
+/** Whether full human onboarding has at least one answer left to ask for. */
+export function harnessNeedsAsker(
+  options: CliOptions,
+  selection: SourceSelection | null,
+): boolean {
+  if (options.yes) return false
+  if (
+    options.name === undefined ||
+    selection === null ||
+    options.provider === undefined ||
+    options.model === undefined ||
+    options.apiKeyEnv === undefined ||
+    options.brief === undefined
+  ) return true
+
+  const provider = providerNamed(options.provider)
+  if (provider.baseUrl === undefined && options.baseUrl === undefined) return true
+  if (provider.protocol === undefined && options.protocol === undefined) return true
+  return false
 }
 
 const SOURCE_LABELS: Record<SourceFlag, string> = {
@@ -204,7 +225,7 @@ function providerNamed(answer: string): ProviderDefinition {
   )
   if (named) return named
 
-  fail(`"${answer}" is not a provider this supports. They are: ${PROVIDERS.map(({ id, label }) => `${id} — ${label}`).join(', ')}.`)
+  fail(`That is not a provider this supports. They are: ${PROVIDERS.map(({ id, label }) => `${id} — ${label}`).join(', ')}.`)
 }
 
 function protocolNamed(answer: string): string {
@@ -213,7 +234,7 @@ function protocolNamed(answer: string): string {
   const named = PROVIDER_PROTOCOLS.find((protocol) => protocol === wanted)
   if (named) return named
 
-  fail(`"${answer}" is not a protocol this speaks. They are: ${PROVIDER_PROTOCOLS.join(', ')}.`)
+  fail(`That is not a protocol this speaks. They are: ${PROVIDER_PROTOCOLS.join(', ')}.`)
 }
 
 /** Takes the number off the list, or the word, because both get typed. */

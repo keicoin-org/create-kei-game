@@ -296,6 +296,22 @@ describe('full interactive harness onboarding', () => {
     }
   })
 
+  test('invalid provider and protocol answers are never reflected into errors', async () => {
+    const pastedSecret = 'sk-accidentally-pasted-here'
+    for (const answers of [
+      [pastedSecret],
+      ['custom', 'model-id', 'CUSTOM_KEY', 'https://custom.example/v1', pastedSecret],
+    ]) {
+      try {
+        await runHarness(['ready', '--source', 'blank'], answers)
+        throw new Error('expected invalid interactive answer')
+      } catch (error) {
+        expect(String(error)).not.toContain(pastedSecret)
+        expect(JSON.stringify(error)).not.toContain(pastedSecret)
+      }
+    }
+  })
+
   test('--yes never enters interactive provider onboarding', async () => {
     const options = parseArgs(['--yes'])
     const asker = new ScriptedAsker([])

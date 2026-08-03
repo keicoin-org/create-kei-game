@@ -197,15 +197,9 @@ export function parseArgs(argv: readonly string[]): CliOptions {
   const usesAgentOption =
     options.agentConfig !== undefined ||
     options.json ||
-    options.provider !== undefined ||
-    options.model !== undefined ||
-    options.apiKeyEnv !== undefined ||
-    options.baseUrl !== undefined ||
-    options.protocol !== undefined ||
-    options.brief !== undefined ||
     options.launch !== undefined
   if (usesAgentOption && !options.agent) {
-    fail('Agent provider, config, JSON, and launch options require --agent.')
+    fail('Agent config, JSON, and launch options require --agent.')
   }
   if (options.agent && options.yes) {
     fail('--agent and --yes are different no-prompt modes and cannot be combined.')

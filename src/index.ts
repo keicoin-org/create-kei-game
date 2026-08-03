@@ -14,9 +14,9 @@ import {
 import { nodeFs, nodeGit, nodePath } from './adapters.js'
 import { helpText, parseArgs, selectionFrom, DEFAULT_NAME, type CliOptions } from './cli.js'
 import { HarnessError } from './errors.js'
-import { HarnessRequestError, type HarnessRequest } from './harness.js'
+import { createHarnessRequest, HarnessRequestError, type HarnessRequest } from './harness.js'
 import { projectFrom } from './naming.js'
-import { createAsker, onboard, type Asker } from './prompt.js'
+import { createAsker, harnessNeedsAsker, onboardHarness, type Asker } from './prompt.js'
 import { ProviderError } from './providers.js'
 import { prepareSource, type PreparedSource, type SourceDeps } from './source.js'
 
@@ -46,17 +46,16 @@ async function main(): Promise<void> {
   }
 
   const fromFlags = selectionFrom(options)
-  const asks = !options.yes && (options.name === undefined || fromFlags === null)
-  const asker: Asker | undefined = asks ? createAsker() : undefined
+  if (!options.yes) {
+    await runInteractive(options, fromFlags)
+    return
+  }
 
-  let answers
-  try {
-    if (asker) stdout.write('\n  I will ask only for the setup details still missing.\n\n')
-    answers = asker
-      ? await onboard(options, fromFlags, asker)
-      : { name: options.name ?? DEFAULT_NAME, selection: fromFlags ?? { kind: 'blank' as const } }
-  } finally {
-    asker?.close()
+  // Compatibility: --yes remains prompt-free source preparation and does not
+  // require provider settings that have no safe defaults.
+  const answers = {
+    name: options.name ?? DEFAULT_NAME,
+    selection: fromFlags ?? { kind: 'blank' as const },
   }
 
   const project = projectFrom(answers.name)
@@ -74,6 +73,59 @@ async function main(): Promise<void> {
     deps,
   )
   stdout.write(report(project.title, prepared))
+}
+
+const noQuestions: Asker = {
+  async ask() {
+    throw new Error('A completed onboarding unexpectedly tried to ask a question.')
+  },
+  close() {},
+}
+
+async function runInteractive(
+  options: CliOptions,
+  fromFlags: ReturnType<typeof selectionFrom>,
+): Promise<void> {
+  const asks = harnessNeedsAsker(options, fromFlags)
+  const asker = asks ? createAsker() : noQuestions
+  let answers
+  try {
+    if (asks) stdout.write('\n  I will ask only for the setup details still missing.\n\n')
+    answers = await onboardHarness(options, fromFlags, asker)
+  } finally {
+    if (asks) asker.close()
+  }
+
+  // Credential presence and every provider/source invariant are checked before
+  // prepareSource can create or clone anything.
+  const request = createHarnessRequest(
+    {
+      project: answers.name,
+      selection: answers.selection,
+      baseDirectory: cwd(),
+      destination: options.into,
+      force: options.force,
+      provider: answers.provider,
+      model: answers.model,
+      brief: answers.brief,
+      launch: answers.launch,
+    },
+    env,
+  )
+  if (request.selection.kind === 'template' || request.selection.kind === 'repository') {
+    stdout.write('\n  Cloning...\n')
+  }
+  const prepared = await prepareSource(
+    {
+      project: request.project,
+      selection: request.selection,
+      baseDirectory: request.baseDirectory,
+      destination: request.destination,
+      force: request.force,
+    },
+    deps,
+  )
+  stdout.write(agentReport(request, prepared))
 }
 
 async function runAgent(options: CliOptions): Promise<void> {
