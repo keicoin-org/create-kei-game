@@ -61,6 +61,21 @@
       "types": "./dist/runtime-protocol.d.ts",
       "bun": "./src/runtime-protocol.ts",
       "import": "./dist/runtime-protocol.js"
+    },
+    "./provider-transport": {
+      "types": "./dist/provider-transport.d.ts",
+      "bun": "./src/provider-transport.ts",
+      "import": "./dist/provider-transport.js"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "bun": "./src/tools.ts",
+      "import": "./dist/tools.js"
+    },
+    "./creation-runtime": {
+      "types": "./dist/creation-runtime.d.ts",
+      "bun": "./src/creation-runtime.ts",
+      "import": "./dist/creation-runtime.js"
     }
   },
   "files": [

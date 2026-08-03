@@ -183,9 +183,12 @@ describe('helpText', () => {
   })
 
   test('says what it does not do yet rather than implying it does', () => {
-    expect(help).toContain('stops there')
     expect(help).toContain('provider settings')
-    expect(help).toContain('model/tool loop')
-    expect(help).toContain('launch=true is reported as pending')
+    expect(help).toContain('One turn runs')
+    expect(help).toContain('long-running Kei terminal interface is later M9 work')
+    // The claim that used to be here was that nothing ran at all. It runs now,
+    // and the help must not still be describing the older, smaller thing.
+    expect(help).not.toContain('stops there')
+    expect(help).not.toContain('reported as pending')
   })
 })

@@ -1,6 +1,7 @@
 import { posix, win32 } from 'node:path'
 
 import {
+  ENGINE_ERROR_MESSAGES,
   EngineError,
   EngineSession,
   type EngineEvent,
@@ -11,6 +12,8 @@ import {
 } from './runtime.js'
 import { resolveProvider } from './providers.js'
 import { MAX_BRIEF_LENGTH, MAX_MODEL_LENGTH } from './harness.js'
+
+export { ENGINE_ERROR_MESSAGES } from './runtime.js'
 
 export const ENGINE_PROTOCOL_VERSION = 1 as const
 export const MAX_JSONL_LINE_BYTES = 64 * 1024
@@ -151,22 +154,6 @@ function publicError(error: unknown, id: string): ProtocolOutput {
   }
   return protocolFailure('internal_error', 'Engine failed unexpectedly.', id)
 }
-
-const ENGINE_ERROR_MESSAGES: Readonly<Record<EngineError['code'], string>> = Object.freeze({
-  cancelled: 'Engine turn was cancelled.',
-  timeout: 'Engine turn exceeded its time limit.',
-  prompt_limit: 'Turn prompt exceeded its byte limit.',
-  history_limit: 'Session transcript exceeded its byte limit.',
-  turn_limit: 'Engine turn count exceeded its limit.',
-  output_limit: 'Model output exceeded its byte limit.',
-  tool_call_limit: 'Model requested too many tools in one turn.',
-  tool_argument_limit: 'Tool arguments exceeded their byte limit.',
-  tool_result_limit: 'Tool result exceeded its byte limit.',
-  transport_error: 'Model transport failed.',
-  tool_not_found: 'Model requested an unavailable tool.',
-  tool_error: 'Tool execution failed.',
-  invalid_runtime: 'Engine runtime is not valid.',
-})
 
 class JsonlReader {
   readonly #decoder = new TextDecoder('utf-8', { fatal: true })

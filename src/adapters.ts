@@ -7,10 +7,11 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdir, readdir, stat, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type { GitOptions, GitResult, GitRunner, SourceFs, SourcePath } from './source.js'
+import type { ToolFs, ToolPath } from './tools.js'
 
 /** "Not there" is an answer, not a failure. Anything else is a real failure. */
 const ABSENT = new Set(['ENOENT', 'ENOTDIR'])
@@ -51,6 +52,75 @@ export const nodeFs: SourceFs = {
 }
 
 export const nodePath: SourcePath = { resolve, join, dirname, relative, isAbsolute, sep }
+
+/**
+ * The same disk again, with the three extra operations the workspace tools need
+ * and `prepareSource` does not: reading a file back, resolving links, and
+ * telling a link apart from what it points at.
+ */
+export const nodeToolFs: ToolFs = {
+  async readdir(directory) {
+    try {
+      const entries = await readdir(directory, { withFileTypes: true })
+      // withFileTypes does not follow links, so a link to a directory reports as
+      // a link here rather than as the directory it aims at.
+      return entries.map((entry) => ({
+        name: entry.name,
+        isDirectory: entry.isDirectory(),
+        isSymbolicLink: entry.isSymbolicLink(),
+      }))
+    } catch (error) {
+      if (absent(error)) return null
+      throw error
+    }
+  },
+
+  async stat(target) {
+    try {
+      const info = await stat(target)
+      return { isDirectory: info.isDirectory(), size: info.size }
+    } catch (error) {
+      if (absent(error)) return null
+      throw error
+    }
+  },
+
+  async realpath(target) {
+    try {
+      return await realpath(target)
+    } catch (error) {
+      if (absent(error)) return null
+      throw error
+    }
+  },
+
+  async readFile(file) {
+    let bytes: Buffer
+    try {
+      bytes = await readFile(file)
+    } catch (error) {
+      if (absent(error)) return null
+      throw error
+    }
+    try {
+      // A binary file is not something the model can edit, and decoding it
+      // loosely would put replacement characters into the transcript instead.
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    } catch {
+      return null
+    }
+  },
+
+  async writeFile(file, contents) {
+    await writeFile(file, contents, 'utf8')
+  },
+
+  async mkdir(directory) {
+    await mkdir(directory, { recursive: true })
+  },
+}
+
+export const nodeToolPath: ToolPath = { resolve, join, dirname, basename, relative, isAbsolute, sep }
 
 /** More than anything git says on the way to failing, and short of a memory leak. */
 const MAX_STDERR = 64 * 1024

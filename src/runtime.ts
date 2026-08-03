@@ -105,6 +105,12 @@ export type EngineErrorCode =
   | 'tool_argument_limit'
   | 'tool_result_limit'
   | 'transport_error'
+  | 'credential_unset'
+  | 'provider_auth_error'
+  | 'provider_rate_limited'
+  | 'provider_request_invalid'
+  | 'provider_unavailable'
+  | 'provider_response_invalid'
   | 'tool_not_found'
   | 'tool_error'
   | 'invalid_runtime'
@@ -120,6 +126,34 @@ export class EngineError extends Error {
     super(message)
   }
 }
+
+/**
+ * The one place an engine failure is phrased. Every front end, and every
+ * failure this engine raises on behalf of an adapter, reports from this table
+ * rather than from a caught `error.message` — so no transport or tool can widen
+ * what a diagnostic says, deliberately or by pasting a credential into it.
+ */
+export const ENGINE_ERROR_MESSAGES: Readonly<Record<EngineErrorCode, string>> = Object.freeze({
+  cancelled: 'Engine turn was cancelled.',
+  timeout: 'Engine turn exceeded its time limit.',
+  prompt_limit: 'Turn prompt exceeded its byte limit.',
+  history_limit: 'Session transcript exceeded its byte limit.',
+  turn_limit: 'Engine turn count exceeded its limit.',
+  output_limit: 'Model output exceeded its byte limit.',
+  tool_call_limit: 'Model requested too many tools in one turn.',
+  tool_argument_limit: 'Tool arguments exceeded their byte limit.',
+  tool_result_limit: 'Tool result exceeded its byte limit.',
+  transport_error: 'Model transport failed.',
+  credential_unset: 'The provider credential environment variable is not set.',
+  provider_auth_error: 'The provider rejected the inherited credential.',
+  provider_rate_limited: 'The provider rate-limited this request.',
+  provider_request_invalid: 'The provider rejected the request as invalid.',
+  provider_unavailable: 'The provider could not be reached.',
+  provider_response_invalid: 'The provider returned a response the engine cannot use.',
+  tool_not_found: 'Model requested an unavailable tool.',
+  tool_error: 'Tool execution failed.',
+  invalid_runtime: 'Engine runtime is not valid.',
+})
 
 export interface EngineScheduler {
   setTimeout(callback: () => void, milliseconds: number): unknown
@@ -217,10 +251,35 @@ function snapshotMessages(messages: readonly ModelMessage[]): readonly ModelMess
 }
 
 function aborted(signal: AbortSignal, timedOut: () => boolean): never {
-  throw new EngineError(
-    timedOut() ? 'timeout' : 'cancelled',
-    timedOut() ? 'Engine turn exceeded its time limit.' : 'Engine turn was cancelled.',
-  )
+  const code = timedOut() ? 'timeout' : 'cancelled'
+  throw new EngineError(code, ENGINE_ERROR_MESSAGES[code])
+}
+
+/**
+ * The only codes a transport is trusted to name for itself. Anything else it
+ * throws — including a code that would misreport session control, such as
+ * `cancelled` — collapses to `transport_error`, so an adapter can never dress a
+ * failure up as something the engine decided.
+ */
+const TRANSPORT_CODES: ReadonlySet<EngineErrorCode> = new Set([
+  'credential_unset',
+  'provider_auth_error',
+  'provider_rate_limited',
+  'provider_request_invalid',
+  'provider_unavailable',
+  'provider_response_invalid',
+])
+
+/**
+ * A transport chooses the *code* and never the words. The thrown error is
+ * dropped rather than rethrown, because its message and details came from an
+ * adapter and could carry a response body — or a credential — with them.
+ */
+function transportFailure(error: unknown): EngineError {
+  const code = error instanceof EngineError && TRANSPORT_CODES.has(error.code)
+    ? error.code
+    : 'transport_error'
+  return new EngineError(code, ENGINE_ERROR_MESSAGES[code])
 }
 
 async function raceAbort<T>(work: Promise<T>, signal: AbortSignal, timedOut: () => boolean): Promise<T> {
@@ -271,7 +330,7 @@ export class EngineSession {
 
   #append(message: ModelMessage, bytes: number): void {
     if (this.#historyBytes + bytes > this.#limits.maxHistoryBytes) {
-      throw new EngineError('history_limit', 'Session transcript exceeded its byte limit.')
+      throw new EngineError('history_limit', ENGINE_ERROR_MESSAGES.history_limit)
     }
     this.#messages.push(message)
     this.#historyBytes += bytes
@@ -288,7 +347,7 @@ export class EngineSession {
     }
     const promptBytes = new TextEncoder().encode(prompt).byteLength
     if (promptBytes > this.#limits.maxPromptBytes) {
-      throw new EngineError('prompt_limit', 'Turn prompt exceeded its byte limit.', { field: 'prompt' })
+      throw new EngineError('prompt_limit', ENGINE_ERROR_MESSAGES.prompt_limit, { field: 'prompt' })
     }
 
     this.#busy = true
@@ -313,7 +372,7 @@ export class EngineSession {
       while (true) {
         if (controller.signal.aborted) aborted(controller.signal, timedOut)
         if (turns >= this.#limits.maxTurns) {
-          throw new EngineError('turn_limit', 'Engine turn count exceeded its limit.')
+          throw new EngineError('turn_limit', ENGINE_ERROR_MESSAGES.turn_limit)
         }
         turns += 1
         await emit({ type: 'turn_started', turn: turns })
@@ -336,7 +395,7 @@ export class EngineSession {
           )
         } catch (error) {
           if (controller.signal.aborted) aborted(controller.signal, timedOut)
-          throw new EngineError('transport_error', 'Model transport failed.')
+          throw transportFailure(error)
         }
 
         if (typeof response.content !== 'string' || !Array.isArray(response.toolCalls ?? [])) {
@@ -345,11 +404,11 @@ export class EngineSession {
         const contentBytes = new TextEncoder().encode(response.content).byteLength
         outputBytes += contentBytes
         if (outputBytes > this.#limits.maxOutputBytes) {
-          throw new EngineError('output_limit', 'Model output exceeded its byte limit.')
+          throw new EngineError('output_limit', ENGINE_ERROR_MESSAGES.output_limit)
         }
         const calls = response.toolCalls ?? []
         if (calls.length > this.#limits.maxToolCallsPerTurn) {
-          throw new EngineError('tool_call_limit', 'Model requested too many tools in one turn.')
+          throw new EngineError('tool_call_limit', ENGINE_ERROR_MESSAGES.tool_call_limit)
         }
         const normalizedCalls: Array<{ stored: ToolCall; executionArguments: unknown; historyBytes: number }> = []
         for (const call of calls) {
@@ -362,7 +421,7 @@ export class EngineSession {
             throw new EngineError('transport_error', 'Model transport returned an oversized tool call.')
           }
           if (!this.#tools.has(call.name)) {
-            throw new EngineError('tool_not_found', 'Model requested an unavailable tool.')
+            throw new EngineError('tool_not_found', ENGINE_ERROR_MESSAGES.tool_not_found)
           }
           let serializedArguments: string
           try {
@@ -373,7 +432,7 @@ export class EngineSession {
             throw new EngineError('transport_error', 'Model transport returned invalid tool arguments.')
           }
           if (new TextEncoder().encode(serializedArguments).byteLength > this.#limits.maxToolArgumentBytes) {
-            throw new EngineError('tool_argument_limit', 'Tool arguments exceeded their byte limit.')
+            throw new EngineError('tool_argument_limit', ENGINE_ERROR_MESSAGES.tool_argument_limit)
           }
           let storedArguments: unknown
           let executionArguments: unknown
@@ -414,12 +473,12 @@ export class EngineSession {
             )
           } catch (error) {
             if (controller.signal.aborted) aborted(controller.signal, timedOut)
-            throw new EngineError('tool_error', 'Tool execution failed.')
+            throw new EngineError('tool_error', ENGINE_ERROR_MESSAGES.tool_error)
           }
           const result = safeToolResult(value)
           const bytes = new TextEncoder().encode(result).byteLength
           if (bytes > this.#limits.maxToolResultBytes) {
-            throw new EngineError('tool_result_limit', 'Tool result exceeded its byte limit.')
+            throw new EngineError('tool_result_limit', ENGINE_ERROR_MESSAGES.tool_result_limit)
           }
           toolResultBytes += bytes
           if (toolResultBytes > this.#limits.maxToolResultTotalBytes) {

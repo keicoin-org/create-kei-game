@@ -1,17 +1,23 @@
 # Runtime threat model
 
 The engine accepts model output, tool arguments and results, project paths, and
-JSONL input as untrusted data. This checkpoint narrows what those values can do;
-it does not claim that arbitrary future tools are safe.
+JSONL input as untrusted data. This narrows what those values can do; it does not
+claim that arbitrary future tools are safe.
 
 ## Trust boundaries
 
 The front end may choose a provider, model, brief, workspace, and prompt. It
 never sends a credential value. The engine receives a validated `apiKeyEnv`
-reference, while a future provider adapter will resolve the value privately.
-Model transports receive the reference so adapters can select their credential,
-but transports must not add resolved values to messages, events, thrown errors,
-or tool inputs.
+reference and resolves it against **its own inherited environment**, immediately
+before each request. The resolved value goes into exactly one request header —
+`x-api-key` for `messages`, `authorization: Bearer` otherwise — and is never
+stored on an object, added to a message, event, error, or tool input, or written
+to a project file.
+
+A model that tries to write the credential into the project is refused by
+`write_file`, which compares content against the freshly-read value and declines
+the write. `.env` is refused outright, since it is the file a credential would
+otherwise land in.
 
 Model output and tool results are data, not protocol. Only the engine creates
 JSONL envelopes. JSON serialization prevents content from injecting a second
@@ -32,17 +38,27 @@ record. Tool arguments and results are never copied into public progress events.
 - A session rejects overlapping direct or protocol turns. Failure rolls back
   partial transcript state.
 - Transport and tool exceptions are reduced to stable codes and generic text.
-  Stack traces, OS/parser diagnostics, config contents, credential references,
-  and thrown values are not serialized as errors.
+  A transport may choose its code from a fixed provider set; it never supplies
+  the words. The thrown error object is discarded rather than rethrown, so a
+  response body, an OS or parser diagnostic, a stack trace, config contents, a
+  credential reference, or a credential value cannot travel out inside one.
+- Provider responses are size-capped before parsing, and a body that is not JSON
+  or not the expected shape is `provider_response_invalid` rather than a partial
+  read. Tool arguments that are not valid JSON are refused rather than repaired,
+  so no tool runs on a guess.
+- Workspace tools resolve every path through `realpath` and verify containment
+  against the resolved workspace, which covers a symlink that was already in the
+  tree. Reads, writes, listing breadth, listing depth, and path depth are all
+  bounded, and the tools never spawn a process or open a socket.
 - Shutdown cancels and settles active turns before its terminal record.
 
 ## Responsibilities of future adapters and tools
 
-A provider adapter must resolve credentials only immediately before its private
-network request, use the configured HTTPS endpoint without widening URL rules,
-honor cancellation, cap its own response body, and map upstream failures to a
-generic transport exception. It must never log request headers or response
-bodies to the JSONL stream.
+The shipped provider transport meets these rules and any additional adapter must
+too: resolve credentials only immediately before the request, use the configured
+HTTPS endpoint without widening URL rules, honor cancellation, cap its own
+response body, and map upstream failures to a stable code with no upstream text.
+It must never log request headers or response bodies to the JSONL stream.
 
 Tools need a declared JSON schema and a narrow workspace-scoped capability.
 Filesystem tools must resolve and verify paths remain inside the session
@@ -55,10 +71,17 @@ contain project content. A front end must treat it as untrusted display text,
 not terminal escape sequences or commands. The future Rust TUI must sanitize
 terminal control characters before rendering.
 
-## Not implemented in this checkpoint
+## Not implemented
 
-There is no real provider transport, filesystem mutation tool, process tool,
-network tool, terminal UI, persistence, or automatic project launch. The engine
-binary returns a redacted `transport_error` for a turn until a reviewed provider
-adapter is installed. These absences are security boundaries, not completed
-features.
+There is no process tool, network tool, package installer, terminal UI, session
+persistence, or unattended re-invocation. `write_file` is the only mutation, and
+it is bounded and workspace-scoped. These absences are security boundaries, not
+completed features.
+
+Two limits worth stating rather than leaving to be discovered. A model can
+overwrite any file in the workspace it was pointed at, including one the
+developer wrote, so pointing `--source local` at a project means accepting that
+— the harness does not snapshot or back it up, and version control is the
+developer's. And the credential check on writes compares against the value the
+harness holds; it is a guard against the obvious accident, not a general
+data-loss-prevention control.
