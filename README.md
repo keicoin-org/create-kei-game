@@ -1,14 +1,21 @@
 # create-kei-game
 
-Scaffolds a browser game with a real currency, real items, and a wallet the
-player owns.
+The harness for building Kei games. This repository is where it is developed and
+released from; it is no longer a package inside another repository.
+
+**Today (v0.2.0) it scaffolds and exits.** It asks what the project is called
+and what the currency is called, writes a working browser game with a real
+currency, real items, and a wallet the player owns, and stops there. Everything
+below describes that behaviour, because that is the behaviour that ships.
+
+**What is planned** is for the same command to stay with you after the first
+write — an ongoing harness that keeps building the game with you rather than a
+scaffolder that runs once. None of it is implemented yet. Nothing in this README
+is a description of unreleased work except this paragraph.
 
 ```sh
 npm create kei-game
 ```
-
-It asks what the project is called and what the currency is called, writes a
-working game, and exits.
 
 ```sh
 npm create kei-game star-clicker -- --currency "Gold Pieces"
@@ -109,6 +116,21 @@ This package installs nothing of its own, either — not even to unpack a tarbal
 It is a program that writes files, and the first thing you wait for is your
 game's dependencies.
 
+## Working on this repository
+
+Bun 1.3.0, or Node >= 20 for the published binary.
+
+```sh
+bun install
+bun run typecheck   # tsc --build, then the tests' own type-check
+bun test
+bun run build       # emits dist/
+bun run check       # typecheck + test
+```
+
+`bun run clean` removes the build output.
+
 ---
 
-Part of [`kei-transaction`](https://keicoin.org). SPEC §11.3.
+Uses the [`kei-transaction`](https://keicoin.org) SDK, and implements SPEC §11.3.
+The scaffolder itself is developed here.
