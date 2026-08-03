@@ -9,7 +9,20 @@ import { describe, expect, test } from 'bun:test'
 
 import { parseArgs, selectionFrom } from '../src/cli.js'
 import { HarnessError } from '../src/errors.js'
-import { NAME_QUESTION, SOURCE_QUESTION, createAsker, onboard, type Asker } from '../src/prompt.js'
+import {
+  API_KEY_ENV_QUESTION,
+  BASE_URL_QUESTION,
+  BRIEF_QUESTION,
+  MODEL_QUESTION,
+  NAME_QUESTION,
+  PROTOCOL_QUESTION,
+  PROVIDER_QUESTION,
+  SOURCE_QUESTION,
+  createAsker,
+  onboard,
+  onboardHarness,
+  type Asker,
+} from '../src/prompt.js'
 
 class ScriptedAsker implements Asker {
   readonly asked: string[] = []
@@ -139,5 +152,156 @@ describe('with nothing to type into', () => {
     } finally {
       Object.defineProperty(process.stdin, 'isTTY', { value: wasTTY, configurable: true })
     }
+  })
+})
+
+async function runHarness(argv: readonly string[], answers: readonly string[]) {
+  const options = parseArgs(argv)
+  const asker = new ScriptedAsker(answers)
+  const result = await onboardHarness(options, selectionFrom(options), asker)
+  return { ...result, asked: asker.asked, fallbacks: asker.fallbacks }
+}
+
+describe('full interactive harness onboarding', () => {
+  test('asks the complete stable order and offers the built-in env reference', async () => {
+    const result = await runHarness(
+      [],
+      ['My Game', 'blank', 'anthropic', 'explicit-model', '', 'Build an adventure.'],
+    )
+    expect(result.asked).toEqual([
+      NAME_QUESTION,
+      SOURCE_QUESTION,
+      PROVIDER_QUESTION,
+      MODEL_QUESTION,
+      API_KEY_ENV_QUESTION,
+      BRIEF_QUESTION,
+    ])
+    expect(result.fallbacks).toEqual([
+      'kei-game', 'blank', undefined, undefined, 'ANTHROPIC_API_KEY', undefined,
+    ])
+    expect(result.provider).toEqual({
+      provider: 'anthropic',
+      apiKeyEnv: 'ANTHROPIC_API_KEY',
+    })
+    expect(result.model).toBe('explicit-model')
+    expect(result.brief).toBe('Build an adventure.')
+    expect(result.launch).toBeTrue()
+  })
+
+  test('asks Qwen base URL only after model and env reference', async () => {
+    const result = await runHarness(
+      ['qwen-game', '--source', 'blank'],
+      ['qwen', 'qwen-explicit', '', 'https://qwen.example/v1', 'Build it.'],
+    )
+    expect(result.asked).toEqual([
+      PROVIDER_QUESTION,
+      MODEL_QUESTION,
+      API_KEY_ENV_QUESTION,
+      BASE_URL_QUESTION,
+      BRIEF_QUESTION,
+    ])
+    expect(result.provider).toEqual({
+      provider: 'qwen',
+      apiKeyEnv: 'DASHSCOPE_API_KEY',
+      baseUrl: 'https://qwen.example/v1',
+    })
+  })
+
+  test('asks custom base URL then protocol after the env reference', async () => {
+    const result = await runHarness(
+      ['custom-game', '--source', 'blank'],
+      ['custom', 'model-id', 'CUSTOM_KEY', 'https://custom.example/v1', 'messages', 'Build it.'],
+    )
+    expect(result.asked).toEqual([
+      PROVIDER_QUESTION,
+      MODEL_QUESTION,
+      API_KEY_ENV_QUESTION,
+      BASE_URL_QUESTION,
+      PROTOCOL_QUESTION,
+      BRIEF_QUESTION,
+    ])
+    expect(result.provider).toEqual({
+      provider: 'custom',
+      apiKeyEnv: 'CUSTOM_KEY',
+      baseUrl: 'https://custom.example/v1',
+      protocol: 'messages',
+    })
+  })
+
+  test('complete name/source still continues into provider questions', async () => {
+    const result = await runHarness(
+      ['ready', '--source', 'blank'],
+      ['openai', 'model-id', '', 'Build it.'],
+    )
+    expect(result.asked).toEqual([
+      PROVIDER_QUESTION, MODEL_QUESTION, API_KEY_ENV_QUESTION, BRIEF_QUESTION,
+    ])
+    expect(result.provider.apiKeyEnv).toBe('OPENAI_API_KEY')
+  })
+
+  test('flags skip answered provider questions without changing source order', async () => {
+    const options = {
+      ...parseArgs(['ready', '--source', 'blank']),
+      provider: 'custom',
+      model: 'model-id',
+      apiKeyEnv: 'CUSTOM_KEY',
+      baseUrl: 'https://custom.example/v1',
+      protocol: 'responses',
+      brief: 'Build it.',
+    }
+    const asker = new ScriptedAsker([])
+    const result = await onboardHarness(options, selectionFrom(options), asker)
+    expect(asker.asked).toEqual([])
+    expect(result.provider.protocol).toBe('responses')
+  })
+
+  test.each([
+    ['Anthropic', 'anthropic'],
+    ['OpenAI', 'openai'],
+    ['Z.ai', 'zai'],
+    ['Qwen / DashScope', 'qwen'],
+    ['DeepSeek', 'deepseek'],
+    ['OpenRouter', 'openrouter'],
+    ['Custom provider', 'custom'],
+  ])('accepts provider label %s', async (label, id) => {
+    const options = {
+      ...parseArgs(['ready', '--source', 'blank']),
+      provider: label,
+      model: 'model-id',
+      apiKeyEnv: 'MODEL_KEY',
+      baseUrl: id === 'qwen' || id === 'custom' ? 'https://models.example/v1' : undefined,
+      protocol: id === 'custom' ? 'chat_completions' : undefined,
+      brief: 'Build it.',
+    }
+    const result = await onboardHarness(options, selectionFrom(options), new ScriptedAsker([]))
+    expect(result.provider.provider).toBe(id)
+  })
+
+  test('blank required answers fail instead of becoming hidden defaults', async () => {
+    await expect(
+      runHarness(['ready', '--source', 'blank'], ['openai', '', 'OPENAI_API_KEY', 'Build it.']),
+    ).rejects.toThrow(/exact model ID/)
+  })
+
+  test('questions never ask for a raw key, currency, or Grok', async () => {
+    const result = await runHarness(
+      ['ready', '--source', 'blank'],
+      ['openai', 'model-id', '', 'Build it.'],
+    )
+    for (const question of result.asked) {
+      const lower = question.toLowerCase()
+      expect(lower).not.toContain('currency')
+      expect(lower).not.toContain('grok')
+      if (lower.includes('api key')) expect(lower).toContain('environment variable name')
+    }
+  })
+
+  test('--yes never enters interactive provider onboarding', async () => {
+    const options = parseArgs(['--yes'])
+    const asker = new ScriptedAsker([])
+    await expect(onboardHarness(options, selectionFrom(options), asker)).rejects.toThrow(
+      /prepares the project without asking anything/,
+    )
+    expect(asker.asked).toEqual([])
   })
 })
