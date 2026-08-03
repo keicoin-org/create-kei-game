@@ -175,6 +175,15 @@ describe('blank source', () => {
     expect(forced.fs.writes.size).toBe(4)
   })
 
+  test('refuses to treat a file as a destination, including under force', async () => {
+    const { deps, fs } = harness()
+    fs.stats.set('/work/my-game', { isDirectory: false })
+    await expect(
+      prepareSource({ project, selection: { kind: 'blank' }, baseDirectory: '/work', force: true }, deps),
+    ).rejects.toThrow(/is a file, not a directory/)
+    expect(fs.writes.size).toBe(0)
+  })
+
   test('quotes the title as data rather than injecting it into TypeScript', () => {
     const title = `O'Brien\n*/ console.log('injected')`
     const main = blankWorkspace({ slug: 'safe', title }).find(({ path }) => path === 'src/main.ts')!.contents
@@ -228,6 +237,27 @@ describe('cloned source', () => {
     ])
   })
 
+  test('creates a nested destination parent, not the clone destination', async () => {
+    const { deps, fs, calls } = harness()
+    await prepareSource(
+      {
+        project,
+        selection: { kind: 'template', template: 'button' },
+        baseDirectory: '/work',
+        destination: 'games/one',
+      },
+      deps,
+    )
+
+    expect(fs.made).toEqual(['/work/games'])
+    expect(fs.made).not.toContain('/work/games/one')
+    expect(calls[0]).toEqual({
+      command: 'git',
+      args: ['clone', '--depth', '1', '--', 'https://github.com/keicoin-org/button.git', '/work/games/one'],
+      options: { cwd: '/work', shell: false },
+    })
+  })
+
   test('normalizes a repository URL before cloning', async () => {
     const { deps, calls } = harness()
     await prepareSource(
@@ -252,6 +282,15 @@ describe('cloned source', () => {
     ).rejects.toThrow(/will empty it/)
     expect(calls).toEqual([])
     expect(fs.entries.get('/work/my-game')).toEqual(['keep.txt'])
+  })
+
+  test('does not spawn git when the clone destination is a file', async () => {
+    const { deps, fs, calls } = harness()
+    fs.stats.set('/work/my-game', { isDirectory: false })
+    await expect(
+      prepareSource({ project, selection: { kind: 'template', template: 'button' }, baseDirectory: '/work' }, deps),
+    ).rejects.toThrow(/is a file, not a directory/)
+    expect(calls).toEqual([])
   })
 
   test('reports an unavailable git and a nonzero clone without claiming success', async () => {

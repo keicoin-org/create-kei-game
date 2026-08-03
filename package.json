@@ -1,7 +1,7 @@
 {
   "name": "create-kei-game",
   "version": "0.2.0",
-  "description": "The Kei game-building harness. Today it scaffolds a browser game with a real currency and real items, and exits.",
+  "description": "The Kei game-building harness. Today it prepares the project a game will be built in — blank, a published template, a local project, or a repository — and stops.",
   "license": "MIT",
   "author": "Sano",
   "homepage": "https://github.com/keicoin-org/create-kei-game",
@@ -16,12 +16,10 @@
     "kei",
     "create",
     "harness",
-    "scaffold",
-    "starter",
     "game",
     "gamedev",
-    "babylonjs",
-    "browser-game"
+    "game-development",
+    "cli"
   ],
   "type": "module",
   "bin": {
@@ -32,12 +30,16 @@
       "types": "./dist/index.d.ts",
       "bun": "./src/index.ts",
       "import": "./dist/index.js"
+    },
+    "./source": {
+      "types": "./dist/source.d.ts",
+      "bun": "./src/source.ts",
+      "import": "./dist/source.js"
     }
   },
   "files": [
     "dist",
-    "src",
-    "templates"
+    "src"
   ],
   "sideEffects": false,
   "engines": {
@@ -54,10 +56,8 @@
     "check": "bun run typecheck && bun test"
   },
   "devDependencies": {
-    "@keicoin/core": "^0.3.0",
     "@types/bun": "^1.3.14",
     "@types/node": "^22.10.0",
-    "kei-transaction": "^0.3.0",
     "typescript": "^5.9.0"
   }
 }

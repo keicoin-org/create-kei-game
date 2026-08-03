@@ -344,6 +344,11 @@ async function writeBlank(
     deps.path,
   )
 
+  const info = await deps.fs.stat(directory)
+  if (info && !info.isDirectory) {
+    fail(`${directory} is a file, not a directory. Pick a different project name or --into destination.`)
+  }
+
   const entries = await deps.fs.readdir(directory)
   if (entries) {
     const blocking = blockingEntries([...entries])
@@ -383,6 +388,11 @@ async function clone(
     deps.path,
   )
 
+  const info = await deps.fs.stat(directory)
+  if (info && !info.isDirectory) {
+    fail(`${directory} is a file, not a directory. Pick a different project name or --into destination.`)
+  }
+
   // git wants the destination empty and this does not empty it for git. Saying
   // so is better than a --force that quietly means `rm -rf`, which is what
   // somebody reading the flag would have to assume it did.
@@ -394,7 +404,10 @@ async function clone(
   }
 
   const base = deps.path.resolve(request.baseDirectory)
-  await deps.fs.mkdir(base)
+  // `git clone URL parent/child` creates `child`, but not a missing `parent`.
+  // Make only the parent: precreating the destination itself changes git's
+  // empty-directory checks and would make the no-overwrite rule harder to see.
+  await deps.fs.mkdir(deps.path.dirname(directory))
 
   // `--` so that nothing after it can be read as an option, argv so that
   // nothing in it can be read as shell.
