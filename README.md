@@ -1,132 +1,146 @@
-# create-kei-game
+# Create Kei Game
 
-The harness for building Kei games. This repository is where it is developed and
-released from; it is no longer a package inside another repository.
+Create Kei Game is the standalone harness for starting a Kei game project. It
+can prepare a blank workspace, clone a Kei example, use a local project in
+place, or clone a GitHub or GitLab repository. Human onboarding and a strict,
+prompt-free agent interface both produce the same validated project plan.
 
-**Today it prepares the project and stops.** It asks what the project is called
-and where it starts from, puts that on disk, and exits. That is the whole of the
-current behaviour, and everything below describes it.
+> **Current boundary:** the harness validates the source, provider settings,
+> credential environment reference, model ID, and game brief, then prepares the
+> project and stops. The model/tool loop, Kei terminal UI, and persisted workflow
+> do not exist yet. A reported `launch: "pending"` does not mean a model ran.
 
-**What it does not do yet:** choose an AI provider, hold any credentials, or run
-the Kei terminal interface that will build the game with you. Those are later
-work in M9. Nothing in this README describes unreleased work except this
-paragraph.
+> **Unpublished draft:** this branch is not the package currently served by npm.
+> Until this harness is released, run the checkout with Bun as shown below. Do
+> not use `npm create kei-game` or `npx create-kei-game` to test this draft; those
+> commands currently fetch the older published package.
+
+## Start here
+
+For example, set an OpenAI credential in your environment, run the onboarding
+flow, and choose `openai` when asked for the provider:
 
 ```sh
-npm create kei-game
+export OPENAI_API_KEY='replace-with-provider-api-key'
+bun run src/index.ts --
 ```
+
+```powershell
+$env:OPENAI_API_KEY = 'replace-with-provider-api-key'
+bun run src/index.ts --
+```
+
+The questions follow one predictable order: project name, source, provider,
+exact model ID, API-key environment-variable name, any provider-specific
+transport settings, then the game brief. See [Human onboarding](docs/onboarding.md)
+for provider and source details.
+
+To supply every answer without prompts:
 
 ```sh
-npm create kei-game my-game -- --template button
-npm create kei-game my-game -- --source repository --from https://github.com/you/your-game.git
-bun create kei-game my-game --source local --from ../a-project-i-already-have
+bun run src/index.ts -- "Tiny Quest" --source blank --provider openai \
+  --model provider-model-id --api-key-env OPENAI_API_KEY \
+  --brief "Build a small cooperative puzzle game."
 ```
 
-## Where a project starts from
+Automation should use `--agent`, not `--yes`:
 
-Four answers, and only four.
+```sh
+bun run src/index.ts -- "Tiny Quest" --agent --json --source blank \
+  --provider openai --model provider-model-id \
+  --api-key-env OPENAI_API_KEY \
+  --brief "Build a small cooperative puzzle game." --no-launch
+```
 
-| | |
+Agent mode never prompts and emits one JSON value when `--json` is present. See
+[Agent mode](docs/agent-mode.md) for config files, stdin, precedence, result
+shapes, and failure handling.
+
+## Choose a starting point
+
+| Source | What happens |
 |---|---|
-| **`blank`** | An empty workspace: `package.json`, `README.md`, `.gitignore`, `src/main.ts`. No renderer, no server, no dependencies, and nothing to delete first. The default. |
-| **`template`** | One of the three games below, cloned from its own repository. |
-| **`local`** | A project already on this disk. Used where it lies, and never written to. |
-| **`repository`** | A GitHub or GitLab repository, cloned over `https`. |
+| `blank` | Writes `package.json`, `README.md`, `.gitignore`, and `src/main.ts`. It adds no renderer, server, currency, or dependencies. |
+| `template` | Clones one of the three Kei examples below from its repository. |
+| `local` | Uses an existing directory in place and writes nothing to it. |
+| `repository` | Clones an HTTPS GitHub or GitLab repository. |
 
-`template` and `repository` need `git` and a network. `blank` and `local` need
-neither.
+The available templates are `button`, `world-of-wonder`, and
+`carpet-markets`. There is no bundled template archive; template and repository
+sources require Git and network access.
 
-## The three templates
+```sh
+bun run src/index.ts -- "Shop Game" --template button
+bun run src/index.ts -- "RPG" --template world-of-wonder
+bun run src/index.ts -- "Market" --template carpet-markets
+bun run src/index.ts -- "Existing" --source local --from ../existing-game
+bun run src/index.ts -- "Imported" --source repository \
+  --from https://github.com/example/example-game.git
+```
 
-| | |
+## Source-only preparation
+
+`--yes` preserves the earlier source-only workflow. It takes source defaults,
+asks nothing, prepares the source, and does not collect provider, model, or
+brief settings.
+
+```sh
+bun run src/index.ts -- "Empty Game" --source blank --yes
+```
+
+`--yes` and `--agent` are intentionally different and cannot be combined.
+
+## Command reference
+
+Run `bun run src/index.ts -- --help` for the authoritative option list in this
+checkout. After this harness is released, the installed equivalent will be
+`npx create-kei-game --help`.
+
+| Option | Purpose |
 |---|---|
-| **`button`** | One button, one currency, one item. The small one, and the one to read first. |
-| **`world-of-wonder`** | A multiplayer 3D RPG whose gold and items are on the chain — Babylon.js and Colyseus, with movement, combat, quests, a navmesh, a vendor, and a bag. |
-| **`carpet-markets`** | A coin launchpad where whether a coin can be rugged is not a promise but the deed's transfer policy, chosen at launch and enforced by consensus. |
+| `--source <kind>` | `blank`, `template`, `local`, or `repository` |
+| `--template <name>` | `button`, `world-of-wonder`, or `carpet-markets`; implies a template source outside agent-config merging |
+| `--from <path\|url>` | Local path or HTTPS GitHub/GitLab repository URL |
+| `--into <directory>` | Destination; defaults to the project slug in the current directory |
+| `--force` | For a blank source only, overwrite the four generated filenames without deleting anything else |
+| `--yes`, `-y` | Prompt-free source-only preparation |
+| `--agent` | Hard no-prompt automation mode |
+| `--agent-config <path\|->` | Read an agent JSON object from a file or bounded stdin |
+| `--json` | Emit exactly one JSON result or error in agent mode |
+| `--provider <id>` | `anthropic`, `openai`, `zai`, `qwen`, `deepseek`, `openrouter`, or `custom` |
+| `--model <id>` | Exact provider model ID; there is no default |
+| `--api-key-env <name>` | Name of an inherited environment variable, never the key value |
+| `--base-url <url>` | HTTPS endpoint override; required for Qwen and custom providers |
+| `--protocol <name>` | `messages`, `responses`, or `chat_completions` |
+| `--brief <text>` | Nonblank description of the game |
+| `--no-launch` | Record launch as disabled instead of pending |
+| `--help`, `-h` | Show CLI help |
+| `--version`, `-v` | Show the package version |
 
-Each lives in its own repository and is cloned when you ask for one. None of them
-is packaged inside this command: a 30MB tarball of `.glb` models has no business
-inside something most people run to get an empty directory with the lights on.
+## Safety notes
 
-## Options
+- Config accepts an environment-variable **name** such as `OPENAI_API_KEY`, not
+  a credential value. Secret-looking fields are rejected recursively.
+- Credential presence and source/provider invariants are checked before the
+  harness creates or clones a destination.
+- Repository URLs are restricted to credential-free HTTPS GitHub and GitLab
+  URLs. Git receives an argv array with `shell: false`.
+- `--force` never empties a directory and never applies to clones.
 
-| Option | |
-|---|---|
-| `--source <kind>` | `blank`, `template`, `local`, or `repository`. Default: `blank` |
-| `--template <name>` | `button`, `world-of-wonder`, or `carpet-markets`. Implies `--source template`. |
-| `--from <path\|url>` | The path for `local`, the `https` URL for `repository`. |
-| `--into <directory>` | Where it lands. Default: the project name, in the current directory. |
-| `--force` | Write a blank workspace into a directory that has files in it. Overwrites files of the same name, deletes nothing, and does not apply to a clone. |
-| `--yes`, `-y` | Take the defaults and ask nothing. For CI and agents. |
-| `--help`, `-h` | The above. |
-| `--version`, `-v` | Print the version and exit. |
+## Develop the harness
 
-Combinations that contradict each other are refused with a sentence rather than
-resolved by guessing: `--template` belongs to `--source template` and nowhere
-else, `--from` belongs to `local` and `repository` and nowhere else, and a source
-that needs a detail will not run without it — including under `--yes`.
-
-## Two prompts, and no more
-
-Every question a harness asks is a decision you have to make before you have any
-information with which to make it. So it asks two, in this order:
-
-1. **Project name.** It becomes the directory: `My Game` → `my-game/`.
-2. **Where it starts from.** One of the four above — and then, only if that
-   answer needs one, the single detail it implies: which template, which path,
-   which URL.
-
-There is no currency question. A blank workspace has none, and the games that do
-have one declare it in their own source, which is where it belongs.
-
-Anything typable at a prompt is a flag, so nothing here needs a terminal. With
-nothing attached to the input — CI, a pipe, an agent — an incomplete command
-fails immediately and says which flags would have answered it. It never hangs and
-never guesses.
-
-## Cloning is `spawn`, never a shell
-
-A repository URL out of a prompt is handed to `spawn('git', [...], { shell:
-false })` as an argument in an array. There is no command string anywhere in the
-package for it to be interpolated into, so there is nothing for a `;` in a URL to
-do. Before that, the URL has to parse as `https://github.com/owner/name` or the
-GitLab equivalent, carry no credentials, no port, no query, and no fragment.
-
-A clone into a directory that is not empty is refused, and `--force` does not
-change that: `git` needs an empty directory and nothing here will empty one for
-it. `--force` means one thing only — write the blank workspace in alongside what
-is already there, overwriting files of the same name and deleting nothing.
-
-## It is not a framework
-
-The prepared files do not import this package, do not depend on it, and do not
-know it exists. Delete `create-kei-game` from your machine and the project is
-unchanged: it remains yours to inspect, edit, build, and run as it is.
-
-This package installs nothing of its own, either. It is a program that writes
-four files or runs one `git clone`, and the first thing you wait for is your
-game's dependencies.
-
-## Working on this repository
-
-Bun 1.3.0, or Node >= 20 for the published binary.
+Use Bun 1.3.0, or Node.js 20 or later for the built CLI.
 
 ```sh
 bun install
-bun run typecheck   # tsc --build, then the tests' own type-check
+bun run typecheck
 bun test
-bun run build       # emits dist/
-bun run check       # typecheck + test
+bun run build
+bun run check
 ```
 
-`bun run clean` removes the build output.
-
-The whole of the source logic — which sources exist, what each one means, what
-is refused — is in `src/source.ts`, which imports nothing from Node. The
-filesystem, the path rules, and `git` arrive as arguments, closed over the real
-ones in `src/adapters.ts`. That is why the tests can check the exact argv handed
-to `git` without a network, a clone, or `git` installed.
-
----
+The non-executing library entry points are `create-kei-game/source`,
+`create-kei-game/providers`, `create-kei-game/harness`, and
+`create-kei-game/agent`. Importing the package root executes the CLI.
 
 Kei: <https://keicoin.org>

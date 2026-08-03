@@ -54,7 +54,8 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "docs"
   ],
   "sideEffects": false,
   "engines": {
