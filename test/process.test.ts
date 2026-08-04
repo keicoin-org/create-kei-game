@@ -52,4 +52,38 @@ describe('bounded process diagnostics', () => {
     expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(64 * 1024)
     expect(result.stderr).toBe('')
   })
+
+  test('a timeout kills the complete child process tree before it resolves', async () => {
+    const node = Bun.which('node')
+    expect(node).not.toBeNull()
+    if (node === null) throw new Error('Node.js executable is unavailable')
+
+    const source = [
+      "const {spawn}=require('node:child_process')",
+      "const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'})",
+      "process.stdout.write(JSON.stringify({parent:process.pid,child:child.pid})+'\\n')",
+      'setInterval(()=>{},1000)',
+    ].join(';')
+    const result = await runProcess(node, ['-e', source], {
+      cwd: process.cwd(),
+      timeoutMs: 500,
+    })
+
+    const diagnostic = JSON.parse(processFailureDiagnostic('timeout-tree', result)) as {
+      readonly errorCode?: unknown
+    }
+    expect(diagnostic.errorCode).toBe('ETIMEDOUT')
+    const pids = JSON.parse(result.stdout.trim()) as { readonly parent: number; readonly child: number }
+
+    const isAlive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    expect(isAlive(pids.parent)).toBeFalse()
+    expect(isAlive(pids.child)).toBeFalse()
+  })
 })

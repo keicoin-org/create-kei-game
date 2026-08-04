@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 
 import { planFiles, scaffoldWorkspace } from '../src/source.js'
 import { planFor } from './fixtures.js'
-import { runProcess } from './process.js'
+import { processFailureDiagnostic, runProcess } from './process.js'
 
 const roots: string[] = []
 const COMMAND_TIMEOUT_MS = 120_000
@@ -42,19 +42,21 @@ async function run(directory: string, phase: string, args: readonly string[]): P
     timeoutMs: COMMAND_TIMEOUT_MS,
   })
   if (result.error !== undefined || result.status !== 0) {
+    const diagnostic = JSON.parse(processFailureDiagnostic(phase, result)) as {
+      readonly errorCode?: string
+    }
     throw new SmokeFailure({
-      code: result.error?.name === 'Error' && 'code' in result.error && result.error.code === 'ETIMEDOUT'
+      code: diagnostic.errorCode === 'ETIMEDOUT'
         ? `${phase}_timed_out`
         : `${phase}_failed`,
       executable: 'bun',
       phase,
-      message: result.error?.message ?? `bun exited ${String(result.status)}`,
+      message: result.error === undefined
+        ? `bun exited ${String(result.status)}`
+        : 'bun failed before producing an exit status',
       status: result.status,
       signal: result.signal,
-      osCode:
-        result.error !== undefined && 'code' in result.error
-          ? String(result.error.code)
-          : undefined,
+      osCode: diagnostic.errorCode,
     })
   }
   return result.stdout
