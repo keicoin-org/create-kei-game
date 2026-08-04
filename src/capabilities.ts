@@ -706,7 +706,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
       'The server-authored action event slice, so contact feedback presents confirmed facts rather than client timers.',
       'A reviewed medium-profile capture whose recipe and source hashes match the generated project.',
     ],
-    tools: ['kei-mmo/polish/recipe.json', 'kei-mmo/polish/sources.json', 'node kei-mmo/polish/check.mjs'],
+    tools: ['kei-mmo/polish/recipe.json', 'kei-mmo/content/sources.json', 'node kei-mmo/polish/check.mjs'],
     methods: [
       { call: "recipe.actions.find((action) => action.kind === 'strike')", does: 'Resolves timing by semantic action instead of scattering timers through a renderer.' },
       { call: 'createImageBitmap(admittedAtlas)', does: 'Loads only atlas bytes admitted by the source manifest and hash check.' },
@@ -734,7 +734,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
       'The server-authored action event slice, so contact feedback presents confirmed facts rather than client timers.',
       'A reviewed medium-profile capture whose recipe and source hashes match the generated project.',
     ],
-    tools: ['kei-mmo/polish/recipe.json', 'kei-mmo/polish/sources.json', 'node kei-mmo/polish/check.mjs'],
+    tools: ['kei-mmo/polish/recipe.json', 'kei-mmo/content/sources.json', 'node kei-mmo/polish/check.mjs'],
     methods: [
       { call: "recipe.actions.find((action) => action.kind === 'strike')", does: 'Resolves timing by semantic action instead of scattering timers through a renderer.' },
       { call: 'LoadAssetContainerAsync(admittedModel, scene)', does: 'Loads only rigged model bytes admitted by the source manifest and hash check.' },

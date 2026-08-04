@@ -1,52 +1,59 @@
 # First-encounter polish contract
 
-Issue #17 is intentionally split at the asset boundary. This first slice does
-not ship art, audio, a presentation renderer, or capture evidence. It gives a
-fresh 2D or 3D scaffold a versioned contract that those later slices must
-satisfy without weakening the existing authority, persistence, or Kei custody
-proofs.
+Issue #17 is split at the asset boundary. This slice ships no art, audio,
+presentation renderer, capture, or criterion-9 claim. It gives every fresh 2D
+and 3D scaffold an exact contract that later asset and presentation work must
+satisfy without weakening authority, persistence, or Kei custody proofs.
 
-Every blank scaffold owns `kei-mmo/polish/`:
+There is one content/source truth. `kei-mmo/content/sources.json`,
+`polish-manifest.json`, and `THIRD_PARTY_ASSETS.md` own source, admission, and
+credits. `kei-mmo/polish/` owns `recipe.json`, `style.json`, `quality.json`, and
+the dependency-free `check.mjs` presentation gate. Generated code imports no
+harness package and the checker remains complete after the harness is deleted.
 
-| File | Contract |
-|---|---|
-| `recipe.json` | Version-1 30-second route, semantic interact/strike timing, cue/effect mapping, quality profiles, and deterministic capture steps. |
-| `manifest.json` | The exact asset roles required by that dimension. These are requirements, not placeholder assets. |
-| `sources.json` | Source admission records. It starts empty because no provider bytes have been selected in this slice. |
-| `style.json` | The resolved style profile whose exact bytes are bound by `styleProfileHash` in the recipe. |
-| `quality.json` | A separately inspectable copy of the low/medium/high profiles; the check requires an exact match with the recipe. |
-| `THIRD_PARTY_ASSETS.md` | The future licence inventory. It currently says that nothing is admitted. |
-| `check.mjs` | A dependency-free, project-owned check. It does not import or locate the harness. |
+## Authoritative encounter
 
-## Defensive records
+Recipe V1 describes a 25-35 second route with exact interact and strike phase
+timings. Its server-authored records carry monotonically ticked event ids,
+actor, target, action kind, outcome, and contact truth. The capture route must,
+in order, show local and labelled scripted-remote connection, approach,
+accepted interaction, accepted strike/contact, remote observation of that same
+event, refusal, cooldown, recovery, and reset.
 
-The harness parser accepts only recipe version 1 and exact record keys. The
-route must last 25–35 seconds. Action milestones are strictly ordered from
-anticipation through contact and recovery, cooldown cannot finish before
-recovery, action and cue ids are unique, and capture steps are ordered and
-refer to declared actions.
+Every semantic event has audible, visible, and HUD feedback. Reduced-motion
+keeps equivalent visible/HUD meaning with zero camera impulse. Low, medium, and
+high profiles degrade monotonically and declare 30/60 Hz frame bounds on a
+named reference device. Per-file, role, visual, audio, and aggregate byte
+budgets are authoritative inputs to admission.
 
-Quality is degradable only in the cheap direction: a lower tier cannot demand
-more particles, voices, camera impulse, shadows, or post-processing than a
-higher tier. Timing and semantic feedback do not disappear at low quality.
+## Source and filesystem admission
 
-Each admitted source must have a canonical credential-free HTTPS URL without a
-query or fragment, a provider asset version, acquisition mode and UTC time, a
-source SHA-256, an exact licence id/reference plus a safe retained licence-file
-path, attribution, a redistribution policy, and one or more safe processed
-output paths with their own SHA-256 values. Absolute paths, traversal, runtime
-URLs, duplicate/case-colliding outputs, missing hashes, and missing licence
-facts are refused.
+Provider ids are bound to canonical hosts and acquisition modes. V1 admits
+only packaged CC0 sources whose raw redistribution is allowed. Source bytes,
+retained licence bytes, processed outputs, and generated credits all carry
+exact sizes and SHA-256 values. Credits are regenerated deterministically from
+the canonical source registry and checked byte-for-byte.
 
-## Expected failure
+Portable paths reject absolute paths, traversal, Windows ADS and device names,
+trailing dot/space, controls, non-NFC names, and case/Unicode compatibility
+collisions. The project-owned checker resolves the real project root, rejects
+every symlink or junction component, bounds a file before allocation, reads
+through an open descriptor, and checks identity, size, timestamp, and realpath
+again after the read.
 
-Run `bun run polish:check` in a generated project. It currently exits 1 and
-emits a machine-readable `polish_assets_pending` result naming every required
-asset with no source record. That failure is the acceptance result for this
-slice. The construction renderer does not load the recipe or any pretend
-placeholder route.
+The generated checker embeds the exact authoritative recipe, requirement, and
+source validator functions used by the harness. Parser-equivalence and mutation
+tests cover forged schemas, junction escapes, provider/licence/credits/hash
+mismatches, Windows aliases, and oversized bytes for both dimensions.
 
-`polish-2d` and `polish-3d` remain `planned`. Neither may become `available`
-until admitted runtime bytes, semantic action authority, presentation code,
-capture/check evidence, and human review all exist. This contract therefore
-does not satisfy SPEC §11.3 criterion 9.
+## Expected state
+
+`bun run polish:check` intentionally exits 1 with
+`polish_assets_pending` in a fresh blank project because the canonical source
+registry is empty. A positive admitted fixture proves the same checker can emit
+`polish_ready`, but no fixture bytes ship in generated projects.
+
+`polish-2d` and `polish-3d` remain `planned`. Neither becomes `available` until
+real admitted runtime bytes, presentation code, capture/check evidence, and
+human review land. This contract does not satisfy SPEC section 11.3 criterion
+9.

@@ -1,120 +1,117 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, test } from 'bun:test'
 
-import { parsePolishRecipe, parsePolishAssetManifest, parsePolishSourceManifest, admitPolishAssets } from '../src/polish.js'
-import { polishProjectFiles, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
+import {
+  POLISH_CREDITS_PATH,
+  admitPolishAssets,
+  expectedCredits,
+  parsePolishAssetManifest,
+  parsePolishRecipe,
+  parsePolishSourceManifest,
+  portablePolishPathKey,
+  safePolishPath,
+  validatePolishRecipeDocument,
+  type PolishSourceManifestV1,
+} from '../src/polish.js'
+import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
 
-function generatedRecipe(): Record<string, any> {
-  const plan = planFor({ name: 'Polish Contract', dimension: '2d', gameplay: 'Players meet a training sentinel.' })
-  return JSON.parse(polishProjectFiles(plan).find(({ path }) => path === POLISH_RECIPE_PATH)!.contents)
+const hash = (value: string) => createHash('sha256').update(value).digest('hex')
+function generated(dimension: '2d' | '3d' = '2d') {
+  const plan = planFor({ name: 'Polish Contract', dimension, gameplay: 'Players meet a training sentinel.' })
+  const files = polishProjectFiles(plan)
+  return {
+    recipe: JSON.parse(files.find(({ path }) => path === POLISH_RECIPE_PATH)!.contents),
+    manifest: JSON.parse(files.find(({ path }) => path === POLISH_ASSET_MANIFEST_PATH)!.contents),
+  }
 }
 
-function source(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function source(id = 'hero-character', overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const raw = `raw:${id}`; const licence = `CC0:${id}`; const output = `asset:${id}`
   return {
-    id: 'hero-character',
-    canonicalUrl: 'https://kenney.nl/assets/example-pack',
-    provider: 'kenney',
-    providerAssetVersion: '2026-01-15',
-    acquisitionMode: 'download',
-    acquiredAt: '2026-08-04T12:00:00.000Z',
-    sha256: 'a'.repeat(64),
-    licence: { id: 'CC0-1.0', referenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', filePath: 'assets/licenses/hero.txt' },
-    attribution: 'Kenney, CC0; attribution retained for provenance.',
-    rawRedistribution: 'allowed',
-    processedOutputs: [{ path: 'assets/polish/hero.png', sha256: 'a'.repeat(64) }],
+    id,
+    canonicalUrl: `https://kenney.nl/assets/${id}`,
+    provider: 'kenney', providerAssetVersion: '2026-01-15', acquisitionMode: 'download', acquiredAt: '2026-08-04T12:00:00.000Z',
+    sourceFile: { path: `kei-mmo/content/source-bytes/${id}.bin`, sha256: hash(raw), bytes: Buffer.byteLength(raw), packaged: true },
+    licence: { id: 'CC0-1.0', referenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', filePath: `kei-mmo/content/licenses/${id}.txt`, sha256: hash(licence), bytes: Buffer.byteLength(licence) },
+    attribution: `Kenney ${id}, CC0`, rawRedistribution: 'allowed',
+    processedOutputs: [{ path: `assets/polish/${id}.png`, sha256: hash(output), bytes: Buffer.byteLength(output) }],
     ...overrides,
   }
 }
 
-describe('PolishRecipeV1', () => {
-  test('parses the generated semantic encounter exactly', () => {
-    const parsed = parsePolishRecipe(generatedRecipe())
-    expect(parsed?.version).toBe(1)
-    expect(parsed?.actions.map(({ kind }) => kind)).toEqual(['interact', 'strike'])
-    expect(parsed?.qualityProfiles.medium.postProcessing).toEqual(['fxaa', 'bloom'])
-  })
+function sources(records: Record<string, unknown>[]) {
+  const provisional = { version: 1, credits: { path: POLISH_CREDITS_PATH, sha256: 'a'.repeat(64), bytes: 1 }, assets: records }
+  const credits = expectedCredits(provisional as unknown as PolishSourceManifestV1)
+  return { value: { ...provisional, credits: { path: POLISH_CREDITS_PATH, sha256: hash(credits), bytes: Buffer.byteLength(credits) } }, credits }
+}
 
-  test('refuses foreign versions, unknown fields, and invalid timing', () => {
-    const original = generatedRecipe()
-    expect(parsePolishRecipe({ ...original, version: 2 })).toBeNull()
-    expect(parsePolishRecipe({ ...original, surprise: true })).toBeNull()
-    const actions = structuredClone(original.actions)
-    actions[0].contactMs = actions[0].anticipationMs
-    expect(parsePolishRecipe({ ...original, actions })).toBeNull()
-  })
-
-  test('refuses duplicate action ids and impossible quality degradation', () => {
-    const original = generatedRecipe()
-    const duplicate = structuredClone(original.actions)
-    duplicate[1].id = duplicate[0].id
-    expect(parsePolishRecipe({ ...original, actions: duplicate })).toBeNull()
-    expect(parsePolishRecipe({ ...original, actions: original.actions.map((action: any) => ({ ...action, kind: 'strike' })) })).toBeNull()
-    const missingEvent = structuredClone(original.actions)
-    missingEvent[0].events = missingEvent[0].events.filter((event: string) => event !== 'refusal')
-    expect(parsePolishRecipe({ ...original, actions: missingEvent })).toBeNull()
-
-    const qualityProfiles = structuredClone(original.qualityProfiles)
-    qualityProfiles.low.maxParticles = qualityProfiles.high.maxParticles + 1
-    expect(parsePolishRecipe({ ...original, qualityProfiles })).toBeNull()
-  })
-})
-
-describe('polish source admission', () => {
-  test('refuses foreign manifests and duplicate ids', () => {
-    expect(parsePolishSourceManifest({ version: 2, assets: [] })).toBeNull()
-    expect(parsePolishSourceManifest({ version: 1, assets: [source(), source()] })).toBeNull()
-    expect(parsePolishAssetManifest({ version: 1, recipeId: 'first-encounter', assets: [
-      { id: 'hero-character', role: 'character', kind: 'image' },
-      { id: 'hero-character', role: 'character', kind: 'image' },
-    ] })).toBeNull()
+describe('PolishRecipeV1 authority and presentation contract', () => {
+  test.each(['2d', '3d'] as const)('parses the complete %s first-encounter timeline', (dimension) => {
+    const parsed = parsePolishRecipe(generated(dimension).recipe)
+    expect(parsed?.authority.events.map(({ outcome }) => outcome)).toEqual(['accepted', 'accepted', 'refused', 'cooldown', 'recovered'])
+    expect(parsed?.capture.steps.map(({ kind }) => kind)).toEqual(['connect-local', 'connect-scripted-remote', 'approach', 'interact', 'strike', 'remote-observe', 'refusal', 'cooldown', 'recovery', 'reset'])
+    expect(parsed?.effects.recovery).toMatchObject({ cue: 'recovery', visual: 'status', hud: 'recovery', reducedMotion: { cameraImpulse: 0 } })
   })
 
   test.each([
-    ['traversal', source({ processedOutputs: [{ path: '../hero.png', sha256: 'a'.repeat(64) }] })],
-    ['absolute path', source({ processedOutputs: [{ path: 'C:/hero.png', sha256: 'a'.repeat(64) }] })],
-    ['hotlink path', source({ processedOutputs: [{ path: 'https://cdn.example/hero.png', sha256: 'a'.repeat(64) }] })],
-    ['data URL path', source({ processedOutputs: [{ path: 'data:image/png;base64,AAAA', sha256: 'a'.repeat(64) }] })],
-    ['insecure source URL', source({ canonicalUrl: 'http://kenney.nl/assets/example-pack' })],
-    ['credential URL', source({ canonicalUrl: 'https://token@kenney.nl/assets/example-pack' })],
-    ['unpinned URL', source({ canonicalUrl: 'https://kenney.nl/assets/example-pack?latest=1' })],
-    ['missing hash', source({ sha256: '' })],
-    ['placeholder zero hash', source({ sha256: '0'.repeat(64) })],
-    ['unpinned provider version', source({ providerAssetVersion: 'latest' })],
-    ['impossible acquisition date', source({ acquiredAt: '2026-02-31T12:00:00.000Z' })],
-    ['missing processed hash', source({ processedOutputs: [{ path: 'assets/polish/hero.png', sha256: '' }] })],
-    ['missing licence id', source({ licence: { id: '', referenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', filePath: 'assets/licenses/hero.txt' } })],
-    ['unsafe licence path', source({ licence: { id: 'CC0-1.0', referenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', filePath: '../license.txt' } })],
-  ])('refuses %s', (_name, invalid) => {
-    expect(parsePolishSourceManifest({ version: 1, assets: [invalid] })).toBeNull()
+    ['foreign field', (recipe: any) => { recipe.surprise = true }],
+    ['unknown event', (recipe: any) => { recipe.actions[0].events[0] = 'execute' }],
+    ['silent contact', (recipe: any) => { recipe.effects.contact.cue = null }],
+    ['feedback-erasing low tier', (recipe: any) => { recipe.qualityProfiles.low.maxParticles = recipe.qualityProfiles.high.maxParticles + 1 }],
+    ['nonmonotonic server tick', (recipe: any) => { recipe.authority.events[1].tick = recipe.authority.events[0].tick }],
+    ['forged contact outcome', (recipe: any) => { recipe.authority.events[2].contact = true }],
+    ['missing remote proof', (recipe: any) => { recipe.capture.steps = recipe.capture.steps.filter((step: any) => step.kind !== 'remote-observe') }],
+    ['capture/event mismatch', (recipe: any) => { recipe.capture.steps[3].expectedOutcome = 'refused' }],
+    ['anonymous device', (recipe: any) => { recipe.budgets.referenceDevice = '' }],
+  ])('rejects %s identically through the authoritative validator', (_name, mutate) => {
+    const recipe = structuredClone(generated().recipe); mutate(recipe)
+    expect(validatePolishRecipeDocument(recipe).length).toBeGreaterThan(0)
+    expect(parsePolishRecipe(recipe)).toBeNull()
+  })
+})
+
+describe('portable path and provenance contract', () => {
+  test.each(['assets/hero.png:zone', 'assets/CON.png', 'assets/hero. ', 'assets/e\u0301.png', 'assets\\hero.png', '../hero.png', 'C:/hero.png'])('refuses Windows-unsafe or aliased path %s', (path) => {
+    expect(safePolishPath(path)).toBeFalse()
   })
 
-  test('refuses duplicate processed output paths even across records', () => {
-    expect(parsePolishSourceManifest({ version: 1, assets: [
-      source(),
-      source({ id: 'training-sentinel', processedOutputs: [{ path: 'ASSETS/POLISH/HERO.PNG', sha256: 'b'.repeat(64) }] }),
-    ] })).toBeNull()
+  test('uses case and Unicode compatibility folding for collision detection', () => {
+    expect(portablePolishPathKey('Assets/HERO.png')).toBe(portablePolishPathKey('assets/hero.png'))
+    expect(portablePolishPathKey('assets/\uff21.png')).toBe(portablePolishPathKey('assets/a.png'))
   })
 
-  test('reports an explicit pending state until every requirement has a source', () => {
-    const requirements = parsePolishAssetManifest({ version: 1, recipeId: 'first-encounter', assets: [
-      { id: 'hero-character', role: 'character', kind: 'image' },
-      { id: 'impact', role: 'audio', kind: 'audio' },
-    ] })!
-    const sources = parsePolishSourceManifest({ version: 1, assets: [source()] })!
-    const report = admitPolishAssets(requirements, sources, () => ({ size: 10, sha256: 'a'.repeat(64) }))
-    expect(report.ok).toBeFalse()
-    expect(report.code).toBe('polish_assets_pending')
-    expect(report.problems).toContainEqual(expect.objectContaining({ code: 'missing_source', id: 'impact' }))
+  test.each([
+    ['spoofed Kenney host', { canonicalUrl: 'https://evil.example/assets/hero-character' }],
+    ['wrong Poly Haven acquisition', { provider: 'poly-haven', canonicalUrl: 'https://polyhaven.com/a/hero', acquisitionMode: 'download' }],
+    ['unbound licence host', { licence: { id: 'CC0-1.0', referenceUrl: 'https://evil.example/licence', filePath: 'kei-mmo/content/licenses/hero.txt', sha256: 'a'.repeat(64), bytes: 10 } }],
+    ['unverifiable source bytes', { sourceFile: { path: 'kei-mmo/content/source.bin', sha256: 'a'.repeat(64), bytes: 10, packaged: false } }],
+    ['forbidden redistribution', { rawRedistribution: 'forbidden' }],
+    ['Windows ADS', { processedOutputs: [{ path: 'assets/hero.png:zone', sha256: 'a'.repeat(64), bytes: 10 }] }],
+  ])('refuses %s', (_name, override) => {
+    expect(parsePolishSourceManifest(sources([{ ...source(), ...override }]).value)).toBeNull()
   })
 
-  test('refuses missing and hash-mismatched processed bytes', () => {
-    const requirements = parsePolishAssetManifest({ version: 1, recipeId: 'first-encounter', assets: [
-      { id: 'hero-character', role: 'character', kind: 'image' },
-    ] })!
-    const sources = parsePolishSourceManifest({ version: 1, assets: [source()] })!
-    expect(admitPolishAssets(requirements, sources, () => null).code).toBe('polish_assets_invalid')
-    expect(admitPolishAssets(requirements, sources, () => ({ size: 10, sha256: 'a'.repeat(64), isSymlink: true })).problems[0]?.code).toBe('symlink_refused')
-    const mismatch = admitPolishAssets(requirements, sources, () => ({ size: 10, sha256: 'b'.repeat(64) }))
-    expect(mismatch.problems[0]?.code).toBe('hash_mismatch')
+  test('refuses cross-record case and Unicode path collisions', () => {
+    const second = source('training-sentinel', { processedOutputs: [{ path: 'ASSETS/POLISH/HERO-CHARACTER.PNG', sha256: 'b'.repeat(64), bytes: 10 }] })
+    const first = source('hero-character', { processedOutputs: [{ path: 'assets/polish/hero-character.png', sha256: 'a'.repeat(64), bytes: 10 }] })
+    expect(parsePolishSourceManifest(sources([first, second]).value)).toBeNull()
+  })
+
+  test('checks source, licence, credits, output bytes and per-file budget', () => {
+    const { manifest } = generated()
+    manifest.assets = [manifest.assets[0]]
+    const parsedManifest = parsePolishAssetManifest(manifest)!
+    const registry = sources([source()]); const parsedSources = parsePolishSourceManifest(registry.value)!
+    const record = parsedSources.assets[0]!
+    const files = new Map([
+      [parsedSources.credits.path, { size: parsedSources.credits.bytes, sha256: parsedSources.credits.sha256 }],
+      [record.sourceFile.path, { size: record.sourceFile.bytes, sha256: record.sourceFile.sha256 }],
+      [record.licence.filePath, { size: record.licence.bytes, sha256: record.licence.sha256 }],
+      [record.processedOutputs[0]!.path, { size: record.processedOutputs[0]!.bytes, sha256: record.processedOutputs[0]!.sha256 }],
+    ])
+    expect(admitPolishAssets(parsedManifest, parsedSources, (path) => files.get(path) ?? null).code).toBe('polish_ready')
+    files.set(record.licence.filePath, { size: record.licence.bytes, sha256: 'b'.repeat(64) })
+    expect(admitPolishAssets(parsedManifest, parsedSources, (path) => files.get(path) ?? null).problems).toContainEqual(expect.objectContaining({ code: 'hash_mismatch' }))
   })
 })

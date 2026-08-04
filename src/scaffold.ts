@@ -292,7 +292,8 @@ your repository, not a contract.
 | \`${DEV_SERVER_PATH}\` | The Bun WebSocket and static development server. |
 | \`${BUILD_SCRIPT_PATH}\` | The build. Bundles the client and copies \`static/\`. |
 | \`${PAGE_PATH}\` | The page and the canvas the client takes over. |
-| \`kei-mmo/polish/\` | Versioned encounter and source-admission contracts. The check remains blocked until real licensed assets are admitted. |
+| \`kei-mmo/polish/\` | Versioned encounter, quality, and presentation-check contracts. The check remains blocked until real licensed assets are admitted. |
+| \`kei-mmo/content/sources.json\` | Canonical source, licence, redistribution, hash, and byte records shared by content admission and polish. |
 
 Planned renderer direction: ${plan.engine.renderer}
 

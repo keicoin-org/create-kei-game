@@ -21,15 +21,22 @@ export const SEMANTIC_CUES = [
   'impact',
   'refusal',
   'success',
+  'cooldown',
+  'recovery',
 ] as const
 export type SemanticCue = (typeof SEMANTIC_CUES)[number]
 
 export interface EffectRecipe {
   readonly event: SemanticEvent
-  readonly cue: SemanticCue | null
-  readonly visual: 'telegraph' | 'contact' | 'status' | 'none'
+  readonly cue: SemanticCue
+  readonly visual: 'telegraph' | 'contact' | 'status'
   readonly cameraImpulse: number
-  readonly hud: 'action' | 'success' | 'refusal' | 'cooldown' | 'none'
+  readonly hud: 'action' | 'success' | 'refusal' | 'cooldown' | 'recovery'
+  readonly reducedMotion: {
+    readonly visual: 'telegraph' | 'contact' | 'status'
+    readonly hud: 'action' | 'success' | 'refusal' | 'cooldown' | 'recovery'
+    readonly cameraImpulse: 0
+  }
 }
 
 export interface QualityProfile {
@@ -39,6 +46,10 @@ export interface QualityProfile {
   readonly postProcessing: readonly ('fxaa' | 'bloom' | 'ssao')[]
   readonly shadows: boolean
   readonly cameraImpulseScale: number
+  readonly targetFps: 30 | 60
+  readonly p95FrameMs: number
+  readonly p99FrameMs: number
+  readonly maxLongFrameMs: number
 }
 
 const POST_PROCESSING = new Set(['fxaa', 'bloom', 'ssao'])
@@ -54,23 +65,32 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 }
 
 export function parseEffectRecipe(value: unknown, event: SemanticEvent): EffectRecipe | null {
-  if (!record(value) || !exactKeys(value, ['event', 'cue', 'visual', 'cameraImpulse', 'hud'])) return null
+  if (!record(value) || !exactKeys(value, ['event', 'cue', 'visual', 'cameraImpulse', 'hud', 'reducedMotion'])) return null
   if (value.event !== event) return null
-  if (value.cue !== null && !SEMANTIC_CUES.includes(value.cue as SemanticCue)) return null
-  if (!['telegraph', 'contact', 'status', 'none'].includes(String(value.visual))) return null
-  if (!['action', 'success', 'refusal', 'cooldown', 'none'].includes(String(value.hud))) return null
+  if (!SEMANTIC_CUES.includes(value.cue as SemanticCue)) return null
+  if (!['telegraph', 'contact', 'status'].includes(String(value.visual))) return null
+  if (!['action', 'success', 'refusal', 'cooldown', 'recovery'].includes(String(value.hud))) return null
   if (typeof value.cameraImpulse !== 'number' || !Number.isFinite(value.cameraImpulse) || value.cameraImpulse < 0 || value.cameraImpulse > 1) return null
+  if (!record(value.reducedMotion) || !exactKeys(value.reducedMotion, ['visual', 'hud', 'cameraImpulse'])) return null
+  if (!['telegraph', 'contact', 'status'].includes(String(value.reducedMotion.visual))) return null
+  if (!['action', 'success', 'refusal', 'cooldown', 'recovery'].includes(String(value.reducedMotion.hud))) return null
+  if (value.reducedMotion.cameraImpulse !== 0) return null
   return Object.freeze({
     event,
-    cue: value.cue as SemanticCue | null,
+    cue: value.cue as SemanticCue,
     visual: value.visual as EffectRecipe['visual'],
     cameraImpulse: value.cameraImpulse,
     hud: value.hud as EffectRecipe['hud'],
+    reducedMotion: Object.freeze({
+      visual: value.reducedMotion.visual as EffectRecipe['reducedMotion']['visual'],
+      hud: value.reducedMotion.hud as EffectRecipe['reducedMotion']['hud'],
+      cameraImpulse: 0,
+    }),
   })
 }
 
 export function parseQualityProfile(value: unknown, tier: QualityTier): QualityProfile | null {
-  if (!record(value) || !exactKeys(value, ['tier', 'maxParticles', 'maxVoices', 'postProcessing', 'shadows', 'cameraImpulseScale'])) return null
+  if (!record(value) || !exactKeys(value, ['tier', 'maxParticles', 'maxVoices', 'postProcessing', 'shadows', 'cameraImpulseScale', 'targetFps', 'p95FrameMs', 'p99FrameMs', 'maxLongFrameMs'])) return null
   if (value.tier !== tier) return null
   if (!Number.isInteger(value.maxParticles) || (value.maxParticles as number) < 0 || (value.maxParticles as number) > 512) return null
   if (!Number.isInteger(value.maxVoices) || (value.maxVoices as number) < 1 || (value.maxVoices as number) > 64) return null
@@ -78,6 +98,11 @@ export function parseQualityProfile(value: unknown, tier: QualityTier): QualityP
   if (new Set(value.postProcessing).size !== value.postProcessing.length) return null
   if (typeof value.shadows !== 'boolean') return null
   if (typeof value.cameraImpulseScale !== 'number' || !Number.isFinite(value.cameraImpulseScale) || value.cameraImpulseScale < 0 || value.cameraImpulseScale > 1) return null
+  if (![30, 60].includes(value.targetFps as number)) return null
+  for (const field of ['p95FrameMs', 'p99FrameMs', 'maxLongFrameMs'] as const) {
+    if (typeof value[field] !== 'number' || !Number.isFinite(value[field]) || (value[field] as number) <= 0 || (value[field] as number) > 100) return null
+  }
+  if ((value.p95FrameMs as number) > (value.p99FrameMs as number) || (value.p99FrameMs as number) > (value.maxLongFrameMs as number)) return null
   return Object.freeze({
     tier,
     maxParticles: value.maxParticles as number,
@@ -85,6 +110,10 @@ export function parseQualityProfile(value: unknown, tier: QualityTier): QualityP
     postProcessing: Object.freeze([...(value.postProcessing as QualityProfile['postProcessing'])]),
     shadows: value.shadows,
     cameraImpulseScale: value.cameraImpulseScale,
+    targetFps: value.targetFps as 30 | 60,
+    p95FrameMs: value.p95FrameMs as number,
+    p99FrameMs: value.p99FrameMs as number,
+    maxLongFrameMs: value.maxLongFrameMs as number,
   })
 }
 
@@ -98,6 +127,8 @@ export function qualityDegradesSafely(profiles: Readonly<Record<QualityTier, Qua
     if (lower.cameraImpulseScale > higher.cameraImpulseScale) return false
     if (lower.shadows && !higher.shadows) return false
     if (lower.postProcessing.some((effect) => !higher.postProcessing.includes(effect))) return false
+    if (lower.targetFps > higher.targetFps) return false
+    if (higher.p95FrameMs > lower.p95FrameMs || higher.p99FrameMs > lower.p99FrameMs || higher.maxLongFrameMs > lower.maxLongFrameMs) return false
   }
   return true
 }
