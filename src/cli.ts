@@ -315,11 +315,15 @@ export function helpText(version: string): string {
   project is called, where it starts from, and which model provider drives it,
   puts that on disk, and runs one bounded model-and-tool turn against it.
 
-  Usage
+  Usage, from a checkout of this repository
 
-    npm create kei-game
-    npm create kei-game <project> -- --template button
-    npm create kei-game <project> -- --source repository --from <url>
+    bun run src/index.ts --
+    bun run src/index.ts -- <project> --source template --template button
+    bun run src/index.ts -- <project> --source repository --from <url>
+
+  This harness is not published. The npm name create-kei-game still resolves to
+  the superseded 0.2.0 scaffolder that shipped from kei-transaction, so an
+  npm create invocation does not reach this program.
 
   Where a project starts from
 

@@ -173,6 +173,16 @@ describe('helpText', () => {
     }
   })
 
+  test('does not offer the npm name as the way to run this program', () => {
+    // `npm create kei-game` installs the superseded 0.2.0 scaffolder published
+    // from kei-transaction, not this harness, and keicoin.org sends readers here
+    // for the surface. The name may only appear as the disclaimer that says so.
+    const usage = help.slice(help.indexOf('Usage'), help.indexOf('Where a project starts from'))
+    expect(usage).toContain('bun run src/index.ts --')
+    expect(usage).not.toMatch(/^\s*npm create kei-game/m)
+    expect(help).toContain('does not reach this program')
+  })
+
   test('names the three templates and nothing that was deleted', () => {
     expect(help).toContain('button')
     expect(help).toContain('world-of-wonder')
