@@ -272,7 +272,8 @@ Use Bun 1.3.0, or Node.js 20 or later for the built CLI.
 ```sh
 bun install
 bun run typecheck
-bun test
+bun run test
+bun run test:generated
 bun run build
 bun run check
 ```
