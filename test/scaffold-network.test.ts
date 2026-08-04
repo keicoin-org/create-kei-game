@@ -43,7 +43,14 @@ interface PersistenceModule {
 
 interface ShardModule {
   readonly createShard: (store: CharacterStoreLike) => {
-    readonly state: { readonly tick: number; readonly players: Readonly<Record<string, Player>> }
+    readonly state: {
+      readonly tick: number
+      readonly players: Readonly<Record<string, Player>>
+      readonly encounter: {
+        readonly sentinel: { readonly interactions: number; readonly strikes: number }
+        readonly events: readonly Record<string, unknown>[]
+      }
+    }
     readonly join: (token?: string) =>
       | { readonly ok: true; readonly playerId: string; readonly resumeToken?: string }
       | { readonly ok: false; readonly code: string }
@@ -53,6 +60,10 @@ interface ShardModule {
       id: string,
       input: { readonly seq: number; readonly moveX: number; readonly moveY: number; readonly buttons: number },
     ) => void
+    readonly requestAction: (
+      id: string,
+      intent: { readonly actionVersion: 1; readonly kind: 'interact' | 'strike'; readonly targetId: 'training-sentinel' },
+    ) => { readonly ok: true } | { readonly ok: false; readonly code: string }
     readonly close: () => void
   }
 }
@@ -61,6 +72,12 @@ let protocol: ProtocolModule
 let persistence: PersistenceModule
 let shardModule: ShardModule
 let restartProof = ''
+let reducer: {
+  readonly createActionEventReducer: () => {
+    readonly reduce: (world: unknown) => readonly unknown[]
+    readonly lastEventId: () => number
+  }
+}
 
 beforeAll(async () => {
   const plan = planFor({
@@ -69,7 +86,8 @@ beforeAll(async () => {
     gameplay: 'Players meet in one shared authoritative construction room.',
   })
   const wanted = new Set([
-    'src/shared/simulation.ts', 'src/shared/protocol.ts',
+    'src/shared/actions.ts', 'src/shared/simulation.ts', 'src/shared/protocol.ts',
+    'src/client/action-events.ts',
     'src/server/persistence.ts', 'src/server/main.ts',
   ])
   for (const file of projectFiles({ slug: 'network-unit', title: 'Network Unit' }, plan)) {
@@ -82,6 +100,7 @@ beforeAll(async () => {
   protocol = await import(pathToFileURL(join(root, 'src/shared/protocol.ts')).href) as ProtocolModule
   persistence = await import(pathToFileURL(join(root, 'src/server/persistence.ts')).href) as PersistenceModule
   shardModule = await import(pathToFileURL(join(root, 'src/server/main.ts')).href) as ShardModule
+  reducer = await import(pathToFileURL(join(root, 'src/client/action-events.ts')).href) as typeof reducer
 })
 
 afterAll(() => rmSync(root, { recursive: true, force: true }))
@@ -94,8 +113,11 @@ describe('generated game protocol v2', () => {
     expect(protocol.decodeClientMessage('{"v":2,"type":"hello","resumeToken":"opaque"}')).toEqual({
       ok: true, message: { v: 2, type: 'hello', resumeToken: 'opaque' },
     })
-    expect(protocol.decodeClientMessage('{"v":2,"type":"input","seq":2,"moveX":1,"moveY":0,"buttons":1}')).toEqual({
-      ok: true, message: { v: 2, type: 'input', seq: 2, moveX: 1, moveY: 0, buttons: 1 },
+    expect(protocol.decodeClientMessage('{"v":2,"type":"input","seq":2,"moveX":1,"moveY":0,"buttons":0}')).toEqual({
+      ok: true, message: { v: 2, type: 'input', seq: 2, moveX: 1, moveY: 0, buttons: 0 },
+    })
+    expect(protocol.decodeClientMessage('{"v":2,"type":"action","seq":3,"actionVersion":1,"kind":"strike","targetId":"training-sentinel"}')).toEqual({
+      ok: true, message: { v: 2, type: 'action', seq: 3, actionVersion: 1, kind: 'strike', targetId: 'training-sentinel' },
     })
     expect(protocol.decodeClientMessage('{"v":2,"type":"hello","extra":true}')).toEqual({
       ok: false, code: 'invalid_message',
@@ -109,10 +131,16 @@ describe('generated game protocol v2', () => {
     expect(protocol.decodeClientMessage('{"v":2,"type":"input","seq":1,"moveX":2,"moveY":0,"buttons":0}')).toEqual({
       ok: false, code: 'invalid_message',
     })
+    expect(protocol.decodeClientMessage('{"v":2,"type":"input","seq":1,"moveX":0,"moveY":0,"buttons":1}')).toEqual({
+      ok: false, code: 'invalid_message',
+    })
+    expect(protocol.decodeClientMessage('{"v":2,"type":"action","seq":1,"actionVersion":1,"kind":"strike","targetId":"other"}')).toEqual({
+      ok: false, code: 'action_target_refused',
+    })
     for (const key of [
       'position', 'x', 'xp', 'level', 'progression', 'inventory', 'balance', 'balances',
       'currency', 'items', 'item', 'mint', 'transfer', 'settlement', 'settlementResult',
-      'seed', 'walletSeed', 'playerId',
+      'seed', 'wallet', 'walletSeed', 'playerId', 'damage', 'outcome', 'actorId', 'eventId',
     ]) {
       expect(protocol.decodeClientMessage(JSON.stringify({
         v: 2, type: 'input', seq: 1, moveX: 0, moveY: 0, buttons: 0, [key]: 999,
@@ -123,10 +151,43 @@ describe('generated game protocol v2', () => {
   test('accepts only exact server records including derived progression', () => {
     const valid = {
       v: 2, type: 'snapshot', ackSeq: 3,
-      world: { tick: 4, players: { player: { x: 1, y: 0, z: 2, xp: 10, level: 2 } } },
+      world: {
+        tick: 4,
+        players: { player: { x: 1, y: 0, z: 2, xp: 10, level: 2 } },
+        encounter: {
+          sentinel: { id: 'training-sentinel', x: 0, y: 0, z: 0, interactions: 1, strikes: 0 },
+          events: [{
+            actionVersion: 1, eventId: 1, tick: 3, actorId: 'player', targetId: 'training-sentinel',
+            kind: 'interact', phase: 'contact', outcome: 'applied', contact: true,
+          }],
+        },
+      },
     }
     expect(protocol.serverMessageOf(JSON.stringify(valid))).toEqual(valid)
     expect(protocol.serverMessageOf(JSON.stringify({ ...valid, world: { ...valid.world, invented: true } }))).toBeNull()
+    expect(protocol.serverMessageOf(JSON.stringify({
+      ...valid,
+      world: {
+        ...valid.world,
+        encounter: {
+          ...valid.world.encounter,
+          events: [{ ...valid.world.encounter.events[0], tick: 5 }],
+        },
+      },
+    }))).toBeNull()
+    expect(protocol.serverMessageOf(JSON.stringify({
+      ...valid,
+      world: {
+        ...valid.world,
+        encounter: {
+          ...valid.world.encounter,
+          events: [
+            valid.world.encounter.events[0],
+            { ...valid.world.encounter.events[0], eventId: 2, tick: 2 },
+          ],
+        },
+      },
+    }))).toBeNull()
     expect(protocol.serverMessageOf(JSON.stringify({
       ...valid,
       world: { tick: 4, players: { player: { ...valid.world.players.player, invented: true } } },
@@ -138,6 +199,29 @@ describe('generated game protocol v2', () => {
     expect(protocol.serverMessageOf('{"v":2,"type":"refused","code":"resume_refused"}')).toEqual({
       v: 2, type: 'refused', code: 'resume_refused',
     })
+  })
+})
+
+describe('generated semantic event reducer', () => {
+  test('emits one presentation hook per event despite duplicate and out-of-order snapshots', () => {
+    const action = reducer.createActionEventReducer()
+    const player = { x: 0, y: 0, z: 0, xp: 0, level: 1 }
+    const sentinel = { id: 'training-sentinel', x: 0, y: 0, z: 0, interactions: 0, strikes: 0 }
+    const anticipation = {
+      actionVersion: 1, eventId: 1, tick: 1, actorId: 'player', targetId: 'training-sentinel',
+      kind: 'strike', phase: 'anticipation', outcome: 'accepted', contact: false,
+    }
+    const contact = {
+      actionVersion: 1, eventId: 2, tick: 3, actorId: 'player', targetId: 'training-sentinel',
+      kind: 'strike', phase: 'contact', outcome: 'applied', contact: true,
+    }
+    const first = { tick: 1, players: { player }, encounter: { sentinel, events: [anticipation] } }
+    const later = { tick: 3, players: { player }, encounter: { sentinel, events: [anticipation, contact] } }
+    expect(action.reduce(first)).toHaveLength(1)
+    expect(action.reduce(first)).toEqual([])
+    expect(action.reduce(later)).toHaveLength(1)
+    expect(action.lastEventId()).toBe(2)
+    expect(action.reduce(first)).toEqual([])
   })
 })
 
@@ -184,7 +268,7 @@ describe('generated durable character store', () => {
 })
 
 describe('generated authoritative durable shard', () => {
-  test('moves and progresses by intent, survives disconnect, and resumes exact state', () => {
+  test('moves, authors one contact per action, refuses phase/range/cooldown, and resumes exact progression', () => {
     const path = join(root, 'shard.sqlite')
     const shard = shardModule.createShard(new persistence.CharacterStore(path))
     const joined = shard.join()
@@ -192,11 +276,49 @@ describe('generated authoritative durable shard', () => {
     const before = shard.state.players[joined.playerId]
     expect(before).toBeDefined()
 
-    shard.enqueue(joined.playerId, { seq: 1, moveX: 1, moveY: 0, buttons: 1 })
+    shard.enqueue(joined.playerId, { seq: 1, moveX: 1, moveY: 0, buttons: 0 })
     shard.advance(50)
+    expect(shard.state.players[joined.playerId]!.x).toBeGreaterThan(before!.x)
+    expect(shard.state.players[joined.playerId]).toMatchObject({ xp: 0, level: 1 })
+
+    const interact = { actionVersion: 1 as const, kind: 'interact' as const, targetId: 'training-sentinel' as const }
+    expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: true })
+    expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: false, code: 'action_busy' })
+    shard.advance(100)
+    expect(shard.state.players[joined.playerId]).toMatchObject({ xp: 10, level: 2 })
+    expect(shard.state.encounter.sentinel).toMatchObject({ interactions: 1, strikes: 0 })
+    expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: false, code: 'action_busy' })
+    shard.advance(100)
+    expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: false, code: 'action_cooldown' })
+    shard.advance(200)
+
+    const strike = { actionVersion: 1 as const, kind: 'strike' as const, targetId: 'training-sentinel' as const }
+    expect(shard.requestAction(joined.playerId, strike)).toEqual({ ok: true })
+    shard.advance(100)
     const authored = shard.state.players[joined.playerId]
-    expect(authored!.x).toBeGreaterThan(before!.x)
-    expect(authored).toMatchObject({ xp: 10, level: 2 })
+    expect(authored).toMatchObject({ xp: 20, level: 3 })
+    expect(shard.state.encounter.sentinel).toMatchObject({ interactions: 1, strikes: 1 })
+    shard.advance(250)
+    expect(shard.state.players[joined.playerId]).toEqual(authored)
+    expect(shard.state.encounter.events.map((event) => [event.eventId, event.kind, event.phase, event.contact])).toEqual([
+      [1, 'interact', 'anticipation', false],
+      [2, 'interact', 'contact', true],
+      [3, 'interact', 'recovery', false],
+      [4, 'strike', 'anticipation', false],
+      [5, 'strike', 'contact', true],
+      [6, 'strike', 'recovery', false],
+    ])
+
+    const near = shard.join()
+    const far = shard.join()
+    if (!near.ok || !far.ok) throw new Error('range fixtures were not created')
+    for (let seq = 1; seq <= 11; seq += 1) {
+      shard.enqueue(far.playerId, { seq, moveX: 1, moveY: 0, buttons: 0 })
+      shard.advance(50)
+    }
+    expect(shard.requestAction(far.playerId, interact)).toEqual({ ok: false, code: 'action_too_far' })
+    expect(shard.state.players[far.playerId]).toMatchObject({ xp: 0, level: 1 })
+    expect(shard.state.encounter.sentinel).toMatchObject({ interactions: 1, strikes: 1 })
 
     shard.leave(joined.playerId)
     expect(shard.state.players[joined.playerId]).toBeUndefined()

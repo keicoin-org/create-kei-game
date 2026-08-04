@@ -14,6 +14,12 @@ const COMMAND_TIMEOUT_MS = 120_000
 const READY_TIMEOUT_MS = 45_000
 const BUN = process.execPath
 
+function removeRoot(directory: string): void {
+  rmSync(directory, { recursive: true, force: true })
+  const index = roots.indexOf(directory)
+  if (index >= 0) roots.splice(index, 1)
+}
+
 setDefaultTimeout(240_000)
 
 interface FailureDetails {
@@ -323,6 +329,15 @@ async function startAndProbe(directory: string): Promise<void> {
         authorityViolationRefused: true,
         rateLimited: true,
         disconnectObserved: true,
+        interactAccepted: true,
+        strikeContactAccepted: true,
+        remoteSemanticEventMatched: true,
+        tooFarRefusedWithoutMutation: true,
+        cooldownRefusedWithoutMutation: true,
+        busyPhaseRefusedWithoutMutation: true,
+        duplicateAndOutOfOrderDeduped: true,
+        noDoubleProgression: true,
+        forgedActionAuthorityRefused: true,
       })
       expect(evidence?.players).toBeArrayOfSize(2)
     } catch (error) {
@@ -371,6 +386,7 @@ describe('generated projects install, build, and start without the harness', () 
   for (const dimension of ['2d', '3d'] as const) {
     test(`${dimension} scaffold passes the offline black-box smoke`, async () => {
       const directory = writeProject(dimension)
+      try {
       const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')) as {
         dependencies?: Record<string, string>
       }
@@ -397,6 +413,7 @@ describe('generated projects install, build, and start without the harness', () 
       const ownedSource = [
         'scripts/build.mjs',
         'src/client/main.ts',
+        'src/client/action-events.ts',
         'src/client/connection.ts',
         'src/client/headless.ts',
         'src/economy/definitions.ts',
@@ -407,6 +424,7 @@ describe('generated projects install, build, and start without the harness', () 
         'src/server/main.ts',
         'src/server/persistence.ts',
         'src/shared/simulation.ts',
+        'src/shared/actions.ts',
         'src/shared/protocol.ts',
         'test/economy.test.ts',
       ].map((file) => readFileSync(join(directory, ...file.split('/')), 'utf8')).join('\n')
@@ -433,10 +451,14 @@ describe('generated projects install, build, and start without the harness', () 
         progressionAuthored: true, randomTokenRefused: true, malformedTokenRefused: true,
         duplicateTokenRefused: true, forgeryRefused: true, forgeryNotPersisted: true,
         plaintextTokenAbsent: true,
+        actionContactPersistedOnce: true,
       })
 
       const serverRuns = process.platform === 'win32' ? 10 : 1
       for (let run = 0; run < serverRuns; run += 1) await startAndProbe(directory)
+      } finally {
+        removeRoot(directory)
+      }
     }, 360_000)
   }
 })
