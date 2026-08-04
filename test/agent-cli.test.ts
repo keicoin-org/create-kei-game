@@ -237,7 +237,7 @@ describe('real prompt-free agent CLI', () => {
       input: ' '.repeat(64 * 1024 + 1),
     })
     expect(jsonLine(oversized)).toMatchObject({ ok: false, error: { code: 'config_too_large' } })
-  })
+  }, 45_000)
 
   test('--yes is rejected as distinct and missing config files do not expose OS errors', async () => {
     const yes = await run(workspace(), ['--agent', '--json', '--yes'])

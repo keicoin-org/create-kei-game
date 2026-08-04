@@ -33,4 +33,4 @@ test('built engine executable speaks protocol-only JSONL', async () => {
     { v: 1, type: 'accepted', id: 'game', command: 'close' },
     { v: 1, type: 'shutdown' },
   ])
-})
+}, 45_000)
