@@ -194,12 +194,11 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     options.name = arg
   }
 
-  const usesAgentOption =
-    options.agentConfig !== undefined ||
-    options.json ||
-    options.launch !== undefined
-  if (usesAgentOption && !options.agent) {
-    fail('Agent config, JSON, and launch options require --agent.')
+  // --no-launch is not an agent option: "validate everything, then stop before
+  // the model runs" is a thing a person wants too, and it is the only way the
+  // human path can be run without a provider call.
+  if ((options.agentConfig !== undefined || options.json) && !options.agent) {
+    fail('Agent config and JSON options require --agent.')
   }
   if (options.agent && options.yes) {
     fail('--agent and --yes are different no-prompt modes and cannot be combined.')
@@ -312,9 +311,9 @@ export function helpText(version: string): string {
   return `
   create-kei-game ${version}
 
-  Prepares the project a Kei game will be built in, and stops there. It asks
-  what the project is called and where it starts from, puts that on disk, and
-  exits — it does not build the game for you yet.
+  Prepares the project a Kei game is built in, then builds it. It asks what the
+  project is called, where it starts from, and which model provider drives it,
+  puts that on disk, and runs one bounded model-and-tool turn against it.
 
   Usage
 
@@ -349,7 +348,8 @@ export function helpText(version: string): string {
     --base-url <url>    HTTPS endpoint override; required by qwen and custom.
     --protocol <name>   messages, responses, or chat_completions.
     --brief <text>      What game to build.
-    --no-launch         Prepare and validate, but record launch as disabled.
+    --no-launch         Prepare and validate everything, but do not run the
+                        model. Works with or without --agent.
     --help, -h          This.
     --version, -v       Print the version and exit.
 
@@ -358,9 +358,10 @@ export function helpText(version: string): string {
 ${templates}
 
   Agent mode validates provider settings and a game brief without storing key
-  material. The model/tool loop and Kei terminal interface are not implemented
-  yet, so launch=true is reported as pending and the command still stops after
-  preparing the project.
+  material, then runs the same engine the future Kei terminal interface will.
+  The credential is read from the named environment variable at call time and
+  is never written to argv, config, the project, or any error. One turn runs
+  per invocation; the long-running Kei terminal interface is later M9 work.
 
   https://keicoin.org
 `

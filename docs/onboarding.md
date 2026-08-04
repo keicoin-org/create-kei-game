@@ -40,9 +40,12 @@ bun run src/index.ts --
 7. **Game brief.** Give a nonblank description of the game to build.
 
 The CLI validates the complete, credential-free plan before touching the
-destination. It then prepares the source and exits. Human onboarding currently
-records launch as pending, but no model, tool loop, terminal UI, or workflow
-persistence runs.
+destination. It then prepares the source and runs one bounded turn of the shared
+engine against it, printing each tool as it runs and the model's reply when it
+finishes. Pass `--no-launch` to stop after preparation instead.
+
+What is still missing: the Kei terminal interface, a session that stays open for
+further turns, and persisted provider configuration. One invocation is one turn.
 
 ## Providers
 

@@ -8,9 +8,12 @@ This is an unpublished draft. The examples run `src/index.ts` from this
 repository checkout with Bun; the npm commands still resolve to the older
 published package until the harness is released.
 
-> Agent mode prepares and validates the project today. It does not call the
-> configured model or start a terminal UI. `launch: "pending"` describes future
-> intent, not a running process.
+> Agent mode prepares the project, then runs **one bounded turn** of the shared
+> engine against it: a real provider call, real tool execution, real files
+> written. It does not start a terminal UI, hold the session open for further
+> turns, or persist provider configuration. `--no-launch` stops after
+> preparation. The engine it runs is reached over the same boundary the future
+> Kei TUI will use; see [Engine JSONL protocol](runtime-protocol.md).
 
 ## Fast path: flags only
 
@@ -62,7 +65,7 @@ overrides are merged.
 | `baseUrl` | string | Required for Qwen and custom; optional override otherwise |
 | `protocol` | string | Required for custom; fixed for built-ins |
 | `brief` | string | Required nonblank game description |
-| `launch` | boolean | Optional; `true`, which is reported as pending today |
+| `launch` | boolean | Optional; `true`, which runs one engine turn after preparation |
 
 The model ID is limited to 256 characters and the brief to 32,000 characters.
 
@@ -140,8 +143,9 @@ bun run src/index.ts -- "Blank Override" --agent --json \
 ```
 
 There is no CLI `--launch` flag. Omit `--no-launch` to use the config value or
-the default `true`; current output reports that state as `"pending"` and still
-stops after preparation.
+the default `true`, which runs one engine turn. `--no-launch` works with or
+without `--agent`, and is the only way to validate a full plan without making a
+provider request.
 
 ## Machine output
 
@@ -182,8 +186,32 @@ success has this shape, serialized on one line:
 }
 ```
 
-For `launch: true`, the top-level launch value is `"pending"`. Local sources
-report `created: false`; cloned sources include the normalized remote URL.
+Local sources report `created: false`; cloned sources include the normalized
+remote URL.
+
+For `launch: true` the status is `"built"`, the top-level launch value is
+`"completed"`, and one extra `run` object records what the turn did:
+
+```json
+{
+  "ok": true,
+  "status": "built",
+  "launch": "completed",
+  "request": { "...": "as above, with launch: true" },
+  "prepared": { "...": "as above" },
+  "run": {
+    "turns": 3,
+    "outputBytes": 812,
+    "toolCalls": 4,
+    "written": ["src/main.ts", "src/level.ts"],
+    "summary": "Added the entry point and the first level."
+  }
+}
+```
+
+`written` lists workspace-relative POSIX paths the tools actually wrote.
+`summary` is the model's closing message, truncated at 4,000 characters; it
+never contains a tool argument, a tool result, or a credential.
 
 ### Error
 
@@ -204,6 +232,15 @@ Depending on the error, the object may include `field`, `fields`, or `missing`.
 Callers should branch on `error.code` and treat the message as explanatory text.
 Unexpected failures are reduced to `internal_error`; raw filesystem errors and
 credential values are not included.
+
+A failure during the launched turn uses the same envelope with an engine code
+and its canonical message. The codes a caller should expect are
+`credential_unset`, `provider_auth_error`, `provider_rate_limited`,
+`provider_request_invalid`, `provider_unavailable`, `provider_response_invalid`,
+`transport_error`, `timeout`, `cancelled`, and the bound codes listed in
+[Engine JSONL protocol](runtime-protocol.md). The project has already been
+prepared when one of these is reported, so a retry does not need to prepare it
+again.
 
 ## Credential rules
 

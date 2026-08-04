@@ -225,14 +225,17 @@ describe('real prompt-free agent CLI', () => {
 })
 
 describe('real human onboarding integration', () => {
-  test('complete flags avoid readline, validate the shared plan, and report launch pending', async () => {
+  // The launch itself is covered offline in test/creation-runtime.test.ts against
+  // a scripted fetch. Reaching a real provider from a test suite would be both
+  // nondeterministic and somebody else's bill, so --no-launch stops short of it.
+  test('complete flags avoid readline, validate the shared plan, and honour --no-launch', async () => {
     const directory = workspace()
     const result = await run(
       directory,
       [
         'Human Game', '--source', 'blank', '--into', 'game', '--provider', 'openai',
         '--model', 'explicit-model', '--api-key-env', 'HUMAN_MODEL_KEY',
-        '--brief', 'Build a cooperative puzzle.',
+        '--brief', 'Build a cooperative puzzle.', '--no-launch',
       ],
       { environment: { HUMAN_MODEL_KEY: secret } },
     )
@@ -240,8 +243,8 @@ describe('real human onboarding integration', () => {
     expect(result.stderr).toBe('')
     expect(result.stdout).toContain('Provider: openai / explicit-model')
     expect(result.stdout).toContain('Credential: inherited from HUMAN_MODEL_KEY')
-    expect(result.stdout).toContain('Launch: pending until the model runtime lands')
-    expect(result.stdout).toContain('No model or tool')
+    expect(result.stdout).toContain('Launch: disabled')
+    expect(result.stdout).toContain('because launch was disabled')
     expect(result.stdout).not.toContain(secret)
     expect(existsSync(join(directory, 'game', 'package.json'))).toBeTrue()
   })
@@ -294,19 +297,30 @@ test('package exposes non-executing library subpaths', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
     exports: Record<string, unknown>
   }
-  expect(Object.keys(manifest.exports)).toEqual(['.', './source', './providers', './harness', './agent'])
+  expect(Object.keys(manifest.exports)).toEqual([
+    '.',
+    './source',
+    './providers',
+    './harness',
+    './agent',
+    './runtime',
+    './runtime-protocol',
+    './provider-transport',
+    './tools',
+    './creation-runtime',
+  ])
   expect(JSON.stringify(manifest.exports['./harness'])).toContain('dist/harness.js')
   expect(JSON.stringify(manifest.exports['./agent'])).toContain('dist/agent.js')
   const probe = spawnSync(
     'node',
     [
       '-e',
-      "const [a,h,p]=await Promise.all([import('create-kei-game/agent'),import('create-kei-game/harness'),import('create-kei-game/providers')]);process.stdout.write([typeof a.createAgentRequest,typeof h.createHarnessRequest,typeof p.resolveProvider].join(','))",
+      "const [a,h,p,t,c]=await Promise.all([import('create-kei-game/agent'),import('create-kei-game/harness'),import('create-kei-game/providers'),import('create-kei-game/tools'),import('create-kei-game/creation-runtime')]);process.stdout.write([typeof a.createAgentRequest,typeof h.createHarnessRequest,typeof p.resolveProvider,typeof t.createWorkspaceTools,typeof c.runCreationTurn].join(','))",
     ],
     { cwd: root, encoding: 'utf8', timeout: 30_000 },
   )
   if (probe.error) throw probe.error
   expect(probe.status).toBe(0)
   expect(probe.stderr).toBe('')
-  expect(probe.stdout).toBe('function,function,function')
+  expect(probe.stdout).toBe('function,function,function,function,function')
 })
