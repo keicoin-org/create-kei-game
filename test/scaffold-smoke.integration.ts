@@ -1,3 +1,4 @@
+/** Heavy generated-project proof, intentionally run in its own Bun process. */
 import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
