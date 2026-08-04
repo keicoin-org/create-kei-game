@@ -147,13 +147,14 @@
     "build": "tsc --build",
     "clean": "tsc --build --clean",
     "typecheck": "tsc --build && tsc -p tsconfig.tests.json",
-    "test": "bun test",
-    "check": "bun run typecheck && bun test"
+    "test": "bun test --max-concurrency=1",
+    "check": "bun run typecheck && bun run test"
   },
   "devDependencies": {
     "@babylonjs/core": "^9.19.0",
     "@types/bun": "^1.3.14",
     "@types/node": "^22.10.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "ws": "^8.18.3"
   }
 }

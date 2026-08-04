@@ -145,10 +145,12 @@ streaming, Kei economies, UI, audio, content, testing, and deployment.
 Two examples of what "concrete" means here. The 3D animation packet names
 `LoadAssetContainerAsync(url, scene)`, looks up a Babylon `AnimationGroup` by
 semantic name, blends groups by weight, and instantiates rigged characters from
-an `AssetContainer` so skeletons are not accidentally shared. The networking packet names the fixed-tick
-accumulator, the input record with its sequence number, the reconciliation loop
-that replays unacknowledged inputs, the interest-management cell key, and the
-per-socket token bucket, plus the Durable Object shape of the same loop.
+an `AssetContainer` so skeletons are not accidentally shared. The networking
+packet names the fixed-tick accumulator, exact versioned messages, server-assigned
+identity, sequence-numbered direction input, whole-world construction snapshots,
+and the per-socket token bucket. Prediction/reconciliation, delta compression,
+interest management, persistence and a deployment-specific room owner remain
+separate work; the available packet does not promise them.
 
 ### The economy packet is honest about what it is
 

@@ -158,10 +158,13 @@ describe('the whole seam, wired up', () => {
       'tsconfig.json',
       'static/index.html',
       'scripts/build.mjs',
+      'src/client/connection.ts',
+      'src/client/headless.ts',
       'src/client/main.ts',
       'src/server/main.ts',
       'src/server/dev-server.mjs',
       'src/shared/simulation.ts',
+      'src/shared/protocol.ts',
     ].sort())
     expect(JSON.parse(await readFile(join(prepared.directory, 'package.json'), 'utf8')).name).toBe('my-game')
     // Nested, so this proves the recursive mkdir rather than assuming it.

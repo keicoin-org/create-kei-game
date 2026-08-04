@@ -182,9 +182,12 @@ salvage-run/
 ├── static/index.html              # canvas and construction-grade HUD
 ├── tsconfig.json
 └── src/
-    ├── client/main.ts
-    ├── server/dev-server.mjs      # local static server, JSON readiness
-    ├── server/main.ts             # fixed-tick seam; no networking yet
+    ├── client/main.ts             # renders every authoritative player
+    ├── client/connection.ts       # one browser/headless protocol path
+    ├── client/headless.ts         # two-client shared-encounter smoke
+    ├── server/dev-server.mjs      # loopback WebSocket + static server
+    ├── server/main.ts             # authoritative fixed-tick shard
+    ├── shared/protocol.ts         # exact versioned messages and refusals
     ├── shared/simulation.ts
     └── shared/cutscene.ts        # the player, with the cut-scenes; imports nothing
 ```
@@ -192,8 +195,15 @@ salvage-run/
 For a scaffold, `bun install`, `bun run build`, and `PORT=0 bun run dev` work
 without edits. A 3D scaffold owns a minimal Babylon.js scene; a 2D scaffold
 owns a Canvas construction frame and explicitly does not claim a tile or sprite
-renderer. The dev server is local static HTTP only. Networking, server
-authority, persistence, Kei trade, and presentation remain plan steps. Deleting
+renderer. Both own a loopback-only game server and the same versioned connection
+path for browser and headless clients. `bun run headless -- <socket-url>` opens
+two server-assigned players, moves each once, proves each observes the other,
+and proves stale and authority-forging messages do not mutate the world.
+
+That closes the generated-project shape of SPEC §11.3 criteria 3 and 4: a real
+client connects, and two clients see each other move. It does **not** close
+persistence/forged-state survival across restart (5), Kei trade (6), harness
+deletion as an end-to-end product gate (8), or presentation polish (9). Deleting
 this harness does not affect the generated project's dependencies or runtime.
 
 When the planner clones a reference project instead, the clone arrives with
