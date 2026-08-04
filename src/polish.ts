@@ -464,7 +464,8 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
         if (sawPalette || sawData || length < 3 || length > 768 || length % 3 !== 0 || colorType === 0 || colorType === 4 || (colorType === 3 && length / 3 > 2 ** bitDepth)) return ['media_png_malformed']
         sawPalette = true; palette = bytes.slice(offset + 8, offset + 8 + length)
       } else if (type === 'tRNS') {
-        if (sawTransparency || sawData || (colorType === 3 && (!palette || length < 1 || length > palette.length / 3)) || (colorType === 0 && length !== 2) || (colorType === 2 && length !== 6) || ![0,2,3].includes(colorType)) return ['media_png_malformed']
+        const sampleMaximum = bitDepth === 16 ? 65_535 : 2 ** bitDepth - 1
+        if (sawTransparency || sawData || (colorType === 3 && (!palette || length < 1 || length > palette.length / 3)) || (colorType === 0 && (length !== 2 || view.getUint16(offset + 8) > sampleMaximum)) || (colorType === 2 && (length !== 6 || [0,2,4].some((part) => view.getUint16(offset + 8 + part) > sampleMaximum))) || ![0,2,3].includes(colorType)) return ['media_png_malformed']
         sawTransparency = true; transparency = bytes.slice(offset + 8, offset + 8 + length)
       } else if (type === 'IDAT') {
         if (dataEnded || (colorType === 3 && !sawPalette)) return ['media_png_malformed']
@@ -486,7 +487,7 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     try { pixels = inflateSync(Buffer.concat(compressed.map((part) => Buffer.from(part))), { maxOutputLength: inflatedBytes + 1 }) } catch { return ['media_png_malformed'] }
     if (pixels.length !== inflatedBytes) return ['media_png_malformed']
     const bytesPerPixel = Math.max(1, Math.ceil((channels[colorType] as number) * bitDepth / 8))
-    const previous = new Uint8Array(rowBytes); const current = new Uint8Array(rowBytes); const distinctPixels = new Set<number>()
+    const previous = new Uint8Array(rowBytes); const current = new Uint8Array(rowBytes); const distinctPixels = new Set<string>()
     const paeth = (left: number, up: number, upperLeft: number) => { const estimate = left + up - upperLeft; const leftDistance = Math.abs(estimate - left); const upDistance = Math.abs(estimate - up); const upperLeftDistance = Math.abs(estimate - upperLeft); return leftDistance <= upDistance && leftDistance <= upperLeftDistance ? left : upDistance <= upperLeftDistance ? up : upperLeft }
     const observe = (row: Uint8Array, column: number) => {
       if (colorType === 3 || bitDepth < 8) {
@@ -494,14 +495,20 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
         if (colorType === 3) {
           if (!palette || sample >= palette.length / 3) return false
           const alpha = transparency && sample < transparency.length ? transparency[sample] as number : 255
-          if (distinctPixels.size < 4) distinctPixels.add((((palette[sample * 3] as number) << 24) | ((palette[sample * 3 + 1] as number) << 16) | ((palette[sample * 3 + 2] as number) << 8) | alpha) >>> 0)
-        } else if (distinctPixels.size < 4) distinctPixels.add(sample)
+          if (distinctPixels.size < 4) distinctPixels.add(alpha === 0 ? 'transparent' : `${palette[sample * 3]},${palette[sample * 3 + 1]},${palette[sample * 3 + 2]},${alpha}`)
+        } else if (distinctPixels.size < 4) distinctPixels.add(transparency && (((transparency[0] as number) << 8) | (transparency[1] as number)) === sample ? 'transparent' : `g:${sample}`)
         return true
       }
-      if (distinctPixels.size >= 4) return true
-      const pixelBytes = (channels[colorType] as number) * (bitDepth / 8); let key = 0x811c9dc5
-      for (let index = 0; index < pixelBytes; index += 1) key = Math.imul(key ^ (row[column * pixelBytes + index] as number), 0x01000193) >>> 0
-      distinctPixels.add(key)
+      const componentSize = bitDepth / 8; const pixelBytes = (channels[colorType] as number) * componentSize; const pixelStart = column * pixelBytes
+      const sample = (component: number) => componentSize === 1 ? row[pixelStart + component] as number : ((row[pixelStart + component * 2] as number) << 8) | (row[pixelStart + component * 2 + 1] as number)
+      let transparent = (colorType === 4 && sample(1) === 0) || (colorType === 6 && sample(3) === 0)
+      if (transparency && colorType === 0) transparent ||= sample(0) === (((transparency[0] as number) << 8) | (transparency[1] as number))
+      const transparentSamples = transparency
+      if (transparentSamples && colorType === 2) transparent ||= [0,1,2].every((component) => sample(component) === (((transparentSamples[component * 2] as number) << 8) | (transparentSamples[component * 2 + 1] as number)))
+      if (distinctPixels.size < 4) {
+        if (transparent) distinctPixels.add('transparent')
+        else { let key = ''; for (let index = 0; index < pixelBytes; index += 1) key += String.fromCharCode(row[pixelStart + index] as number); distinctPixels.add(key) }
+      }
       return true
     }
     for (let row = 0; row < height; row += 1) {
@@ -562,7 +569,14 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     }
     if (gltf.meshes !== undefined && (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || gltf.meshes.some((mesh: any) => !record(mesh) || !Array.isArray(mesh.primitives) || mesh.primitives.length < 1 || mesh.primitives.some((primitive: any) => !record(primitive) || !record(primitive.attributes) || Object.values(primitive.attributes).some((accessor) => !validAccessor(accessor)) || (primitive.indices !== undefined && !validAccessor(primitive.indices)) || (primitive.mode !== undefined && !integer(primitive.mode, 0, 6)))))) return ['media_glb_malformed']
     if (!Array.isArray(gltf.nodes) || gltf.nodes.length < 1 || gltf.nodes.length > 65_536 || gltf.nodes.some((node: any) => !record(node) || (node.mesh !== undefined && !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)) || (node.children !== undefined && (!Array.isArray(node.children) || node.children.some((child: unknown) => !integer(child, 0, gltf.nodes.length - 1)))))) return ['media_glb_malformed']
-    if (!Array.isArray(gltf.scenes) || gltf.scenes.length < 1 || !integer(gltf.scene, 0, gltf.scenes.length - 1) || gltf.scenes.some((scene: any) => !record(scene) || !Array.isArray(scene.nodes) || scene.nodes.some((node: unknown) => !integer(node, 0, gltf.nodes.length - 1)))) return ['media_glb_malformed']
+    if (!Array.isArray(gltf.scenes) || gltf.scenes.length < 1 || gltf.scenes.length > 65_536 || !integer(gltf.scene, 0, gltf.scenes.length - 1) || gltf.scenes.some((scene: any) => !record(scene) || !Array.isArray(scene.nodes) || scene.nodes.length > gltf.nodes.length || scene.nodes.some((node: unknown) => !integer(node, 0, gltf.nodes.length - 1)))) return ['media_glb_malformed']
+    const parentCounts = new Uint8Array(gltf.nodes.length)
+    for (const node of gltf.nodes) for (const child of node.children ?? []) { parentCounts[child] = (parentCounts[child] as number) + 1; if ((parentCounts[child] as number) > 1) return ['media_glb_malformed'] }
+    for (const scene of gltf.scenes) { const roots = new Set<number>(); for (const node of scene.nodes) { if (parentCounts[node] !== 0 || roots.has(node)) return ['media_glb_malformed']; roots.add(node) } }
+    const graphQueue: number[] = []; for (let node = 0; node < gltf.nodes.length; node += 1) if (parentCounts[node] === 0) graphQueue.push(node)
+    const remainingParents = parentCounts.slice(); let graphNodes = 0
+    for (let cursor = 0; cursor < graphQueue.length; cursor += 1) { const node = graphQueue[cursor] as number; graphNodes += 1; for (const child of gltf.nodes[node].children ?? []) { remainingParents[child] = (remainingParents[child] as number) - 1; if (remainingParents[child] === 0) graphQueue.push(child) } }
+    if (graphNodes !== gltf.nodes.length) return ['media_glb_malformed']
     const reachableNodes = new Set<number>(); const pendingNodes = [...gltf.scenes[gltf.scene].nodes]
     while (pendingNodes.length) { const node = pendingNodes.pop() as number; if (reachableNodes.has(node)) continue; reachableNodes.add(node); for (const child of gltf.nodes[node].children ?? []) pendingNodes.push(child) }
     const indexAccessor = (index: number): { count: number; value: (element: number) => number } | null => {
@@ -609,7 +623,7 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
         return output?.type === expectedType && output?.componentType === 5126 && output.count === input.count * multiplier
       }))) return ['media_glb_missing_animation']
       if (!Array.isArray(gltf.skins) || gltf.skins.length < 1 || gltf.skins.some((skin: any) => !record(skin) || !Array.isArray(skin.joints) || skin.joints.length < 2 || new Set(skin.joints).size !== skin.joints.length || skin.joints.some((joint: unknown) => !integer(joint, 0, gltf.nodes.length - 1)) || (skin.skeleton !== undefined && !integer(skin.skeleton, 0, gltf.nodes.length - 1)) || (skin.inverseBindMatrices !== undefined && (!validAccessor(skin.inverseBindMatrices) || accessors[skin.inverseBindMatrices].type !== 'MAT4' || accessors[skin.inverseBindMatrices].componentType !== 5126 || accessors[skin.inverseBindMatrices].normalized === true || accessors[skin.inverseBindMatrices].count !== skin.joints.length)))) return ['media_glb_animation_rig_missing']
-      const usedSkins = new Set<number>(); const validatedSkinMeshes = new Set<string>(); const checkedInverseAccessors = new Set<number>(); let decodedSkinComponents = 0
+      const usedSkins = new Set<number>(); const influencedJoints = new Set<number>(); const validatedSkinMeshes = new Set<string>(); const checkedInverseAccessors = new Set<number>(); let decodedSkinComponents = 0
       for (const nodeIndex of reachableNodes) { const node = gltf.nodes[nodeIndex]; if (node.skin !== undefined) {
         if (!integer(node.skin, 0, gltf.skins.length - 1) || !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)) return ['media_glb_animation_rig_missing']
         const skin = gltf.skins[node.skin]
@@ -642,7 +656,7 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
               const weightAccessor = accessors[pair.weights]; const encodedWeight = accessorComponent(pair.weights, vertex, component); const weight = weightAccessor.componentType === 5121 ? encodedWeight / 255 : weightAccessor.componentType === 5123 ? encodedWeight / 65535 : encodedWeight
               if (weightAccessor.componentType === 5121) weightTolerance = Math.max(weightTolerance, 1 / 255 + 1e-6); else if (weightAccessor.componentType === 5123) weightTolerance = Math.max(weightTolerance, 1 / 65535 + 1e-6)
               if (!Number.isFinite(weight) || weight < 0) return ['media_glb_malformed']
-              if (weight > 0) { if (influences.has(joint)) return ['media_glb_malformed']; influences.add(joint); totalWeight += weight }
+              if (weight > 0) { if (influences.has(joint)) return ['media_glb_malformed']; influences.add(joint); influencedJoints.add(skin.joints[joint]); totalWeight += weight }
             }
             if (!Number.isFinite(totalWeight)) return ['media_glb_malformed']
             if (totalWeight <= 1e-8) return ['media_glb_animation_rig_missing']
@@ -662,7 +676,7 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
         const components = typeComponents[accessors[sampler.output].type] as number; const multiplier = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1; const first = sampler.interpolation === 'CUBICSPLINE' ? components : 0; const last = (times.length - 1) * components * multiplier + first; let moves = false
         for (let component = 0; component < components; component += 1) if (Math.abs((values[last + component] as number) - (values[first + component] as number)) > 1e-5) moves = true
         samplerMoves.push(moves)
-      } for (const channel of animation.channels) if (usedJoints.has(channel.target.node) && samplerMoves[channel.sampler]) observableRigMotion = true }
+      } for (const channel of animation.channels) if (influencedJoints.has(channel.target.node) && samplerMoves[channel.sampler]) observableRigMotion = true }
       if (!observableRigMotion) return ['media_glb_animation_no_motion']
     }
     return []

@@ -14,7 +14,7 @@ import {
   polishProjectFiles,
 } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { catalogLicenceBytes, catalogSourceBytes, dummySkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, tinyGlb, tinyOgg, tinyPng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, unusedFourthPositionGlb } from './media.js'
+import { catalogLicenceBytes, catalogSourceBytes, cyclicSceneGlb, dummySkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, paddedTriangleGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, unusedFourthPositionGlb } from './media.js'
 import { runProcess } from './process.js'
 
 const temporary: string[] = []
@@ -99,6 +99,23 @@ describe('generated project-owned polish checker', () => {
       expect(result.status).toBe(1)
       expect(result.report.problems).toContainEqual(expect.objectContaining({ id: dimension === '2d' ? 'hero-character' : 'training-sentinel', code: dimension === '2d' ? 'media_png_placeholder' : 'media_glb_placeholder' }))
       if (dimension === '3d') expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-motion', code: 'media_glb_animation_rig_missing' }))
+    })
+    test(`${dimension} embeds visible-pixel, referenced-vertex, and acyclic-scene admission`, async () => {
+      const current = fixture(dimension, true)
+      const replace = (id: string, bytes: Buffer) => {
+        const output = current.sources.assets.find((asset: any) => asset.id === id).processedOutputs[0]
+        put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+      }
+      if (dimension === '2d') replace('hero-character', transparentPalettePng())
+      else { replace('hero-character', cyclicSceneGlb(true)); replace('training-sentinel', paddedTriangleGlb(true)) }
+      writeSources(current.root, current.sources, current.recipe)
+      const result = await check(current.root)
+      expect(result.status).toBe(1)
+      if (dimension === '2d') expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-character', code: 'media_png_placeholder' }))
+      else {
+        expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-character', code: 'media_glb_malformed' }))
+        expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'training-sentinel', code: 'media_glb_placeholder' }))
+      }
     })
   }
 

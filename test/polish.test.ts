@@ -21,7 +21,7 @@ import {
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, hugeSkinWeightAnimationGlb, indexedQuadGlb, invalidInverseBindMatricesAnimationGlb, misalignedAccessorAnimationGlb, mismatchedSkinAccessorCountAnimationGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, nonFiniteSkinWeightAnimationGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkeletonAnimationGlb, outOfRangeSkinJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, uniformFilteredPng, uniformPalettePng, unnormalizedSkinWeightsAnimationGlb, unpairedSkinSetAnimationGlb, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
+import { CC0_TEXT, cyclicSceneGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, hugeSkinWeightAnimationGlb, indexedQuadGlb, invalidInverseBindMatricesAnimationGlb, misalignedAccessorAnimationGlb, mismatchedSkinAccessorCountAnimationGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, nonFiniteSkinWeightAnimationGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkeletonAnimationGlb, outOfRangeSkinJointAnimationGlb, paddedTriangleGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unnormalizedSkinWeightsAnimationGlb, unpairedSkinSetAnimationGlb, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -130,12 +130,18 @@ describe('admitted media and licence byte semantics', () => {
     expect(validatePolishMediaBytes('image', tinyPng())).toEqual(['media_png_placeholder'])
     expect(validatePolishMediaBytes('image', uniformFilteredPng())).toEqual(['media_png_placeholder'])
     expect(validatePolishMediaBytes('atlas', uniformPalettePng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('image', transparentPalettePng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('image', transparentRgbaPng())).toEqual(['media_png_placeholder'])
     expect(validatePolishMediaBytes('model', tinyGlb('model'))).toEqual(['media_glb_placeholder'])
     expect(validatePolishMediaBytes('model', unreferencedPointGlb())).toEqual(['media_glb_placeholder'])
+    expect(validatePolishMediaBytes('model', paddedTriangleGlb(true))).toEqual(['media_glb_placeholder'])
+    expect(validatePolishMediaBytes('model', paddedTriangleGlb(false))).toEqual(['media_glb_placeholder'])
     expect(validatePolishMediaBytes('animation', tinyGlb('animation'))).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', dummySkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', missingSkinAttributesAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', unusedSkinJointAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', zeroWeightSkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', uninfluencedJointAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
     expect(validatePolishMediaBytes('animation', unrelatedUsedSkinAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
     expect(validatePolishMediaBytes('animation', duplicateJointSkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('audio', tinyOgg())).toEqual(['media_ogg_placeholder'])
@@ -182,8 +188,11 @@ describe('admitted media and licence byte semantics', () => {
     ['PNG with a corrupted chunk CRC', 'atlas', () => { const bytes = tinyPng(); bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff; return bytes }, 'media_png_malformed'],
     ['PNG with CRC-correct invalid compressed scanlines', 'image', () => pngWithInvalidDeflate(), 'media_png_malformed'],
     ['palette PNG with a late out-of-range index', 'image', () => outOfRangePaletteIndexPng(), 'media_png_malformed'],
+    ['indexed PNG with empty tRNS', 'image', () => emptyPaletteTransparencyPng(), 'media_png_malformed'],
     ['truncated GLB container', 'model', () => tinyGlb('model').subarray(0, 40), 'media_glb_malformed'],
     ['GLB with an out-of-range POSITION accessor', 'model', () => glbWithOutOfRangePosition(), 'media_glb_malformed'],
+    ['GLB with a self-cycle', 'model', () => cyclicSceneGlb(), 'media_glb_malformed'],
+    ['GLB with a multi-node cycle', 'model', () => cyclicSceneGlb(true), 'media_glb_malformed'],
     ['GLB without an animation for the rig requirement', 'animation', () => tinyGlb('model'), 'media_glb_missing_animation'],
     ['Ogg stream without its terminating page', 'audio', () => { const bytes = tinyOgg(); return bytes.subarray(0, bytes.length - 31) }, 'media_ogg_malformed'],
     ['Ogg stream with duration metadata but no audio packet', 'audio', () => oggWithoutAudioPacket(), 'media_ogg_malformed'],
