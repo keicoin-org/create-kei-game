@@ -48,7 +48,7 @@ describe('bounded process diagnostics', () => {
 
     const result = await runProcess(
       node,
-      ['-e', "process.stdout.write(process.env.KEI_PROCESS_PROBE + '\\n' + 'x'.repeat(96 * 1024))"],
+      ['-e', "process.stdout.write(process.env.KEI_PROCESS_PROBE + '\\n' + '\u20ac'.repeat(32 * 1024))"],
       {
         cwd: process.cwd(),
         env: { ...process.env, KEI_PROCESS_PROBE: 'probe-ok' },
@@ -59,6 +59,7 @@ describe('bounded process diagnostics', () => {
     requireProcessSuccess('bounded-output', result)
     expect(result.stdout.startsWith('probe-ok\n')).toBeTrue()
     expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(64 * 1024)
+    expect(result.stdout).not.toContain('\uFFFD')
     expect(result.stderr).toBe('')
   })
 
@@ -88,7 +89,7 @@ describe('bounded process diagnostics', () => {
     expect(isAlive(pids.child)).toBeFalse()
   })
 
-  test('a hung tree terminator reaches a bounded direct-kill fallback', async () => {
+  test('a hung tree terminator reaches a bounded fallback before the harness resolves', async () => {
     const node = Bun.which('node')
     expect(node).not.toBeNull()
     if (node === null) throw new Error('Node.js executable is unavailable')
@@ -112,10 +113,9 @@ describe('bounded process diagnostics', () => {
     expect(elapsed).toBeLessThan(1_500)
 
     const pid = Number(result.stdout)
-    const deadline = Date.now() + 2_000
-    while (isAlive(pid) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 20))
-    }
+    // The fallback contract is stronger than eventual cleanup: callers may
+    // start the next phase as soon as runProcess resolves, so the PID must
+    // already be gone at this boundary.
     expect(isAlive(pid)).toBeFalse()
   })
 })

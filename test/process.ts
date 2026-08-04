@@ -3,6 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 const OUTPUT_LIMIT_BYTES = 64 * 1024
 const DIAGNOSTIC_LIMIT = 240
 const TASKKILL_TIMEOUT_MS = 2_000
+const TERMINATION_CONFIRM_TIMEOUT_MS = 2_000
 const TERMINATION_TIMEOUT_MS = 5_000
 
 export interface ProcessResult {
@@ -29,6 +30,30 @@ function killDirectly(child: ChildProcessWithoutNullStreams): void {
   } catch {
     // It exited between the state check and the kill request.
   }
+}
+
+async function waitForProcessExit(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true
+  return await new Promise((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (exited: boolean): void => {
+      if (settled) return
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      child.off('exit', onExit)
+      resolve(exited)
+    }
+    const onExit = (): void => finish(true)
+    timer = setTimeout(() => finish(false), timeoutMs)
+    child.once('exit', onExit)
+    // Do not turn an exit between the fast-path check and subscription into a
+    // false timeout. This is the same race the generated restart proof guards.
+    if (child.exitCode !== null || child.signalCode !== null) finish(true)
+  })
 }
 
 async function terminateTree(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -79,6 +104,10 @@ async function terminateTree(child: ChildProcessWithoutNullStreams): Promise<voi
       killDirectly(child)
     }
   }
+
+  if (!(await waitForProcessExit(child, TERMINATION_CONFIRM_TIMEOUT_MS))) {
+    throw new Error('process did not exit after bounded tree termination')
+  }
 }
 
 function boundedText(value: unknown, limit = DIAGNOSTIC_LIMIT): string {
@@ -89,10 +118,39 @@ function boundedText(value: unknown, limit = DIAGNOSTIC_LIMIT): string {
   return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`
 }
 
-function appendBounded(current: string, chunk: Buffer | string): string {
-  if (Buffer.byteLength(current) >= OUTPUT_LIMIT_BYTES) return current
-  const remaining = OUTPUT_LIMIT_BYTES - Buffer.byteLength(current)
-  return current + Buffer.from(chunk).subarray(0, remaining).toString('utf8')
+class BoundedOutput {
+  readonly #chunks: Buffer[] = []
+  #bytes = 0
+
+  append(chunk: Buffer | string): void {
+    if (this.#bytes >= OUTPUT_LIMIT_BYTES) return
+    const retained = Buffer.from(chunk).subarray(0, OUTPUT_LIMIT_BYTES - this.#bytes)
+    if (retained.length === 0) return
+    this.#chunks.push(retained)
+    this.#bytes += retained.length
+  }
+
+  text(): string {
+    const decoded = Buffer.concat(this.#chunks, this.#bytes).toString('utf8')
+    if (Buffer.byteLength(decoded) <= OUTPUT_LIMIT_BYTES) return decoded
+
+    // A raw byte cap may end inside a UTF-8 sequence. Decoding that suffix as
+    // U+FFFD expands it to three bytes, so find the largest complete string
+    // prefix that still honors the advertised encoded-byte bound.
+    let low = 0
+    let high = decoded.length
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2)
+      if (Buffer.byteLength(decoded.slice(0, middle)) <= OUTPUT_LIMIT_BYTES) low = middle
+      else high = middle - 1
+    }
+    if (
+      low > 0 && low < decoded.length &&
+      decoded.charCodeAt(low - 1) >= 0xD800 && decoded.charCodeAt(low - 1) <= 0xDBFF &&
+      decoded.charCodeAt(low) >= 0xDC00 && decoded.charCodeAt(low) <= 0xDFFF
+    ) low -= 1
+    return decoded.slice(0, low).replace(/\uFFFD$/, '')
+  }
 }
 
 export function processFailureDiagnostic(phase: string, result: ProcessResult): string {
@@ -138,9 +196,11 @@ export async function runProcess(
 
     let settled = false
     let timeoutError: (Error & { readonly code: 'ETIMEDOUT' }) | undefined
+    let terminationDeadlineError: (Error & { readonly code: 'ETERMINATE' }) | undefined
     let terminationTimer: ReturnType<typeof setTimeout> | undefined
-    let stdout = ''
-    let stderr = ''
+    const stdout = new BoundedOutput()
+    const stderr = new BoundedOutput()
+    const output = () => ({ stdout: stdout.text(), stderr: stderr.text() })
     const finish = (result: ProcessResult): void => {
       if (settled) return
       settled = true
@@ -153,23 +213,39 @@ export async function runProcess(
         code: 'ETIMEDOUT' as const,
       })
       terminationTimer = setTimeout(() => {
-        killDirectly(child)
-        finish({
-          status: null,
-          signal: child.signalCode,
-          stdout,
-          stderr,
-          error: Object.assign(
-            new Error('process tree did not close before the secondary termination deadline'),
-            { code: 'ETERMINATE' },
-          ),
-        })
+        terminationDeadlineError = Object.assign(
+          new Error('process tree did not close before the secondary termination deadline'),
+          { code: 'ETERMINATE' as const },
+        )
+        // The configured terminator may itself be hung. Run the real bounded
+        // tree terminator as an independent fallback and do not resolve until
+        // it has confirmed that the direct child exited.
+        void terminateTree(child).then(
+          () => finish({
+            status: null,
+            signal: child.signalCode,
+            ...output(),
+            error: terminationDeadlineError,
+          }),
+          (fallbackError: unknown) => finish({
+            status: null,
+            signal: child.signalCode,
+            ...output(),
+            error: Object.assign(
+              new Error(
+                `${terminationDeadlineError?.message ?? 'process termination deadline exceeded'}; fallback failed: ${boundedText(
+                  fallbackError instanceof Error ? fallbackError.message : fallbackError,
+                )}`,
+              ),
+              { code: 'ETERMINATE' },
+            ),
+          }),
+        )
       }, options.terminationTimeoutMs ?? TERMINATION_TIMEOUT_MS)
       void (options.terminate ?? terminateTree)(child).catch((terminationError: unknown) => finish({
         status: null,
         signal: child.signalCode,
-        stdout,
-        stderr,
+        ...output(),
         error: Object.assign(
           terminationError instanceof Error
             ? terminationError
@@ -179,21 +255,19 @@ export async function runProcess(
       }))
     }, options.timeoutMs)
 
-    child.stdout.on('data', (chunk: Buffer | string) => { stdout = appendBounded(stdout, chunk) })
-    child.stderr.on('data', (chunk: Buffer | string) => { stderr = appendBounded(stderr, chunk) })
+    child.stdout.on('data', (chunk: Buffer | string) => { stdout.append(chunk) })
+    child.stderr.on('data', (chunk: Buffer | string) => { stderr.append(chunk) })
     child.once('error', (error) => finish({
       status: null,
       signal: null,
-      stdout,
-      stderr,
+      ...output(),
       error: timeoutError ?? error,
     }))
     child.once('close', (status, signal) => finish({
       status: timeoutError === undefined ? status : null,
       signal,
-      stdout,
-      stderr,
-      error: timeoutError,
+      ...output(),
+      error: terminationDeadlineError ?? timeoutError,
     }))
     child.stdin.end(options.input ?? '')
   })
