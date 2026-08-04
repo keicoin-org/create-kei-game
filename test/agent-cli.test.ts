@@ -1,10 +1,11 @@
-import { afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { ensureBuilt } from './built.js'
+import { nodeExecutable, requireProcessSuccess, runProcess } from './process.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const entry = fileURLToPath(new URL('../dist/index.js', import.meta.url))
@@ -14,7 +15,7 @@ const secret = 'sk-cli-secret-never-print'
 /** Nothing like a reference project, so no test can end up wanting a network. */
 const GAMEPLAY = 'Crews salvage derelict stations and haul cargo home.'
 
-beforeAll(ensureBuilt)
+await ensureBuilt()
 
 interface RunResult {
   readonly status: number | null
@@ -34,7 +35,7 @@ async function run(
   options: { readonly input?: string; readonly environment?: Record<string, string> } = {},
 ): Promise<RunResult> {
   return await new Promise((resolve, reject) => {
-    const child = spawn('node', [entry, ...args], {
+    const child = spawn(nodeExecutable(), [entry, ...args], {
       cwd: directory,
       env: { ...process.env, ...options.environment },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -343,7 +344,7 @@ describe('real human onboarding integration', () => {
   })
 })
 
-test('package exposes non-executing library subpaths', () => {
+test('package exposes non-executing library subpaths', async () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
     name: string
     bin: Record<string, string>
@@ -382,19 +383,18 @@ test('package exposes non-executing library subpaths', () => {
   ])
   expect(JSON.stringify(manifest.exports['./planner'])).toContain('dist/planner.js')
   expect(JSON.stringify(manifest.exports['./harness'])).toContain('dist/harness.js')
-  const probe = spawnSync(
-    'node',
+  const probe = await runProcess(
+    nodeExecutable(),
     [
       '-e',
       "const [a,h,p,t,c,i,n]=await Promise.all([import('create-kei-mmo/agent'),import('create-kei-mmo/harness'),import('create-kei-mmo/providers'),import('create-kei-mmo/tools'),import('create-kei-mmo/creation-runtime'),import('create-kei-mmo/intent'),import('create-kei-mmo/planner')]);process.stdout.write([typeof a.createAgentRequest,typeof h.createHarnessRequest,typeof p.resolveProvider,typeof t.createWorkspaceTools,typeof c.runCreationTurn,typeof i.parseMmoIntent,typeof n.planMmo].join(','))",
     ],
-    { cwd: root, encoding: 'utf8', timeout: 30_000 },
+    { cwd: root, timeoutMs: 30_000 },
   )
-  if (probe.error) throw probe.error
-  expect(probe.status).toBe(0)
+  requireProcessSuccess('subpath-import-probe', probe)
   expect(probe.stderr).toBe('')
   expect(probe.stdout).toBe('function,function,function,function,function,function,function')
-})
+}, 45_000)
 
 describe('the 3D content pipeline through the agent door', () => {
   test('a cinematic 3D brief lands content records with no prompt asked and no secret written', async () => {

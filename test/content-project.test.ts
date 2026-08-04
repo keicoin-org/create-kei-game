@@ -6,7 +6,6 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,6 +17,8 @@ import { projectFrom } from '../src/naming.js'
 import type { WorkspaceFile } from '../src/source.js'
 import { scaffoldWorkspace } from '../src/source.js'
 import { intentFor, SCAFFOLD_INTENT } from './fixtures.js'
+import type { ProcessResult } from './process.js'
+import { nodeExecutable, requireProcessExit, requireProcessSuccess, runProcess } from './process.js'
 
 /** A 3D brief that asks for a story opening and ambient sound, in sci-fi. */
 const CINEMATIC_INTENT = {
@@ -28,6 +29,20 @@ const CINEMATIC_INTENT = {
 }
 
 const temporary: string[] = []
+
+/**
+ * The gate runs as a real child, so it is spawned the way every other
+ * subprocess boundary here is: absolute executable, bounded output, and a
+ * termination the harness has already awaited by the time this resolves.
+ */
+const CHECK_TIMEOUT_MS = 30_000
+
+async function runCheck(directory: string): Promise<ProcessResult> {
+  return await runProcess(nodeExecutable(), [join(directory, 'kei-mmo', 'content', 'check.mjs')], {
+    cwd: directory,
+    timeoutMs: CHECK_TIMEOUT_MS,
+  })
+}
 
 function writtenTo(directory: string, files: readonly WorkspaceFile[]): void {
   for (const file of files) {
@@ -128,14 +143,12 @@ describe('what the scaffold carries', () => {
 })
 
 describe('runnable with the harness deleted', () => {
-  test('the check script admits the scaffold under plain node, and blocks a missing generated output', () => {
+  test('the check script admits the scaffold under plain node, and blocks a missing generated output', async () => {
     const { directory } = scaffoldOnDisk(CINEMATIC_INTENT)
-    const script = join(directory, 'kei-mmo', 'content', 'check.mjs')
 
-    const clean = spawnSync('node', [script], { encoding: 'utf8', timeout: 30_000 })
-    expect(clean.error).toBeUndefined()
+    const clean = await runCheck(directory)
+    requireProcessSuccess('content-check-clean', clean)
     expect(clean.stderr).toBe('')
-    expect(clean.status).toBe(0)
     expect(clean.stdout).toContain('Content admitted')
 
     // The developer declares a generated mesh; the generator never ran. The
@@ -152,13 +165,13 @@ describe('runnable with the harness deleted', () => {
     })
     writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
 
-    const blocked = spawnSync('node', [script], { encoding: 'utf8', timeout: 30_000 })
-    expect(blocked.status).toBe(1)
+    const blocked = await runCheck(directory)
+    requireProcessExit('content-check-generated-output-missing', blocked, 1)
     expect(blocked.stderr).toContain('generator_output_missing')
     expect(blocked.stderr).toContain('text-to-3d')
-  })
+  }, 90_000)
 
-  test('the check script refuses a cut-scene referencing a clip that is not admitted', () => {
+  test('the check script refuses a cut-scene referencing a clip that is not admitted', async () => {
     const { directory } = scaffoldOnDisk(CINEMATIC_INTENT)
     const manifestPath = join(directory, 'kei-mmo', 'content', 'manifest.json')
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { assets: Array<{ id: string }> }
@@ -167,14 +180,11 @@ describe('runnable with the harness deleted', () => {
     manifest.assets = manifest.assets.filter(({ id }) => id !== 'walk-loop')
     writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
 
-    const result = spawnSync('node', [join(directory, 'kei-mmo', 'content', 'check.mjs')], {
-      encoding: 'utf8',
-      timeout: 30_000,
-    })
-    expect(result.status).toBe(1)
+    const result = await runCheck(directory)
+    requireProcessExit('content-check-missing-clip', result, 1)
     expect(result.stderr).toContain('walk-loop')
     expect(result.stderr).toContain('never reference a missing clip')
-  })
+  }, 45_000)
 
   test('the player module drives the shipped cut-scene with no harness anywhere near it', async () => {
     const { directory } = scaffoldOnDisk(CINEMATIC_INTENT)

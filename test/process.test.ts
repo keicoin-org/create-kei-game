@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'bun:test'
+import { existsSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 
-import { processFailureDiagnostic, requireProcessSuccess, runProcess } from './process.js'
+import {
+  nodeExecutable,
+  processFailureDiagnostic,
+  requireProcessExit,
+  requireProcessSuccess,
+  runProcess,
+} from './process.js'
 
 function isAlive(pid: number): boolean {
   try {
@@ -41,13 +49,44 @@ describe('bounded process diagnostics', () => {
     expect(() => requireProcessSuccess('runtime-cli', result)).toThrow(diagnostic)
   })
 
-  test('the asynchronous harness bounds output and awaits a clean child close', async () => {
-    const node = Bun.which('node')
-    expect(node).not.toBeNull()
-    if (node === null) throw new Error('Node.js executable is unavailable')
+  test('the node executable is resolved to an absolute path once, not searched per spawn', () => {
+    const node = nodeExecutable()
+    expect(isAbsolute(node)).toBeTrue()
+    expect(existsSync(node)).toBeTrue()
+    expect(nodeExecutable()).toBe(node)
+  })
 
+  test('a phase that expects a refusal reads the exit status, not an undefined one', async () => {
+    // The gate tests assert exit 1. Before the boundary was bounded, a child
+    // that never reached an exit reported `Expected: 1 / Received: undefined`
+    // and threw the real OS error away.
+    const refused = await runProcess(
+      nodeExecutable(),
+      ['-e', "process.stderr.write('generator_output_missing: text-to-3d');process.exit(1)"],
+      { cwd: process.cwd(), timeoutMs: 10_000 },
+    )
+    requireProcessExit('content-check', refused, 1)
+    expect(refused.stderr).toBe('generator_output_missing: text-to-3d')
+    expect(() => requireProcessSuccess('content-check', refused)).toThrow(
+      processFailureDiagnostic('content-check', refused),
+    )
+
+    const statusless = {
+      status: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      error: Object.assign(new Error('spawn node ENOENT'), { code: 'ENOENT' }),
+    } as const
+    expect(() => requireProcessExit('content-check', statusless, 1)).toThrow(
+      processFailureDiagnostic('content-check', statusless),
+    )
+    expect(processFailureDiagnostic('content-check', statusless)).toContain('"errorCode":"ENOENT"')
+  })
+
+  test('the asynchronous harness bounds output and awaits a clean child close', async () => {
     const result = await runProcess(
-      node,
+      nodeExecutable(),
       ['-e', "process.stdout.write(process.env.KEI_PROCESS_PROBE + '\\n' + '\u20ac'.repeat(32 * 1024))"],
       {
         cwd: process.cwd(),
@@ -64,17 +103,13 @@ describe('bounded process diagnostics', () => {
   })
 
   test('a timeout kills the complete child process tree before it resolves', async () => {
-    const node = Bun.which('node')
-    expect(node).not.toBeNull()
-    if (node === null) throw new Error('Node.js executable is unavailable')
-
     const source = [
       "const {spawn}=require('node:child_process')",
       "const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'})",
       "process.stdout.write(JSON.stringify({parent:process.pid,child:child.pid})+'\\n')",
       'setInterval(()=>{},1000)',
     ].join(';')
-    const result = await runProcess(node, ['-e', source], {
+    const result = await runProcess(nodeExecutable(), ['-e', source], {
       cwd: process.cwd(),
       timeoutMs: 500,
     })
@@ -90,13 +125,9 @@ describe('bounded process diagnostics', () => {
   })
 
   test('a hung tree terminator reaches a bounded fallback before the harness resolves', async () => {
-    const node = Bun.which('node')
-    expect(node).not.toBeNull()
-    if (node === null) throw new Error('Node.js executable is unavailable')
-
     const started = Date.now()
     const result = await runProcess(
-      node,
+      nodeExecutable(),
       ['-e', "process.stdout.write(String(process.pid));setInterval(()=>{},1000)"],
       {
         cwd: process.cwd(),

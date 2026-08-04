@@ -273,8 +273,32 @@ export async function runProcess(
   })
 }
 
-export function requireProcessSuccess(phase: string, result: ProcessResult): void {
-  if (result.error !== undefined || result.status !== 0) {
+/**
+ * Assert the exit a phase was written against. A child that never reached an
+ * exit status reports the bounded diagnostic rather than the bare
+ * `Expected: 1 / Received: undefined` that hid the real OS error.
+ */
+export function requireProcessExit(phase: string, result: ProcessResult, status: number): void {
+  if (result.error !== undefined || result.status !== status) {
     throw new Error(processFailureDiagnostic(phase, result))
   }
+}
+
+export function requireProcessSuccess(phase: string, result: ProcessResult): void {
+  requireProcessExit(phase, result, 0)
+}
+
+let resolvedNode: string | undefined
+
+/** Resolve `node` once so every child uses the same explicit executable. */
+export function nodeExecutable(): string {
+  if (resolvedNode !== undefined) return resolvedNode
+  const found = Bun.which('node')
+  if (found === null) {
+    throw new Error(
+      JSON.stringify({ event: 'test_process_failed', phase: 'resolve-node', errorCode: 'ENOENT' }),
+    )
+  }
+  resolvedNode = found
+  return found
 }
