@@ -111,7 +111,7 @@ async function startAndProbe(directory: string): Promise<void> {
   child.stderr.on('data', (chunk: string) => { stderr += chunk })
 
   try {
-    const ready = await new Promise<{ readonly url: string }>((resolve, reject) => {
+    const ready = await new Promise<{ readonly url: string; readonly host: string; readonly port: number }>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new SmokeFailure({
           code: 'dev_ready_timed_out',
@@ -126,10 +126,22 @@ async function startAndProbe(directory: string): Promise<void> {
         for (const line of stdout.split(/\r?\n/)) {
           if (line.trim() === '') continue
           try {
-            const record = JSON.parse(line) as { event?: unknown; service?: unknown; url?: unknown }
-            if (record.event === 'ready' && record.service === 'kei-dev-server' && typeof record.url === 'string') {
+            const record = JSON.parse(line) as {
+              event?: unknown
+              service?: unknown
+              url?: unknown
+              host?: unknown
+              port?: unknown
+            }
+            if (
+              record.event === 'ready' &&
+              record.service === 'kei-dev-server' &&
+              typeof record.url === 'string' &&
+              typeof record.host === 'string' &&
+              typeof record.port === 'number'
+            ) {
               clearTimeout(timeout)
-              resolve({ url: record.url })
+              resolve({ url: record.url, host: record.host, port: record.port })
               return
             }
           } catch {
@@ -152,6 +164,10 @@ async function startAndProbe(directory: string): Promise<void> {
         }))
       })
     })
+
+    expect(ready.host).toBe('127.0.0.1')
+    expect(ready.port).toBeGreaterThan(0)
+    expect(new URL(ready.url).hostname).toBe('127.0.0.1')
 
     try {
       const page = await fetch(ready.url, { signal: AbortSignal.timeout(10_000) })
@@ -201,6 +217,28 @@ async function startAndProbe(directory: string): Promise<void> {
   }
 }
 
+function expectPublicHostRefused(directory: string): void {
+  const result = spawnSync(BUN, ['run', 'dev'], {
+    cwd: directory,
+    encoding: 'utf8',
+    timeout: COMMAND_TIMEOUT_MS,
+    windowsHide: true,
+    env: { ...process.env, HOST: '0.0.0.0', PORT: '0', NO_COLOR: '1' },
+  })
+  expect(result.status).not.toBe(0)
+  expect(result.stdout).not.toContain('"event":"ready"')
+  const record = result.stderr
+    .split(/\r?\n/)
+    .filter((line) => line.trim().startsWith('{'))
+    .map((line) => JSON.parse(line) as { event?: unknown; code?: unknown; message?: unknown })
+    .find((line) => line.event === 'error')
+  expect(record).toEqual({
+    event: 'error',
+    code: 'invalid_host',
+    message: 'HOST must be the numeric loopback address 127.0.0.1 or ::1.',
+  })
+}
+
 afterAll(() => {
   for (const directory of roots.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
@@ -222,6 +260,8 @@ describe('generated projects install, build, and start without the harness', () 
       run(directory, 'build', ['run', 'build'])
       expect(existsSync(join(directory, 'dist', 'client', 'main.js'))).toBeTrue()
       expect(existsSync(join(directory, 'dist', 'server', 'main.js'))).toBeTrue()
+
+      expectPublicHostRefused(directory)
 
       if (dimension === '3d') {
         const dependencyTree = run(directory, 'dependency_tree', ['pm', 'ls', '--all'])

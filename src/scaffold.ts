@@ -162,6 +162,8 @@ http://127.0.0.1:${DEFAULT_DEV_PORT}. It prints one JSON line when it is listeni
 
 — so a script can wait for the server instead of sleeping and hoping. Set
 \`PORT=0\` to take whatever port is free and read the real one back off that line.
+The server accepts only numeric loopback hosts: \`127.0.0.1\` (the default) or
+\`::1\`. An inherited \`HOST\` cannot accidentally publish this development server.
 
 \`bun run build\` produces the same bundle without serving it, and prints one JSON
 line of its own.
@@ -397,6 +399,7 @@ function devServer(): string {
  * This file is yours. It imports the project's own build and nothing else.
  */
 import { createServer } from 'node:http'
+import { isIP } from 'node:net'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 
@@ -404,6 +407,7 @@ import { build, OUT_DIR } from '../../scripts/build.mjs'
 
 const HOST = process.env.HOST ?? '127.0.0.1'
 const PORT = Number.parseInt(process.env.PORT ?? '${DEFAULT_DEV_PORT}', 10)
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1'])
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -425,6 +429,13 @@ const TYPES = {
 function fail(code, message) {
   process.stderr.write(JSON.stringify({ event: 'error', code, message }) + '\\n')
   process.exit(1)
+}
+
+// A development server must not become public because an inherited HOST was
+// set for some unrelated tool. Numeric addresses only also avoid trusting DNS
+// to decide whether "localhost" still means this machine.
+if (isIP(HOST) === 0 || !LOOPBACK_HOSTS.has(HOST)) {
+  fail('invalid_host', 'HOST must be the numeric loopback address 127.0.0.1 or ::1.')
 }
 
 /**
@@ -499,7 +510,8 @@ try {
 server.listen(PORT, HOST, () => {
   const address = server.address()
   const port = typeof address === 'object' && address !== null ? address.port : PORT
-  const url = 'http://' + HOST + ':' + port + '/'
+  const authority = HOST.includes(':') ? '[' + HOST + ']' : HOST
+  const url = 'http://' + authority + ':' + port + '/'
   process.stdout.write(
     JSON.stringify({
       event: '${DEV_READY_EVENT}',
