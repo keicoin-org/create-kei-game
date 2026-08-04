@@ -156,10 +156,13 @@ separate work; the available packet does not promise them.
 
 Blank projects install the exact supported `kei-transaction@0.6.0` release and
 own a runnable `Kei.mock()` proof. A separate provisioner receives an injected
-issuer context, issues open-transfer GOLD, creates a Founder's Sword, and mints
-both assets directly to their player custodians. The issuer retains neither
-trade asset after setup, and no seed value is emitted outside a clearly labelled
-public mock-only test fixture.
+issuer context, issues GOLD with `transfer: 'open'` and `swap: 'one-way'`,
+creates a Founder's Sword, and mints both assets directly to their player
+custodians. Open transfer is what permits the player-to-player trade; one-way is
+the distinct issuer-desk promise that players may buy GOLD from its issuer but
+cannot redeem it there. The issuer retains neither trade asset after setup, and
+no seed value is emitted outside a clearly labelled public mock-only test
+fixture.
 
 The seller calls `market.offer()` from their own `Kei.start()` context, reserving
 the item-for-GOLD offer to the buyer and passing it directly rather than

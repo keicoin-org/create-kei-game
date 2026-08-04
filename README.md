@@ -207,8 +207,10 @@ and proves stale and authority-forging messages do not mutate the world.
 
 That closes the generated-project shape of SPEC §11.3 criteria 3, 4, and 6: a
 real client connects, two clients see each other move, and a private mock chain
-proves a player-custodied currency, item, mismatch refusal, and atomic trade.
-The game server has no Kei account or economic message path. It does **not**
+proves a player-custodied open-transfer currency with a one-way issuer-desk
+promise, an item, mismatch refusal, and atomic trade. Open transfer permits the
+player trade; one-way means the issuer may sell GOLD but does not promise to buy
+it back. The game server has no Kei account or economic message path. It does **not**
 close persistence/forged-state survival across restart (5), socket-to-wallet
 proof of control, harness deletion as an end-to-end product gate (8), or
 presentation polish (9). Deleting this harness does not affect the generated

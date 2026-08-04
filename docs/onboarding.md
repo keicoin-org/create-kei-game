@@ -158,10 +158,12 @@ project-owned connection module, render server-assigned players, and ship a
 two-client headless movement check.
 
 Both also install the published `kei-transaction@0.6.0` package and own the same
-private `Kei.mock()` proof: separate issuer provisioning mints GOLD and an item
-directly to player wallets; a seller reserves an exact offer to the buyer; an
-expectation mismatch moves nothing; the correct buyer acceptance settles both
-legs atomically. `src/server/**` imports no Kei code and holds no wallet. Neither
+private `Kei.mock()` proof: separate issuer provisioning mints open-transfer,
+one-way-purchase GOLD and an item directly to player wallets; a seller reserves
+an exact offer to the buyer; an expectation mismatch moves nothing; the correct
+buyer acceptance settles both legs atomically. Open transfer permits that player
+trade; one-way is the separate issuer-desk promise that GOLD may be bought but
+not redeemed. `src/server/**` imports no Kei code and holds no wallet. Neither
 path implements restart persistence, socket-to-wallet proof of control, client
 prediction/reconciliation, interest management, or presentation polish yet,
 and neither imports the harness at runtime.

@@ -376,7 +376,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     methods: [
       { call: 'const node = await Kei.mock()', does: 'Creates the private in-process chain the generated economy proof uses without a network or secret.' },
       { call: 'const issuer = await Kei.server({ seed, node })', does: 'Opens the issuer only in a separate provisioning context; the generated game server never imports Kei.' },
-      { call: "issuer.token.issue({ name: 'Gold', symbol: 'GOLD', decimals: 0, transfer: 'open', swap: 'off' })", does: 'Issues a consensus-owned currency whose open transfer policy permits direct player-to-player trade.' },
+      { call: "issuer.token.issue({ name: 'Gold', symbol: 'GOLD', decimals: 0, transfer: 'open', swap: 'one-way' })", does: 'Issues a consensus-owned currency: open permits direct player trade, while one-way records the issuer desk promise that players may buy GOLD but not redeem it.' },
       { call: "issuer.items.create({ name: \"Founder's Sword\", transfer: 'open' }) / issuer.items.mint(sword.id, seller.address)", does: 'Creates the item and mints it directly to its player custodian, never through the game server.' },
       { call: "seller.market.offer({ give: { asset: sword.id, amount: '1' }, want: { asset: gold.id, amount: '25' }, to: buyer.address })", does: 'The seller signs one reserved offer and passes it directly to the buyer; there is no global order book.' },
       { call: 'buyer.market.accept(offer, { expect: { hash, seller, give, want, to } })', does: 'Checks every displayed term immediately before the buyer signs the one atomic settlement block.' },

@@ -29,7 +29,7 @@ export const GOLD = Object.freeze({
   decimals: 0,
   maxSupply: '1000000',
   transfer: 'open',
-  swap: 'off',
+  swap: 'one-way',
 } as const)
 
 export const FOUNDERS_SWORD = Object.freeze({
@@ -218,6 +218,7 @@ describe('player-custodied Kei economy', () => {
       await Promise.all([seller.sync(), buyer.sync()])
 
       expect(gold.transferPolicy).toBe('open')
+      expect(gold.swap).toBe('one-way')
       expect(sword.transferPolicy).toBe('open')
       expect(await seller.items.owner(sword.id)).toBe(seller.address)
       expect(await rawBalances(node, { sword: sword.id, gold: gold.id }, {

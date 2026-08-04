@@ -227,9 +227,12 @@ Stale input and attempts to author position or economic state are refused
 without changing the world.
 
 The project also owns a player-custodied Kei proof. Run \`bun run economy:check\`:
-it creates one private \`Kei.mock()\` chain, provisions open-transfer GOLD and a
-Founder's Sword directly to two player wallets, refuses mismatched displayed
-terms before signing, then atomically settles a reserved item-for-GOLD offer.
+it creates one private \`Kei.mock()\` chain, provisions open-transfer,
+one-way-purchase GOLD and a Founder's Sword directly to two player wallets,
+refuses mismatched displayed terms before signing, then atomically settles a
+reserved item-for-GOLD offer. \`transfer: 'open'\` permits that player trade;
+\`swap: 'one-way'\` is the separate issuer-desk promise that GOLD can be bought
+from its issuer but not redeemed there.
 The authoritative game server has no Kei import, key, balance, inventory, or
 settlement path. The mock provisioner is a separate test fixture; production
 provisioning accepts an injected issuer context and contains no seed.

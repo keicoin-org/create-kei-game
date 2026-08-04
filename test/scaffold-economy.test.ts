@@ -50,6 +50,8 @@ describe('generated Kei economy', () => {
       ].join('\n')
       expect(economy).toContain("from 'kei-transaction'")
       expect(economy).toContain('Kei.mock()')
+      expect(economy).toContain("swap: 'one-way'")
+      expect(economy).toContain("expect(gold.swap).toBe('one-way')")
       expect(economy).toContain('market.offer')
       expect(economy).toContain('market.accept')
       expect(economy).toContain('holderBalance')
