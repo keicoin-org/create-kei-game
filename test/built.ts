@@ -11,7 +11,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -43,6 +43,13 @@ export function ensureBuilt(): void {
   // `tsc --build` is itself incremental, so this only skips the process spawn —
   // which is the part that was costing the memory.
   if (newestMtime(join(root, 'dist')) > newestMtime(join(root, 'src'))) return
+
+  // Past that point the build has to actually emit, and `tsc --build` will not:
+  // its stamp lives beside the config rather than inside `dist`, so a removed
+  // `dist` leaves the stamp claiming everything is written and the build is a
+  // no-op. The fallback then reports success while every test that spawns a real
+  // binary fails against a directory that is not there.
+  rmSync(join(root, 'tsconfig.tsbuildinfo'), { force: true })
 
   const built = spawnSync(process.execPath, ['run', 'build'], {
     cwd: root,
