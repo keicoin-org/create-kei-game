@@ -409,6 +409,57 @@ export function riggedAnimationGlb(): Buffer {
   }, bin)
 }
 
+function indexedSkinPaddingGlb(options: { readonly indexAccessor?: number; readonly indexCount?: number; readonly lastIndex?: number } = {}): Buffer {
+  const bin = Buffer.alloc(164)
+  ;[0,0,0, 1,0,0, 0,1,0, 1,1,0].forEach((value, index) => bin.writeFloatLE(value, index * 4))
+  bin[48] = 0; bin[49] = 1; bin[50] = options.lastIndex ?? 2
+  bin.writeFloatLE(0, 52); bin.writeFloatLE(1, 56)
+  ;[0,0,0, 1,0,0].forEach((value, index) => bin.writeFloatLE(value, 60 + index * 4))
+  for (let vertex = 0; vertex < 4; vertex += 1) {
+    bin[84 + vertex * 4] = vertex === 3 ? 1 : 0
+    bin.writeFloatLE(1, 100 + vertex * 16)
+  }
+  return packedGlb({
+    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 48 }, { buffer: 0, byteOffset: 48, byteLength: 3 },
+      { buffer: 0, byteOffset: 52, byteLength: 8 }, { buffer: 0, byteOffset: 60, byteLength: 24 },
+      { buffer: 0, byteOffset: 84, byteLength: 16 }, { buffer: 0, byteOffset: 100, byteLength: 64 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 4, type: 'VEC3' },
+      { bufferView: 1, componentType: 5121, count: options.indexCount ?? 3, type: 'SCALAR' },
+      { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: 3, componentType: 5126, count: 2, type: 'VEC3' },
+      { bufferView: 4, componentType: 5121, count: 4, type: 'VEC4' },
+      { bufferView: 5, componentType: 5126, count: 4, type: 'VEC4' },
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, JOINTS_0: 4, WEIGHTS_0: 5 }, indices: options.indexAccessor ?? 1, mode: 4 }] }],
+    nodes: [{ mesh: 0, skin: 0, children: [1,2] }, {}, {}], skins: [{ joints: [1,2] }],
+    animations: [{ samplers: [{ input: 2, output: 3, interpolation: 'LINEAR' }], channels: [{ sampler: 0, target: { node: 2, path: 'translation' } }] }], scenes: [{ nodes: [0] }], scene: 0,
+  }, bin)
+}
+
+/** Only accessor padding is influenced by the animated joint; the indexed triangle uses vertices 0-2. */
+export function paddingOnlyInfluencedJointAnimationGlb(): Buffer {
+  return indexedSkinPaddingGlb()
+}
+
+/** A hostile index references a vertex outside the POSITION/skin accessor boundary. */
+export function outOfRangeSkinIndexAnimationGlb(): Buffer {
+  return indexedSkinPaddingGlb({ lastIndex: 4 })
+}
+
+/** A primitive cannot smuggle an out-of-range accessor id into skin topology analysis. */
+export function outOfRangeSkinIndexAccessorAnimationGlb(): Buffer {
+  return indexedSkinPaddingGlb({ indexAccessor: 99 })
+}
+
+/** An index count above the global accessor ceiling must fail before traversal or allocation. */
+export function oversizedSkinIndexCountAnimationGlb(): Buffer {
+  return indexedSkinPaddingGlb({ indexCount: 16_777_217 })
+}
+
 function jointBindingAnimationGlb(options: { readonly attachSkin: boolean; readonly joints: readonly number[]; readonly target: number; readonly skinAttributes?: boolean; readonly zeroWeights?: boolean }): Buffer {
   const skinAttributes = options.skinAttributes !== false
   const bin = Buffer.alloc(skinAttributes ? 128 : 68); bin.writeFloatLE(1, 12); bin.writeFloatLE(1, 28); bin.writeFloatLE(0, 36); bin.writeFloatLE(1, 40)

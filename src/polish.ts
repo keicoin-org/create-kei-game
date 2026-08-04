@@ -634,7 +634,30 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
           if (!validAccessor(positions) || !validAccessor(joints) || !validAccessor(weights)) return ['media_glb_animation_rig_missing']
           const positionAccessor = accessors[positions]; const jointAccessor = accessors[joints]; const weightAccessor = accessors[weights]
           if (positionAccessor.type !== 'VEC3' || positionAccessor.componentType !== 5126 || positionAccessor.normalized === true || jointAccessor.type !== 'VEC4' || ![5121,5123].includes(jointAccessor.componentType) || jointAccessor.normalized === true || weightAccessor.type !== 'VEC4' || ![5121,5123,5126].includes(weightAccessor.componentType) || (weightAccessor.componentType === 5126 ? weightAccessor.normalized === true : weightAccessor.normalized !== true) || jointAccessor.count !== positionAccessor.count || weightAccessor.count !== positionAccessor.count) return ['media_glb_animation_rig_missing']
-          for (let vertex = 0; vertex < positionAccessor.count; vertex += 1) { let influence = 0
+          const mode = primitive.mode ?? 4; if (![4,5,6].includes(mode)) return ['media_glb_animation_rig_missing']
+          let indexed: { count: number; value: (element: number) => number } | null = null
+          if (primitive.indices !== undefined) {
+            if (!validAccessor(primitive.indices)) return ['media_glb_malformed']
+            const index = accessors[primitive.indices]
+            if (index.type !== 'SCALAR' || ![5121,5123,5125].includes(index.componentType) || index.normalized === true || !(indexed = indexAccessor(primitive.indices))) return ['media_glb_malformed']
+          }
+          const indexCount = indexed?.count ?? positionAccessor.count; const at = (element: number) => indexed ? indexed.value(element) : element
+          if ((mode === 4 && (indexCount < 3 || indexCount % 3 !== 0)) || (mode !== 4 && indexCount < 3)) return ['media_glb_animation_rig_missing']
+          const referencedVertices = new Uint8Array(positionAccessor.count)
+          const acceptTriangle = (a: number, b: number, c: number): boolean | null => {
+            if (!integer(a, 0, positionAccessor.count - 1) || !integer(b, 0, positionAccessor.count - 1) || !integer(c, 0, positionAccessor.count - 1)) return null
+            const ax = accessorComponent(positions, a, 0); const ay = accessorComponent(positions, a, 1); const az = accessorComponent(positions, a, 2); const bx = accessorComponent(positions, b, 0); const by = accessorComponent(positions, b, 1); const bz = accessorComponent(positions, b, 2); const cx = accessorComponent(positions, c, 0); const cy = accessorComponent(positions, c, 1); const cz = accessorComponent(positions, c, 2)
+            if (ax === null || ay === null || az === null || bx === null || by === null || bz === null || cx === null || cy === null || cz === null) return null
+            const abx = bx - ax; const aby = by - ay; const abz = bz - az; const acx = cx - ax; const acy = cy - ay; const acz = cz - az
+            const crossX = aby * acz - abz * acy; const crossY = abz * acx - abx * acz; const crossZ = abx * acy - aby * acx
+            if (crossX * crossX + crossY * crossY + crossZ * crossZ <= 1e-10) return false
+            referencedVertices[a] = 1; referencedVertices[b] = 1; referencedVertices[c] = 1; return true
+          }
+          const requireTriangle = (a: number, b: number, c: number) => { const accepted = acceptTriangle(a, b, c); if (accepted === null) return 'malformed'; return accepted ? null : 'rig' }
+          if (mode === 4) for (let element = 0; element < indexCount; element += 3) { const rejected = requireTriangle(at(element), at(element + 1), at(element + 2)); if (rejected === 'malformed') return ['media_glb_malformed']; if (rejected) return ['media_glb_animation_rig_missing'] }
+          if (mode === 5) for (let element = 0; element + 2 < indexCount; element += 1) { const rejected = requireTriangle(at(element), at(element + 1), at(element + 2)); if (rejected === 'malformed') return ['media_glb_malformed']; if (rejected) return ['media_glb_animation_rig_missing'] }
+          if (mode === 6) for (let element = 1; element + 1 < indexCount; element += 1) { const rejected = requireTriangle(at(0), at(element), at(element + 1)); if (rejected === 'malformed') return ['media_glb_malformed']; if (rejected) return ['media_glb_animation_rig_missing'] }
+          for (let vertex = 0; vertex < positionAccessor.count; vertex += 1) { if (referencedVertices[vertex] === 0) continue; let influence = 0
             for (let component = 0; component < 4; component += 1) { const joint = accessorComponent(joints, vertex, component); const rawWeight = accessorComponent(weights, vertex, component); if (joint === null || rawWeight === null || !integer(joint, 0, skin.joints.length - 1)) return ['media_glb_animation_rig_missing']; const weight = weightAccessor.componentType === 5121 ? rawWeight / 255 : weightAccessor.componentType === 5123 ? rawWeight / 65_535 : rawWeight; if (weight < 0 || weight > 1) return ['media_glb_animation_rig_missing']; if (weight > 0) influencedJoints.add(skin.joints[joint]); influence += weight }
             if (influence <= 1e-8) return ['media_glb_animation_rig_missing']
           }

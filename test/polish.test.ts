@@ -21,7 +21,7 @@ import {
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, cyclicSceneGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, indexedQuadGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, paddedTriangleGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
+import { CC0_TEXT, cyclicSceneGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, indexedQuadGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -152,6 +152,18 @@ describe('admitted media and licence byte semantics', () => {
     expect(validatePolishMediaBytes('model', sceneTriangleGlb())).toEqual([])
     expect(validatePolishMediaBytes('model', indexedQuadGlb())).toEqual([])
     expect(validatePolishMediaBytes('animation', riggedAnimationGlb())).toEqual([])
+  })
+
+  test('does not admit an animated joint influenced only by indexed accessor padding', () => {
+    expect(validatePolishMediaBytes('animation', paddingOnlyInfluencedJointAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
+  })
+
+  test.each([
+    ['an out-of-range skinned vertex index', outOfRangeSkinIndexAnimationGlb],
+    ['an out-of-range skin topology accessor', outOfRangeSkinIndexAccessorAnimationGlb],
+    ['an index accessor count above the global bound', oversizedSkinIndexCountAnimationGlb],
+  ] as const)('bounds %s before skin influence traversal', (_name, build) => {
+    expect(validatePolishMediaBytes('animation', build())).toEqual(['media_glb_malformed'])
   })
 
   test.each([
