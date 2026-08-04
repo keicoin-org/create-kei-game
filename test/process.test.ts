@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { processFailureDiagnostic, requireProcessSuccess } from './process.js'
+import { processFailureDiagnostic, requireProcessSuccess, runProcess } from './process.js'
 
 describe('bounded process diagnostics', () => {
   test('an injected spawn error reports its safe OS fields instead of an undefined status assertion', () => {
@@ -30,5 +30,26 @@ describe('bounded process diagnostics', () => {
     expect(diagnostic).not.toContain('request body')
     expect(diagnostic).not.toContain('generated secret')
     expect(() => requireProcessSuccess('runtime-cli', result)).toThrow(diagnostic)
+  })
+
+  test('the asynchronous harness bounds output and awaits a clean child close', async () => {
+    const node = Bun.which('node')
+    expect(node).not.toBeNull()
+    if (node === null) throw new Error('Node.js executable is unavailable')
+
+    const result = await runProcess(
+      node,
+      ['-e', "process.stdout.write(process.env.KEI_PROCESS_PROBE + '\\n' + 'x'.repeat(96 * 1024))"],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, KEI_PROCESS_PROBE: 'probe-ok' },
+        timeoutMs: 10_000,
+      },
+    )
+
+    requireProcessSuccess('bounded-output', result)
+    expect(result.stdout.startsWith('probe-ok\n')).toBeTrue()
+    expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(64 * 1024)
+    expect(result.stderr).toBe('')
   })
 })

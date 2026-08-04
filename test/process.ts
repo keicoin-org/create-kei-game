@@ -13,6 +13,7 @@ export interface ProcessResult {
 
 export interface ProcessOptions {
   readonly cwd: string
+  readonly env?: NodeJS.ProcessEnv
   readonly input?: string
   readonly timeoutMs: number
 }
@@ -56,6 +57,7 @@ export async function runProcess(
     try {
       child = spawn(executable, [...args], {
         cwd: options.cwd,
+        env: options.env,
         windowsHide: true,
         stdio: 'pipe',
       })
