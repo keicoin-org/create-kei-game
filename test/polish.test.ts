@@ -21,7 +21,7 @@ import {
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, cyclicSceneGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, indexedQuadGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
+import { ancestorSkeletonAnimationGlb, CC0_TEXT, cyclicSceneGlb, disconnectedJointAnimationGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, hugeSkinWeightAnimationGlb, indexedQuadGlb, invalidInverseBindMatricesAnimationGlb, misalignedAccessorAnimationGlb, misalignedJointVertexAttributeGlb, misalignedNonSkinVertexAttributeGlb, mismatchedSkinAccessorCountAnimationGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, nonFiniteSkinWeightAnimationGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkeletonAnimationGlb, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, outOfRangeSkinJointAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, sharedRootSkinAnimationGlb, siblingSkeletonAnimationGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unnormalizedSkinWeightsAnimationGlb, unpairedSkinSetAnimationGlb, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -138,8 +138,8 @@ describe('admitted media and licence byte semantics', () => {
     expect(validatePolishMediaBytes('model', paddedTriangleGlb(false))).toEqual(['media_glb_placeholder'])
     expect(validatePolishMediaBytes('animation', tinyGlb('animation'))).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', dummySkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
-    expect(validatePolishMediaBytes('animation', unusedSkinJointAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', missingSkinAttributesAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', unusedSkinJointAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', zeroWeightSkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', uninfluencedJointAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
     expect(validatePolishMediaBytes('animation', unrelatedUsedSkinAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
@@ -152,6 +152,22 @@ describe('admitted media and licence byte semantics', () => {
     expect(validatePolishMediaBytes('model', sceneTriangleGlb())).toEqual([])
     expect(validatePolishMediaBytes('model', indexedQuadGlb())).toEqual([])
     expect(validatePolishMediaBytes('animation', riggedAnimationGlb())).toEqual([])
+    expect(validatePolishMediaBytes('animation', sharedRootSkinAnimationGlb())).toEqual([])
+    expect(validatePolishMediaBytes('animation', ancestorSkeletonAnimationGlb())).toEqual([])
+  })
+
+  test.each([
+    ['a non-skin COLOR_0 accessor with a relative byte offset of two', 'model', misalignedNonSkinVertexAttributeGlb],
+    ['a JOINTS_0 accessor at absolute byte 40 but relative byte offset two', 'animation', misalignedJointVertexAttributeGlb],
+  ] as const)('rejects %s', (_name, kind, build) => {
+    expect(validatePolishMediaBytes(kind, build())).toEqual(['media_glb_malformed'])
+  })
+
+  test.each([
+    ['a sibling declared as the skeleton', siblingSkeletonAnimationGlb],
+    ['joint roots disconnected from the active scene', disconnectedJointAnimationGlb],
+  ] as const)('rejects animation skin hierarchy with %s', (_name, build) => {
+    expect(validatePolishMediaBytes('animation', build())).toEqual(['media_glb_animation_rig_missing'])
   })
 
   test('does not admit an animated joint influenced only by indexed accessor padding', () => {
@@ -164,6 +180,21 @@ describe('admitted media and licence byte semantics', () => {
     ['an index accessor count above the global bound', oversizedSkinIndexCountAnimationGlb],
   ] as const)('bounds %s before skin influence traversal', (_name, build) => {
     expect(validatePolishMediaBytes('animation', build())).toEqual(['media_glb_malformed'])
+  })
+
+  test.each([
+    ['unnormalized integer weights', unnormalizedSkinWeightsAnimationGlb, 'media_glb_malformed'],
+    ['an out-of-range skin joint index', outOfRangeSkinJointAnimationGlb, 'media_glb_malformed'],
+    ['all-zero skin weights', zeroWeightSkinAnimationGlb, 'media_glb_animation_rig_missing'],
+    ['skin attribute count mismatching POSITION', mismatchedSkinAccessorCountAnimationGlb, 'media_glb_malformed'],
+    ['an unpaired additional joint set', unpairedSkinSetAnimationGlb, 'media_glb_malformed'],
+    ['a non-finite float skin weight', nonFiniteSkinWeightAnimationGlb, 'media_glb_malformed'],
+    ['a huge finite float skin weight', hugeSkinWeightAnimationGlb, 'media_glb_malformed'],
+    ['an invalid inverse-bind-matrix accessor', invalidInverseBindMatricesAnimationGlb, 'media_glb_animation_rig_missing'],
+    ['an out-of-range skeleton node', outOfRangeSkeletonAnimationGlb, 'media_glb_animation_rig_missing'],
+    ['a combined buffer-view/accessor misalignment', misalignedAccessorAnimationGlb, 'media_glb_malformed'],
+  ] as const)('rejects animation skinning with %s', (_name, build, code) => {
+    expect(validatePolishMediaBytes('animation', build())).toEqual([code])
   })
 
   test.each([
