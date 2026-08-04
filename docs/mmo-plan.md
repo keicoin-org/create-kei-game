@@ -142,6 +142,11 @@ The catalog covers rendering (2D and 3D), animation (2D and 3D), shaders,
 post-processing, networking and session authority, persistence and world
 streaming, Kei economies, UI, audio, content, testing, and deployment.
 
+The `polish-2d` and `polish-3d` packets are planned. Blank scaffolds own their
+versioned recipe and fail-closed source-admission check, but no production art,
+audio, presentation route, or reviewed capture is claimed. A plan therefore
+defers them even when the brief asks for a polished or recordable encounter.
+
 Two examples of what "concrete" means here. The 3D animation packet names
 `LoadAssetContainerAsync(url, scene)`, looks up a Babylon `AnimationGroup` by
 semantic name, blends groups by weight, and instantiates rigged characters from

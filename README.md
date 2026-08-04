@@ -172,6 +172,7 @@ salvage-run/
 ├── kei-mmo/
 │   ├── PLAN.md
 │   ├── plan.json
+│   ├── polish/                   # both dimensions; contract/check, assets pending
 │   └── content/                  # 3D plans only
 │       ├── manifest.json         # every asset as a versioned, admitted record
 │       ├── pipelines.json        # the workflow records and generator statuses
@@ -206,6 +207,15 @@ renderer. Both own a loopback-only game server and the same versioned connection
 path for browser and headless clients. `bun run headless -- <socket-url>` opens
 two server-assigned players, moves each once, proves each observes the other,
 and proves stale and authority-forging messages do not mutate the world.
+
+Both dimensions also receive a project-owned version-1 first-encounter contract
+under `kei-mmo/polish/`: semantic interact/strike timings, effect and cue maps,
+low/medium/high quality profiles, exact asset requirements, and a strict source
+registry. No licensed production asset has been selected in this slice, so
+`bun run polish:check` deliberately exits nonzero with
+`polish_assets_pending`. The construction renderer does not consume the recipe,
+and `polish-2d` / `polish-3d` remain planned. See
+[First-encounter polish contract](docs/polish-contract.md).
 
 `bun run restart-proof` creates a temporary WAL database, moves and progresses a
 server-assigned character, cleanly restarts the server twice, resumes the exact
@@ -301,6 +311,7 @@ The non-executing library entry points are `create-kei-mmo/intent`,
 `create-kei-mmo/capabilities`, `create-kei-mmo/references`,
 `create-kei-mmo/plan`, `create-kei-mmo/planner`, `create-kei-mmo/style`,
 `create-kei-mmo/content`, `create-kei-mmo/content-project`,
+`create-kei-mmo/polish`, `create-kei-mmo/effects`,
 `create-kei-mmo/motion`, `create-kei-mmo/cutscene`, `create-kei-mmo/source`,
 `create-kei-mmo/providers`, `create-kei-mmo/harness`, `create-kei-mmo/agent`,
 `create-kei-mmo/runtime`, `create-kei-mmo/runtime-protocol`,

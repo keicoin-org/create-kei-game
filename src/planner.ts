@@ -436,7 +436,7 @@ function contentPlanFor(intent: MmoIntent, present: ReadonlySet<string>): Conten
   // The declarations come straight off the capability records, so a status can
   // never be repeated here more optimistically than it is stated there.
   const generators: GeneratorDeclaration[] = CAPABILITY_PACKETS
-    .filter((packet) => packet.dimension === '3d' && packet.status !== 'available')
+    .filter((packet) => packet.id.startsWith('content-3d-') && packet.status !== 'available')
     .map((packet) => ({
       id: packet.id.replace(/^content-3d-/, ''),
       capability: packet.id,

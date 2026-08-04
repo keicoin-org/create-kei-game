@@ -75,6 +75,16 @@
       "bun": "./src/content-project.ts",
       "import": "./dist/content-project.js"
     },
+    "./polish": {
+      "types": "./dist/polish.d.ts",
+      "bun": "./src/polish.ts",
+      "import": "./dist/polish.js"
+    },
+    "./effects": {
+      "types": "./dist/effects.d.ts",
+      "bun": "./src/effects.ts",
+      "import": "./dist/effects.js"
+    },
     "./motion": {
       "types": "./dist/motion.d.ts",
       "bun": "./src/motion.ts",

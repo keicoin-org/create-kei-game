@@ -368,6 +368,8 @@ test('package exposes non-executing library subpaths', () => {
     './style',
     './content',
     './content-project',
+    './polish',
+    './effects',
     './motion',
     './cutscene',
     './source',

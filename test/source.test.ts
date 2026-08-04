@@ -171,6 +171,13 @@ describe('scaffolded source', () => {
         'kei-mmo/content/manifest.json',
         'kei-mmo/content/pipelines.json',
         'kei-mmo/content/check.mjs',
+        'kei-mmo/polish/manifest.json',
+        'kei-mmo/polish/sources.json',
+        'kei-mmo/polish/style.json',
+        'kei-mmo/polish/recipe.json',
+        'kei-mmo/polish/quality.json',
+        'kei-mmo/polish/THIRD_PARTY_ASSETS.md',
+        'kei-mmo/polish/check.mjs',
         PLAN_JSON_PATH,
         PLAN_MARKDOWN_PATH,
       ],
@@ -200,7 +207,7 @@ describe('scaffolded source', () => {
     )
     expect(result.created).toBe(true)
     expect(forced.fs.entries.get('/work/my-game')).toEqual(['notes.txt'])
-    expect(forced.fs.writes.size).toBe(24)
+    expect(forced.fs.writes.size).toBe(31)
   })
 
   test('refuses to treat a file as a destination, including under force', async () => {

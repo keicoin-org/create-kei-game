@@ -98,6 +98,13 @@ describe('the capability catalog', () => {
     expect(capabilityById('content-3d-voice-acting')?.status).toBe('absent')
   })
 
+  test('polish remains planned for both dimensions until admitted assets and captures exist', () => {
+    expect(capabilityById('polish-2d')?.status).toBe('planned')
+    expect(capabilityById('polish-3d')?.status).toBe('planned')
+    expect(capabilityById('polish-2d')?.statusReason).toContain('no licensed 2D art or audio')
+    expect(capabilityById('polish-3d')?.statusReason).toContain('no licensed 3D art or audio')
+  })
+
   test('the economy packet names the published player-custodied API', () => {
     const packet = capabilityById('economy-kei')!
     expect(packet.tools.join(' ')).toContain('kei-transaction@0.6.0')
