@@ -2,6 +2,15 @@ import { describe, expect, test } from 'bun:test'
 
 import { processFailureDiagnostic, requireProcessSuccess, runProcess } from './process.js'
 
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
 describe('bounded process diagnostics', () => {
   test('an injected spawn error reports its safe OS fields instead of an undefined status assertion', () => {
     const error = Object.assign(
@@ -75,15 +84,38 @@ describe('bounded process diagnostics', () => {
     expect(diagnostic.errorCode).toBe('ETIMEDOUT')
     const pids = JSON.parse(result.stdout.trim()) as { readonly parent: number; readonly child: number }
 
-    const isAlive = (pid: number): boolean => {
-      try {
-        process.kill(pid, 0)
-        return true
-      } catch {
-        return false
-      }
-    }
     expect(isAlive(pids.parent)).toBeFalse()
     expect(isAlive(pids.child)).toBeFalse()
+  })
+
+  test('a hung tree terminator reaches a bounded direct-kill fallback', async () => {
+    const node = Bun.which('node')
+    expect(node).not.toBeNull()
+    if (node === null) throw new Error('Node.js executable is unavailable')
+
+    const started = Date.now()
+    const result = await runProcess(
+      node,
+      ['-e', "process.stdout.write(String(process.pid));setInterval(()=>{},1000)"],
+      {
+        cwd: process.cwd(),
+        timeoutMs: 100,
+        terminationTimeoutMs: 150,
+        terminate: async () => await new Promise<void>(() => {}),
+      },
+    )
+    const elapsed = Date.now() - started
+    const diagnostic = JSON.parse(processFailureDiagnostic('hung-terminator', result)) as {
+      readonly errorCode?: unknown
+    }
+    expect(diagnostic.errorCode).toBe('ETERMINATE')
+    expect(elapsed).toBeLessThan(1_500)
+
+    const pid = Number(result.stdout)
+    const deadline = Date.now() + 2_000
+    while (isAlive(pid) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    expect(isAlive(pid)).toBeFalse()
   })
 })

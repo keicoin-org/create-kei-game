@@ -2,9 +2,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
 const OUTPUT_LIMIT_BYTES = 64 * 1024
 const DIAGNOSTIC_LIMIT = 240
+const TASKKILL_TIMEOUT_MS = 2_000
+const TERMINATION_TIMEOUT_MS = 5_000
 
 export interface ProcessResult {
-  readonly pid?: number
   readonly status: number | null
   readonly signal: NodeJS.Signals | null
   readonly stdout: string
@@ -17,48 +18,65 @@ export interface ProcessOptions {
   readonly env?: NodeJS.ProcessEnv
   readonly input?: string
   readonly timeoutMs: number
+  /** Test seam for proving the secondary termination deadline. */
+  readonly terminate?: (child: ChildProcessWithoutNullStreams) => Promise<void>
+  readonly terminationTimeoutMs?: number
+}
+
+function killDirectly(child: ChildProcessWithoutNullStreams): void {
+  try {
+    child.kill('SIGKILL')
+  } catch {
+    // It exited between the state check and the kill request.
+  }
 }
 
 async function terminateTree(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return
-  const killDirectly = (): void => {
-    try {
-      child.kill('SIGKILL')
-    } catch {
-      // It exited between the state check and the kill request.
-    }
-  }
 
   if (process.platform === 'win32') {
     await new Promise<void>((resolve) => {
       let killer: ChildProcessWithoutNullStreams
+      let settled = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (): void => {
+        if (settled) return
+        settled = true
+        if (timer !== undefined) clearTimeout(timer)
+        resolve()
+      }
       try {
         killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
           windowsHide: true,
           stdio: 'pipe',
         })
       } catch {
-        killDirectly()
-        resolve()
+        killDirectly(child)
+        finish()
         return
       }
       killer.once('error', () => {
-        killDirectly()
-        resolve()
+        killDirectly(child)
+        finish()
       })
       killer.once('close', (status) => {
-        if (status !== 0) killDirectly()
-        resolve()
+        if (status !== 0) killDirectly(child)
+        finish()
       })
       killer.stdin.end()
       killer.stdout.resume()
       killer.stderr.resume()
+      timer = setTimeout(() => {
+        killDirectly(killer)
+        killDirectly(child)
+        finish()
+      }, TASKKILL_TIMEOUT_MS)
     })
   } else {
     try {
       process.kill(-child.pid, 'SIGKILL')
     } catch {
-      killDirectly()
+      killDirectly(child)
     }
   }
 }
@@ -120,20 +138,34 @@ export async function runProcess(
 
     let settled = false
     let timeoutError: (Error & { readonly code: 'ETIMEDOUT' }) | undefined
+    let terminationTimer: ReturnType<typeof setTimeout> | undefined
     let stdout = ''
     let stderr = ''
     const finish = (result: ProcessResult): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (terminationTimer !== undefined) clearTimeout(terminationTimer)
       resolve(result)
     }
     const timer = setTimeout(() => {
       timeoutError = Object.assign(new Error(`process exceeded ${options.timeoutMs}ms`), {
         code: 'ETIMEDOUT' as const,
       })
-      void terminateTree(child).catch((terminationError: unknown) => finish({
-        pid: child.pid,
+      terminationTimer = setTimeout(() => {
+        killDirectly(child)
+        finish({
+          status: null,
+          signal: child.signalCode,
+          stdout,
+          stderr,
+          error: Object.assign(
+            new Error('process tree did not close before the secondary termination deadline'),
+            { code: 'ETERMINATE' },
+          ),
+        })
+      }, options.terminationTimeoutMs ?? TERMINATION_TIMEOUT_MS)
+      void (options.terminate ?? terminateTree)(child).catch((terminationError: unknown) => finish({
         status: null,
         signal: child.signalCode,
         stdout,
@@ -150,7 +182,6 @@ export async function runProcess(
     child.stdout.on('data', (chunk: Buffer | string) => { stdout = appendBounded(stdout, chunk) })
     child.stderr.on('data', (chunk: Buffer | string) => { stderr = appendBounded(stderr, chunk) })
     child.once('error', (error) => finish({
-      pid: child.pid,
       status: null,
       signal: null,
       stdout,
@@ -158,7 +189,6 @@ export async function runProcess(
       error: timeoutError ?? error,
     }))
     child.once('close', (status, signal) => finish({
-      pid: child.pid,
       status: timeoutError === undefined ? status : null,
       signal,
       stdout,
