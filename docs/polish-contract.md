@@ -68,10 +68,15 @@ again after the read.
 
 Admitted runtime bytes must be the media they claim to be. Processed outputs
 are limited to PNG, GLB, and Ogg Opus audio. PNG admission checks chunk order
-and CRCs, bounded zlib decompression, exact scanline length, and filter bytes.
-GLB admission checks its only JSON/BIN chunks, buffer-view and accessor byte
-ranges, mesh references, scene/node references, nontrivial geometry, and an
-animation's rig, increasing finite timeline, and observable transform change.
+and CRCs, bounded zlib decompression, exact scanline length, reverses filters
+0-4 with bounded row buffers, validates every palette index, and measures
+resolved pixel colours rather than filtered bytes or palette indices. GLB
+admission checks its only JSON/BIN chunks, buffer-view and accessor byte ranges,
+requires every declared mesh to be reachable from the active scene, and admits
+only triangle primitives with at least four unique referenced positions and no
+degenerate triangle. Animation admission requires observable motion on a joint
+from a skin attached to a scene-reachable mesh node, alongside an increasing
+finite timeline.
 Ogg admission checks page CRCs, stream serial/sequence/flags, packet lacing,
 Opus identification and tags packets, and rejects trivially short single-packet
 audio before a positive-granule EOS. PNG admission rejects tiny or effectively

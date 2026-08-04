@@ -444,8 +444,8 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     const table = new Int32Array(256)
     for (let n = 0; n < 256; n += 1) { let c = n; for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; table[n] = c }
     const crc32 = (start: number, end: number) => { let c = 0xffffffff; for (let index = start; index < end; index += 1) c = (table[(c ^ (bytes[index] as number)) & 0xff] as number) ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0 }
-    let offset = 8; let sawHeader = false; let sawPalette = false; let sawData = false; let dataEnded = false; let sawEnd = false; let chunks = 0
-    let width = 0; let height = 0; let bitDepth = 0; let colorType = -1; const compressed: Uint8Array[] = []; let compressedBytes = 0
+    let offset = 8; let sawHeader = false; let sawPalette = false; let sawTransparency = false; let sawData = false; let dataEnded = false; let sawEnd = false; let chunks = 0
+    let width = 0; let height = 0; let bitDepth = 0; let colorType = -1; let palette: Uint8Array | null = null; let transparency: Uint8Array | null = null; const compressed: Uint8Array[] = []; let compressedBytes = 0
     while (offset + 12 <= bytes.length && chunks < 4_096 && !sawEnd) {
       const length = view.getUint32(offset)
       if (length > 0x7fffffff || offset + 12 + length > bytes.length) return ['media_png_malformed']
@@ -462,7 +462,11 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
       if (type === 'IHDR' && chunks !== 0) return ['media_png_malformed']
       if (type === 'PLTE') {
         if (sawPalette || sawData || length < 3 || length > 768 || length % 3 !== 0 || colorType === 0 || colorType === 4 || (colorType === 3 && length / 3 > 2 ** bitDepth)) return ['media_png_malformed']
-        sawPalette = true
+        sawPalette = true; palette = bytes.slice(offset + 8, offset + 8 + length)
+      } else if (type === 'tRNS') {
+        const sampleMaximum = bitDepth === 16 ? 65_535 : 2 ** bitDepth - 1
+        if (sawTransparency || sawData || (colorType === 3 && (!palette || length < 1 || length > palette.length / 3)) || (colorType === 0 && (length !== 2 || view.getUint16(offset + 8) > sampleMaximum)) || (colorType === 2 && (length !== 6 || [0,2,4].some((part) => view.getUint16(offset + 8 + part) > sampleMaximum))) || ![0,2,3].includes(colorType)) return ['media_png_malformed']
+        sawTransparency = true; transparency = bytes.slice(offset + 8, offset + 8 + length)
       } else if (type === 'IDAT') {
         if (dataEnded || (colorType === 3 && !sawPalette)) return ['media_png_malformed']
         sawData = true; compressedBytes += length
@@ -482,10 +486,43 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     let pixels: Uint8Array
     try { pixels = inflateSync(Buffer.concat(compressed.map((part) => Buffer.from(part))), { maxOutputLength: inflatedBytes + 1 }) } catch { return ['media_png_malformed'] }
     if (pixels.length !== inflatedBytes) return ['media_png_malformed']
-    for (let row = 0; row < height; row += 1) if ((pixels[row * (rowBytes + 1)] as number) > 4) return ['media_png_malformed']
-    const sample = new Set<number>()
-    for (let index = 0; index < pixels.length && sample.size < 8; index += Math.max(1, Math.floor(pixels.length / 256))) sample.add(pixels[index] as number)
-    if (width * height < 256 || sample.size < 4) return ['media_png_placeholder']
+    const bytesPerPixel = Math.max(1, Math.ceil((channels[colorType] as number) * bitDepth / 8))
+    const previous = new Uint8Array(rowBytes); const current = new Uint8Array(rowBytes); const distinctPixels = new Set<string>()
+    const paeth = (left: number, up: number, upperLeft: number) => { const estimate = left + up - upperLeft; const leftDistance = Math.abs(estimate - left); const upDistance = Math.abs(estimate - up); const upperLeftDistance = Math.abs(estimate - upperLeft); return leftDistance <= upDistance && leftDistance <= upperLeftDistance ? left : upDistance <= upperLeftDistance ? up : upperLeft }
+    const observe = (row: Uint8Array, column: number) => {
+      if (colorType === 3 || bitDepth < 8) {
+        const bit = column * bitDepth; const sample = ((row[Math.floor(bit / 8)] as number) >>> (8 - bitDepth - (bit % 8))) & ((1 << bitDepth) - 1)
+        if (colorType === 3) {
+          if (!palette || sample >= palette.length / 3) return false
+          const alpha = transparency && sample < transparency.length ? transparency[sample] as number : 255
+          if (distinctPixels.size < 4) distinctPixels.add(alpha === 0 ? 'transparent' : `${palette[sample * 3]},${palette[sample * 3 + 1]},${palette[sample * 3 + 2]},${alpha}`)
+        } else if (distinctPixels.size < 4) distinctPixels.add(transparency && (((transparency[0] as number) << 8) | (transparency[1] as number)) === sample ? 'transparent' : `g:${sample}`)
+        return true
+      }
+      const componentSize = bitDepth / 8; const pixelBytes = (channels[colorType] as number) * componentSize; const pixelStart = column * pixelBytes
+      const sample = (component: number) => componentSize === 1 ? row[pixelStart + component] as number : ((row[pixelStart + component * 2] as number) << 8) | (row[pixelStart + component * 2 + 1] as number)
+      let transparent = (colorType === 4 && sample(1) === 0) || (colorType === 6 && sample(3) === 0)
+      if (transparency && colorType === 0) transparent ||= sample(0) === (((transparency[0] as number) << 8) | (transparency[1] as number))
+      const transparentSamples = transparency
+      if (transparentSamples && colorType === 2) transparent ||= [0,1,2].every((component) => sample(component) === (((transparentSamples[component * 2] as number) << 8) | (transparentSamples[component * 2 + 1] as number)))
+      if (distinctPixels.size < 4) {
+        if (transparent) distinctPixels.add('transparent')
+        else { let key = ''; for (let index = 0; index < pixelBytes; index += 1) key += String.fromCharCode(row[pixelStart + index] as number); distinctPixels.add(key) }
+      }
+      return true
+    }
+    for (let row = 0; row < height; row += 1) {
+      const source = row * (rowBytes + 1); const filter = pixels[source] as number
+      if (filter > 4) return ['media_png_malformed']
+      for (let column = 0; column < rowBytes; column += 1) {
+        const encoded = pixels[source + 1 + column] as number; const left = column >= bytesPerPixel ? current[column - bytesPerPixel] as number : 0; const up = previous[column] as number; const upperLeft = column >= bytesPerPixel ? previous[column - bytesPerPixel] as number : 0
+        const predictor = filter === 0 ? 0 : filter === 1 ? left : filter === 2 ? up : filter === 3 ? Math.floor((left + up) / 2) : paeth(left, up, upperLeft)
+        current[column] = (encoded + predictor) & 0xff
+      }
+      for (let column = 0; column < width; column += 1) if (!observe(current, column)) return ['media_png_malformed']
+      previous.set(current)
+    }
+    if (width * height < 256 || distinctPixels.size < 4) return ['media_png_placeholder']
     return []
   }
   if (kind === 'model' || kind === 'animation') {
@@ -524,15 +561,63 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
       for (let element = 0; element < accessor.count; element += 1) for (let component = 0; component < components; component += 1) { const value = view.getFloat32(start + element * stride + component * 4, true); if (!Number.isFinite(value)) return null; values.push(value) }
       return values
     }
-    if (gltf.meshes !== undefined && (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || gltf.meshes.some((mesh: any) => !record(mesh) || !Array.isArray(mesh.primitives) || mesh.primitives.length < 1 || mesh.primitives.some((primitive: any) => !record(primitive) || !record(primitive.attributes) || Object.values(primitive.attributes).some((accessor) => !validAccessor(accessor)) || (primitive.indices !== undefined && !validAccessor(primitive.indices)))))) return ['media_glb_malformed']
-    if (!Array.isArray(gltf.nodes) || gltf.nodes.length < 1 || gltf.nodes.length > 65_536 || gltf.nodes.some((node: any) => !record(node) || (node.mesh !== undefined && !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)))) return ['media_glb_malformed']
-    if (!Array.isArray(gltf.scenes) || gltf.scenes.length < 1 || !integer(gltf.scene, 0, gltf.scenes.length - 1) || gltf.scenes.some((scene: any) => !record(scene) || !Array.isArray(scene.nodes) || scene.nodes.some((node: unknown) => !integer(node, 0, gltf.nodes.length - 1)))) return ['media_glb_malformed']
+    if (gltf.meshes !== undefined && (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || gltf.meshes.some((mesh: any) => !record(mesh) || !Array.isArray(mesh.primitives) || mesh.primitives.length < 1 || mesh.primitives.some((primitive: any) => !record(primitive) || !record(primitive.attributes) || Object.values(primitive.attributes).some((accessor) => !validAccessor(accessor)) || (primitive.indices !== undefined && !validAccessor(primitive.indices)) || (primitive.mode !== undefined && !integer(primitive.mode, 0, 6)))))) return ['media_glb_malformed']
+    if (!Array.isArray(gltf.nodes) || gltf.nodes.length < 1 || gltf.nodes.length > 65_536 || gltf.nodes.some((node: any) => !record(node) || (node.mesh !== undefined && !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)) || (node.children !== undefined && (!Array.isArray(node.children) || node.children.some((child: unknown) => !integer(child, 0, gltf.nodes.length - 1)))))) return ['media_glb_malformed']
+    if (!Array.isArray(gltf.scenes) || gltf.scenes.length < 1 || gltf.scenes.length > 65_536 || !integer(gltf.scene, 0, gltf.scenes.length - 1) || gltf.scenes.some((scene: any) => !record(scene) || !Array.isArray(scene.nodes) || scene.nodes.length > gltf.nodes.length || scene.nodes.some((node: unknown) => !integer(node, 0, gltf.nodes.length - 1)))) return ['media_glb_malformed']
+    const parentCounts = new Uint8Array(gltf.nodes.length)
+    for (const node of gltf.nodes) for (const child of node.children ?? []) { parentCounts[child] = (parentCounts[child] as number) + 1; if ((parentCounts[child] as number) > 1) return ['media_glb_malformed'] }
+    for (const scene of gltf.scenes) { const roots = new Set<number>(); for (const node of scene.nodes) { if (parentCounts[node] !== 0 || roots.has(node)) return ['media_glb_malformed']; roots.add(node) } }
+    const graphQueue: number[] = []; for (let node = 0; node < gltf.nodes.length; node += 1) if (parentCounts[node] === 0) graphQueue.push(node)
+    const remainingParents = parentCounts.slice(); let graphNodes = 0
+    for (let cursor = 0; cursor < graphQueue.length; cursor += 1) { const node = graphQueue[cursor] as number; graphNodes += 1; for (const child of gltf.nodes[node].children ?? []) { remainingParents[child] = (remainingParents[child] as number) - 1; if (remainingParents[child] === 0) graphQueue.push(child) } }
+    if (graphNodes !== gltf.nodes.length) return ['media_glb_malformed']
+    const reachableNodes = new Set<number>(); const pendingNodes = [...gltf.scenes[gltf.scene].nodes]
+    while (pendingNodes.length) { const node = pendingNodes.pop() as number; if (reachableNodes.has(node)) continue; reachableNodes.add(node); for (const child of gltf.nodes[node].children ?? []) pendingNodes.push(child) }
+    const indexAccessor = (index: number): { count: number; value: (element: number) => number } | null => {
+      const accessor = accessors[index]; if (!accessor || accessor.type !== 'SCALAR' || ![5121,5123,5125].includes(accessor.componentType)) return null
+      const bufferView = bufferViews[accessor.bufferView]; const componentSize = componentBytes[accessor.componentType]; if (!bufferView || !componentSize) return null
+      const stride = bufferView.byteStride ?? componentSize; const start = binOffset + 8 + (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0)
+      return { count: accessor.count, value: (element: number) => { const at = start + element * stride; return accessor.componentType === 5121 ? view.getUint8(at) : accessor.componentType === 5123 ? view.getUint16(at, true) : view.getUint32(at, true) } }
+    }
+    const accessorComponent = (index: number, element: number, component: number): number | null => {
+      const accessor = accessors[index]; const bufferView = accessor && bufferViews[accessor.bufferView]; const components = accessor && typeComponents[accessor.type]; const componentSize = accessor && componentBytes[accessor.componentType]
+      if (!accessor || !bufferView || !components || !componentSize || !integer(element, 0, accessor.count - 1) || !integer(component, 0, components - 1)) return null
+      const stride = bufferView.byteStride ?? components * componentSize; const at = binOffset + 8 + (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0) + element * stride + component * componentSize
+      if (accessor.componentType === 5121) return view.getUint8(at)
+      if (accessor.componentType === 5123) return view.getUint16(at, true)
+      if (accessor.componentType === 5126) { const value = view.getFloat32(at, true); return Number.isFinite(value) ? value : null }
+      return null
+    }
     if (kind === 'model') {
-      if (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || !gltf.meshes.every((mesh: any) => Array.isArray(mesh?.primitives) && mesh.primitives.length > 0 && mesh.primitives.every((primitive: any) => record(primitive) && record(primitive.attributes) && validAccessor(primitive.attributes.POSITION) && accessors[primitive.attributes.POSITION]?.type === 'VEC3' && accessors[primitive.attributes.POSITION]?.componentType === 5126 && (primitive.indices === undefined || (validAccessor(primitive.indices) && accessors[primitive.indices]?.type === 'SCALAR' && [5121,5123,5125].includes(accessors[primitive.indices]?.componentType)))))) return ['media_glb_missing_mesh']
-      let vertices = 0; const axes = [Number.POSITIVE_INFINITY,Number.POSITIVE_INFINITY,Number.POSITIVE_INFINITY,Number.NEGATIVE_INFINITY,Number.NEGATIVE_INFINITY,Number.NEGATIVE_INFINITY]
-      for (const mesh of gltf.meshes) for (const primitive of mesh.primitives) { const accessor = accessors[primitive.attributes.POSITION]; const values = accessorFloats(primitive.attributes.POSITION); if (!values) return ['media_glb_malformed']; vertices += accessor.count; for (let index = 0; index < values.length; index += 3) for (let axis = 0; axis < 3; axis += 1) { axes[axis] = Math.min(axes[axis] as number, values[index + axis] as number); axes[axis + 3] = Math.max(axes[axis + 3] as number, values[index + axis] as number) } }
-      const spans = [0,1,2].map((axis) => (axes[axis + 3] as number) - (axes[axis] as number)).filter((span) => span > 1e-5)
-      if (vertices < 4 || spans.length < 2) return ['media_glb_placeholder']
+      if (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || !gltf.meshes.every((mesh: any) => Array.isArray(mesh?.primitives) && mesh.primitives.length > 0 && mesh.primitives.every((primitive: any) => record(primitive) && record(primitive.attributes) && validAccessor(primitive.attributes.POSITION) && accessors[primitive.attributes.POSITION]?.type === 'VEC3' && accessors[primitive.attributes.POSITION]?.componentType === 5126 && (primitive.indices === undefined || (validAccessor(primitive.indices) && accessors[primitive.indices]?.type === 'SCALAR' && [5121,5123,5125].includes(accessors[primitive.indices]?.componentType) && accessors[primitive.indices]?.normalized !== true))))) return ['media_glb_missing_mesh']
+      const reachableMeshes = new Set<number>(); for (const nodeIndex of reachableNodes) { const mesh = gltf.nodes[nodeIndex].mesh; if (integer(mesh, 0, gltf.meshes.length - 1)) reachableMeshes.add(mesh) }
+      if (reachableMeshes.size !== gltf.meshes.length) return ['media_glb_placeholder']
+      const referencedPositions = new Set<string>(); let triangles = 0
+      const triangle = (positions: number[], a: number, b: number, c: number) => {
+        if ([a,b,c].some((index) => !integer(index, 0, positions.length / 3 - 1))) return false
+        const ab = [0,1,2].map((axis) => (positions[b * 3 + axis] as number) - (positions[a * 3 + axis] as number)); const ac = [0,1,2].map((axis) => (positions[c * 3 + axis] as number) - (positions[a * 3 + axis] as number))
+        const cross = [ab[1] as number * (ac[2] as number) - (ab[2] as number) * (ac[1] as number), (ab[2] as number) * (ac[0] as number) - (ab[0] as number) * (ac[2] as number), (ab[0] as number) * (ac[1] as number) - (ab[1] as number) * (ac[0] as number)]
+        return cross.reduce((sum, value) => sum + value * value, 0) > 1e-10
+      }
+      for (const meshIndex of reachableMeshes) {
+        for (const primitive of gltf.meshes[meshIndex].primitives) {
+          const mode = primitive.mode ?? 4; if (![4,5,6].includes(mode)) return ['media_glb_placeholder']
+          const positions = accessorFloats(primitive.attributes.POSITION); if (!positions) return ['media_glb_malformed']
+          const positionCount = positions.length / 3; const indexed = primitive.indices === undefined ? null : indexAccessor(primitive.indices)
+          if (primitive.indices !== undefined && !indexed) return ['media_glb_malformed']
+          const indexCount = indexed?.count ?? positionCount; const at = (element: number) => indexed ? indexed.value(element) : element
+          if ((mode === 4 && (indexCount < 3 || indexCount % 3 !== 0)) || (mode !== 4 && indexCount < 3)) return ['media_glb_placeholder']
+          for (let element = 0; element < indexCount; element += 1) {
+            const vertex = at(element); if (!integer(vertex, 0, positionCount - 1)) return ['media_glb_malformed']
+            if (referencedPositions.size < 4) referencedPositions.add([0,1,2].map((axis) => { const value = positions[vertex * 3 + axis] as number; return Object.is(value, -0) ? 0 : value }).join(','))
+          }
+          const requireTriangle = (a: number, b: number, c: number) => { triangles += 1; return triangle(positions, a, b, c) }
+          if (mode === 4) for (let index = 0; index < indexCount; index += 3) if (!requireTriangle(at(index), at(index + 1), at(index + 2))) return ['media_glb_placeholder']
+          if (mode === 5) for (let index = 0; index + 2 < indexCount; index += 1) if (!requireTriangle(at(index), at(index + 1), at(index + 2))) return ['media_glb_placeholder']
+          if (mode === 6) for (let index = 1; index + 1 < indexCount; index += 1) if (!requireTriangle(at(0), at(index), at(index + 1))) return ['media_glb_placeholder']
+        }
+      }
+      if (triangles < 2 || referencedPositions.size < 4) return ['media_glb_placeholder']
     }
     if (kind === 'animation') {
       if (!Array.isArray(gltf.animations) || gltf.animations.length < 1 || !gltf.animations.every((animation: any) => Array.isArray(animation?.channels) && animation.channels.length > 0 && Array.isArray(animation?.samplers) && animation.samplers.length > 0 && animation.samplers.every((sampler: any) => record(sampler) && validAccessor(sampler.input) && validAccessor(sampler.output) && ['LINEAR','STEP','CUBICSPLINE'].includes(sampler.interpolation ?? 'LINEAR') && accessors[sampler.input]?.type === 'SCALAR' && accessors[sampler.input]?.componentType === 5126) && animation.channels.every((channel: any) => {
@@ -540,15 +625,56 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
         const sampler = animation.samplers[channel.sampler]; const input = accessors[sampler.input]; const output = accessors[sampler.output]; const expectedType = channel.target.path === 'rotation' ? 'VEC4' : 'VEC3'; const multiplier = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1
         return output?.type === expectedType && output?.componentType === 5126 && output.count === input.count * multiplier
       }))) return ['media_glb_missing_animation']
-      if (!Array.isArray(gltf.skins) || gltf.skins.length < 1 || gltf.skins.some((skin: any) => !record(skin) || !Array.isArray(skin.joints) || skin.joints.length < 2 || skin.joints.some((joint: unknown) => !integer(joint, 0, gltf.nodes.length - 1)))) return ['media_glb_animation_rig_missing']
-      let observable = false
-      for (const animation of gltf.animations) for (const sampler of animation.samplers) {
+      if (!Array.isArray(gltf.skins) || gltf.skins.length < 1 || gltf.skins.some((skin: any) => !record(skin) || !Array.isArray(skin.joints) || skin.joints.length < 2 || new Set(skin.joints).size !== skin.joints.length || skin.joints.some((joint: unknown) => !integer(joint, 0, gltf.nodes.length - 1)))) return ['media_glb_animation_rig_missing']
+      const usedSkins = new Set<number>(); const influencedJoints = new Set<number>(); for (const nodeIndex of reachableNodes) { const node = gltf.nodes[nodeIndex]; if (node.skin !== undefined) {
+        if (!integer(node.skin, 0, gltf.skins.length - 1) || !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)) return ['media_glb_animation_rig_missing']
+        const skin = gltf.skins[node.skin]; const mesh = gltf.meshes[node.mesh]
+        for (const primitive of mesh.primitives) {
+          const positions = primitive.attributes.POSITION; const joints = primitive.attributes.JOINTS_0; const weights = primitive.attributes.WEIGHTS_0
+          if (!validAccessor(positions) || !validAccessor(joints) || !validAccessor(weights)) return ['media_glb_animation_rig_missing']
+          const positionAccessor = accessors[positions]; const jointAccessor = accessors[joints]; const weightAccessor = accessors[weights]
+          if (positionAccessor.type !== 'VEC3' || positionAccessor.componentType !== 5126 || positionAccessor.normalized === true || jointAccessor.type !== 'VEC4' || ![5121,5123].includes(jointAccessor.componentType) || jointAccessor.normalized === true || weightAccessor.type !== 'VEC4' || ![5121,5123,5126].includes(weightAccessor.componentType) || (weightAccessor.componentType === 5126 ? weightAccessor.normalized === true : weightAccessor.normalized !== true) || jointAccessor.count !== positionAccessor.count || weightAccessor.count !== positionAccessor.count) return ['media_glb_animation_rig_missing']
+          const mode = primitive.mode ?? 4; if (![4,5,6].includes(mode)) return ['media_glb_animation_rig_missing']
+          let indexed: { count: number; value: (element: number) => number } | null = null
+          if (primitive.indices !== undefined) {
+            if (!validAccessor(primitive.indices)) return ['media_glb_malformed']
+            const index = accessors[primitive.indices]
+            if (index.type !== 'SCALAR' || ![5121,5123,5125].includes(index.componentType) || index.normalized === true || !(indexed = indexAccessor(primitive.indices))) return ['media_glb_malformed']
+          }
+          const indexCount = indexed?.count ?? positionAccessor.count; const at = (element: number) => indexed ? indexed.value(element) : element
+          if ((mode === 4 && (indexCount < 3 || indexCount % 3 !== 0)) || (mode !== 4 && indexCount < 3)) return ['media_glb_animation_rig_missing']
+          const referencedVertices = new Uint8Array(positionAccessor.count)
+          const acceptTriangle = (a: number, b: number, c: number): boolean | null => {
+            if (!integer(a, 0, positionAccessor.count - 1) || !integer(b, 0, positionAccessor.count - 1) || !integer(c, 0, positionAccessor.count - 1)) return null
+            const ax = accessorComponent(positions, a, 0); const ay = accessorComponent(positions, a, 1); const az = accessorComponent(positions, a, 2); const bx = accessorComponent(positions, b, 0); const by = accessorComponent(positions, b, 1); const bz = accessorComponent(positions, b, 2); const cx = accessorComponent(positions, c, 0); const cy = accessorComponent(positions, c, 1); const cz = accessorComponent(positions, c, 2)
+            if (ax === null || ay === null || az === null || bx === null || by === null || bz === null || cx === null || cy === null || cz === null) return null
+            const abx = bx - ax; const aby = by - ay; const abz = bz - az; const acx = cx - ax; const acy = cy - ay; const acz = cz - az
+            const crossX = aby * acz - abz * acy; const crossY = abz * acx - abx * acz; const crossZ = abx * acy - aby * acx
+            if (crossX * crossX + crossY * crossY + crossZ * crossZ <= 1e-10) return false
+            referencedVertices[a] = 1; referencedVertices[b] = 1; referencedVertices[c] = 1; return true
+          }
+          const requireTriangle = (a: number, b: number, c: number) => { const accepted = acceptTriangle(a, b, c); if (accepted === null) return 'malformed'; return accepted ? null : 'rig' }
+          if (mode === 4) for (let element = 0; element < indexCount; element += 3) { const rejected = requireTriangle(at(element), at(element + 1), at(element + 2)); if (rejected === 'malformed') return ['media_glb_malformed']; if (rejected) return ['media_glb_animation_rig_missing'] }
+          if (mode === 5) for (let element = 0; element + 2 < indexCount; element += 1) { const rejected = requireTriangle(at(element), at(element + 1), at(element + 2)); if (rejected === 'malformed') return ['media_glb_malformed']; if (rejected) return ['media_glb_animation_rig_missing'] }
+          if (mode === 6) for (let element = 1; element + 1 < indexCount; element += 1) { const rejected = requireTriangle(at(0), at(element), at(element + 1)); if (rejected === 'malformed') return ['media_glb_malformed']; if (rejected) return ['media_glb_animation_rig_missing'] }
+          for (let vertex = 0; vertex < positionAccessor.count; vertex += 1) { if (referencedVertices[vertex] === 0) continue; let influence = 0
+            for (let component = 0; component < 4; component += 1) { const joint = accessorComponent(joints, vertex, component); const rawWeight = accessorComponent(weights, vertex, component); if (joint === null || rawWeight === null || !integer(joint, 0, skin.joints.length - 1)) return ['media_glb_animation_rig_missing']; const weight = weightAccessor.componentType === 5121 ? rawWeight / 255 : weightAccessor.componentType === 5123 ? rawWeight / 65_535 : rawWeight; if (weight < 0 || weight > 1) return ['media_glb_animation_rig_missing']; if (weight > 0) influencedJoints.add(skin.joints[joint]); influence += weight }
+            if (influence <= 1e-8) return ['media_glb_animation_rig_missing']
+          }
+        }
+        usedSkins.add(node.skin)
+      } }
+      const usedJoints = new Set<number>(); for (const skinIndex of usedSkins) for (const joint of gltf.skins[skinIndex].joints) usedJoints.add(joint)
+      if (!usedSkins.size || usedJoints.size < 2) return ['media_glb_animation_rig_missing']
+      let observableRigMotion = false
+      for (const animation of gltf.animations) { const samplerMoves: boolean[] = []; for (const sampler of animation.samplers) {
         const times = accessorFloats(sampler.input); const values = accessorFloats(sampler.output)
         if (!times || !values || times.length < 2 || times.some((time, index) => index > 0 && time <= (times[index - 1] as number))) return ['media_glb_animation_timeline_invalid']
-        const components = typeComponents[accessors[sampler.output].type] as number; const multiplier = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1; const first = sampler.interpolation === 'CUBICSPLINE' ? components : 0; const last = (times.length - 1) * components * multiplier + first
-        for (let component = 0; component < components; component += 1) if (Math.abs((values[last + component] as number) - (values[first + component] as number)) > 1e-5) observable = true
-      }
-      if (!observable) return ['media_glb_animation_no_motion']
+        const components = typeComponents[accessors[sampler.output].type] as number; const multiplier = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1; const first = sampler.interpolation === 'CUBICSPLINE' ? components : 0; const last = (times.length - 1) * components * multiplier + first; let moves = false
+        for (let component = 0; component < components; component += 1) if (Math.abs((values[last + component] as number) - (values[first + component] as number)) > 1e-5) moves = true
+        samplerMoves.push(moves)
+      } for (const channel of animation.channels) if (influencedJoints.has(channel.target.node) && samplerMoves[channel.sampler]) observableRigMotion = true }
+      if (!observableRigMotion) return ['media_glb_animation_no_motion']
     }
     return []
   }

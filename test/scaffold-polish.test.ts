@@ -14,7 +14,7 @@ import {
   polishProjectFiles,
 } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { catalogLicenceBytes, catalogSourceBytes, glbWithOutOfRangePosition, oggWithoutAudioPacket, pngWithInvalidDeflate, tinyGlb, tinyOgg, tinyPng } from './media.js'
+import { catalogLicenceBytes, catalogSourceBytes, cyclicSceneGlb, dummySkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, unusedFourthPositionGlb } from './media.js'
 import { runProcess } from './process.js'
 
 const temporary: string[] = []
@@ -86,7 +86,110 @@ describe('generated project-owned polish checker', () => {
       expect(result.report.problems).toContainEqual(expect.objectContaining({ code: dimension === '2d' ? 'media_png_placeholder' : 'media_glb_placeholder' }))
       expect(result.report.problems).toContainEqual(expect.objectContaining({ code: 'media_ogg_placeholder' }))
     })
+    test(`${dimension} embeds the decoded media semantics that reject structurally valid bypasses`, async () => {
+      const current = fixture(dimension, true)
+      const replace = (id: string, bytes: Buffer) => {
+        const output = current.sources.assets.find((asset: any) => asset.id === id).processedOutputs[0]
+        put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+      }
+      if (dimension === '2d') replace('hero-character', uniformFilteredPng())
+      else { replace('training-sentinel', unreferencedPointGlb()); replace('hero-motion', dummySkinAnimationGlb()) }
+      writeSources(current.root, current.sources, current.recipe)
+      const result = await check(current.root)
+      expect(result.status).toBe(1)
+      expect(result.report.problems).toContainEqual(expect.objectContaining({ id: dimension === '2d' ? 'hero-character' : 'training-sentinel', code: dimension === '2d' ? 'media_png_placeholder' : 'media_glb_placeholder' }))
+      if (dimension === '3d') expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-motion', code: 'media_glb_animation_rig_missing' }))
+    })
+    test(`${dimension} embeds visible-pixel, referenced-vertex, and acyclic-scene admission`, async () => {
+      const current = fixture(dimension, true)
+      const replace = (id: string, bytes: Buffer) => {
+        const output = current.sources.assets.find((asset: any) => asset.id === id).processedOutputs[0]
+        put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+      }
+      if (dimension === '2d') replace('hero-character', transparentPalettePng())
+      else { replace('hero-character', cyclicSceneGlb(true)); replace('training-sentinel', paddedTriangleGlb(true)) }
+      writeSources(current.root, current.sources, current.recipe)
+      const result = await check(current.root)
+      expect(result.status).toBe(1)
+      if (dimension === '2d') expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-character', code: 'media_png_placeholder' }))
+      else {
+        expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-character', code: 'media_glb_malformed' }))
+        expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'training-sentinel', code: 'media_glb_placeholder' }))
+      }
+    })
   }
+
+  test.each([
+    ['unused fourth POSITION', unusedFourthPositionGlb, 'media_glb_placeholder'],
+    ['repeated fourth POSITION', repeatedFourthPositionGlb, 'media_glb_placeholder'],
+    ['good plus degenerate triangle', mixedDegenerateTriangleGlb, 'media_glb_placeholder'],
+    ['extra unreferenced mesh', extraUnreferencedMeshGlb, 'media_glb_placeholder'],
+    ['mixed triangle and point primitives', mixedTrianglePointGlb, 'media_glb_placeholder'],
+    ['scene-reachable point primitive', referencedPointGlb, 'media_glb_placeholder'],
+    ['out-of-range vertex index', outOfRangeIndexGlb, 'media_glb_malformed'],
+  ] as const)('generated 3d checker rejects %s', async (_name, build, expectedCode) => {
+    const current = fixture('3d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'training-sentinel').processedOutputs[0]
+    const bytes = build(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'training-sentinel', code: expectedCode }))
+  })
+
+  test('generated 2d checker resolves palette colours before measuring diversity', async () => {
+    const current = fixture('2d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'hero-character').processedOutputs[0]
+    const bytes = uniformPalettePng(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-character', code: 'media_png_placeholder' }))
+  })
+
+  test('generated 2d checker validates every palette index after reaching the diversity floor', async () => {
+    const current = fixture('2d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'hero-character').processedOutputs[0]
+    const bytes = outOfRangePaletteIndexPng(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-character', code: 'media_png_malformed' }))
+  })
+
+  test('generated 3d checker refuses a skin attached to primitives without joint influences', async () => {
+    const current = fixture('3d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'hero-motion').processedOutputs[0]
+    const bytes = missingSkinAttributesAnimationGlb(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-motion', code: 'media_glb_animation_rig_missing' }))
+  })
+
+  test('generated 3d checker ignores an animated joint influenced only by indexed accessor padding', async () => {
+    const current = fixture('3d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'hero-motion').processedOutputs[0]
+    const bytes = paddingOnlyInfluencedJointAnimationGlb(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-motion', code: 'media_glb_animation_no_motion' }))
+  })
+
+  test.each([
+    ['an out-of-range skinned vertex index', outOfRangeSkinIndexAnimationGlb, 'media_glb_malformed'],
+    ['an out-of-range skin topology accessor', outOfRangeSkinIndexAccessorAnimationGlb, 'media_glb_malformed'],
+    ['an index accessor count above the global bound', oversizedSkinIndexCountAnimationGlb, 'media_glb_malformed'],
+  ] as const)('generated 3d checker bounds %s', async (_name, build, expectedCode) => {
+    const current = fixture('3d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'hero-motion').processedOutputs[0]
+    const bytes = build(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-motion', code: expectedCode }))
+  })
 
   test.each([
     ['unknown event', (recipe: any) => { recipe.actions[0].events.push('execute') }, 'invalid_action'],

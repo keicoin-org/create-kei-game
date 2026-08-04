@@ -21,7 +21,7 @@ import {
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, glbWithOutOfRangePosition, oggWithoutAudioPacket, pngWithInvalidDeflate, tinyGlb, tinyOgg, tinyPng } from './media.js'
+import { CC0_TEXT, cyclicSceneGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, indexedQuadGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -128,9 +128,54 @@ describe('admitted media and licence byte semantics', () => {
   test('rejects structurally valid but production-trivial placeholder media', () => {
     expect(validatePolishMediaBytes('atlas', tinyPng())).toEqual(['media_png_placeholder'])
     expect(validatePolishMediaBytes('image', tinyPng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('image', uniformFilteredPng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('atlas', uniformPalettePng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('image', transparentPalettePng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('image', transparentRgbaPng())).toEqual(['media_png_placeholder'])
     expect(validatePolishMediaBytes('model', tinyGlb('model'))).toEqual(['media_glb_placeholder'])
+    expect(validatePolishMediaBytes('model', unreferencedPointGlb())).toEqual(['media_glb_placeholder'])
+    expect(validatePolishMediaBytes('model', paddedTriangleGlb(true))).toEqual(['media_glb_placeholder'])
+    expect(validatePolishMediaBytes('model', paddedTriangleGlb(false))).toEqual(['media_glb_placeholder'])
     expect(validatePolishMediaBytes('animation', tinyGlb('animation'))).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', dummySkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', unusedSkinJointAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', missingSkinAttributesAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', zeroWeightSkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', uninfluencedJointAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
+    expect(validatePolishMediaBytes('animation', unrelatedUsedSkinAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
+    expect(validatePolishMediaBytes('animation', duplicateJointSkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('audio', tinyOgg())).toEqual(['media_ogg_placeholder'])
+  })
+
+  test('accepts bounded decoded pixels, scene triangles, and joint-bound motion above the placeholder floor', () => {
+    expect(validatePolishMediaBytes('image', variedPng())).toEqual([])
+    expect(validatePolishMediaBytes('model', sceneTriangleGlb())).toEqual([])
+    expect(validatePolishMediaBytes('model', indexedQuadGlb())).toEqual([])
+    expect(validatePolishMediaBytes('animation', riggedAnimationGlb())).toEqual([])
+  })
+
+  test('does not admit an animated joint influenced only by indexed accessor padding', () => {
+    expect(validatePolishMediaBytes('animation', paddingOnlyInfluencedJointAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
+  })
+
+  test.each([
+    ['an out-of-range skinned vertex index', outOfRangeSkinIndexAnimationGlb],
+    ['an out-of-range skin topology accessor', outOfRangeSkinIndexAccessorAnimationGlb],
+    ['an index accessor count above the global bound', oversizedSkinIndexCountAnimationGlb],
+  ] as const)('bounds %s before skin influence traversal', (_name, build) => {
+    expect(validatePolishMediaBytes('animation', build())).toEqual(['media_glb_malformed'])
+  })
+
+  test.each([
+    ['an unused fourth POSITION behind one triangle', unusedFourthPositionGlb, 'media_glb_placeholder'],
+    ['a repeated fourth POSITION', repeatedFourthPositionGlb, 'media_glb_placeholder'],
+    ['one good triangle beside a degenerate triangle', mixedDegenerateTriangleGlb, 'media_glb_placeholder'],
+    ['an extra unreferenced mesh', extraUnreferencedMeshGlb, 'media_glb_placeholder'],
+    ['mixed triangle and point primitives', mixedTrianglePointGlb, 'media_glb_placeholder'],
+    ['a scene-reachable point-only primitive', referencedPointGlb, 'media_glb_placeholder'],
+    ['an out-of-range vertex index', outOfRangeIndexGlb, 'media_glb_malformed'],
+  ] as const)('rejects %s', (_name, build, code) => {
+    expect(validatePolishMediaBytes('model', build())).toEqual([code])
   })
 
   test.each([
@@ -139,8 +184,12 @@ describe('admitted media and licence byte semantics', () => {
     ['text bytes labelled as OGG', 'audio', () => Buffer.from('runtime:ambience runtime:ambience runtime:ambience'), 'media_ogg_malformed'],
     ['PNG with a corrupted chunk CRC', 'atlas', () => { const bytes = tinyPng(); bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff; return bytes }, 'media_png_malformed'],
     ['PNG with CRC-correct invalid compressed scanlines', 'image', () => pngWithInvalidDeflate(), 'media_png_malformed'],
+    ['palette PNG with a late out-of-range index', 'image', () => outOfRangePaletteIndexPng(), 'media_png_malformed'],
+    ['indexed PNG with empty tRNS', 'image', () => emptyPaletteTransparencyPng(), 'media_png_malformed'],
     ['truncated GLB container', 'model', () => tinyGlb('model').subarray(0, 40), 'media_glb_malformed'],
     ['GLB with an out-of-range POSITION accessor', 'model', () => glbWithOutOfRangePosition(), 'media_glb_malformed'],
+    ['GLB with a self-cycle', 'model', () => cyclicSceneGlb(), 'media_glb_malformed'],
+    ['GLB with a multi-node cycle', 'model', () => cyclicSceneGlb(true), 'media_glb_malformed'],
     ['GLB without an animation for the rig requirement', 'animation', () => tinyGlb('model'), 'media_glb_missing_animation'],
     ['Ogg stream without its terminating page', 'audio', () => { const bytes = tinyOgg(); return bytes.subarray(0, bytes.length - 31) }, 'media_ogg_malformed'],
     ['Ogg stream with duration metadata but no audio packet', 'audio', () => oggWithoutAudioPacket(), 'media_ogg_malformed'],
