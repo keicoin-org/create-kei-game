@@ -70,14 +70,23 @@ Admitted runtime bytes must be the media they claim to be. Processed outputs
 are limited to PNG, GLB, and Ogg Opus audio. PNG admission checks chunk order
 and CRCs, bounded zlib decompression, exact scanline length, and filter bytes.
 GLB admission checks its only JSON/BIN chunks, buffer-view and accessor byte
-ranges, mesh references, scene/node references, and animation sampler/channel
-references. Ogg admission checks page CRCs, stream serial/sequence/flags,
-packet lacing, Opus identification and tags packets, and at least one
-structurally valid audio packet before a positive-granule EOS. Retained
+ranges, mesh references, scene/node references, nontrivial geometry, and an
+animation's rig, increasing finite timeline, and observable transform change.
+Ogg admission checks page CRCs, stream serial/sequence/flags, packet lacing,
+Opus identification and tags packets, and rejects trivially short single-packet
+audio before a positive-granule EOS. PNG admission rejects tiny or effectively
+uniform placeholder images after bounded decoding. Retained
 licence bytes must exactly match a provider-retained, catalogued CC0 file. This
 gate is offline: it verifies pinned evidence already in the project but does
-not re-fetch a provider or prove that processed outputs were faithfully
-derived from the admitted source bytes.
+not re-fetch a provider. Because structural parsing cannot prove faithful
+semantic derivation, an output hash must also appear in the reviewed catalog
+before the state can become `polish_ready`; otherwise the explicit result is
+`polish_review_required`.
+
+The catalog binds each requirement to a dimension, role, kind, semantic family,
+official archive member, retained member hash, and genuine licence hash.
+Distinct visual roles and audio cue families cannot reuse the same processed
+hash unless the catalog explicitly reviews that reuse.
 
 The generated checker embeds the exact authoritative recipe, requirement,
 source, role-binding, media, and licence validator functions used by the
@@ -87,14 +96,18 @@ oversized bytes for both dimensions. Generated-boundary regressions also
 replay CRC-correct invalid PNG deflate, an out-of-range GLB `POSITION`
 accessor, an EOS Ogg stream with duration metadata but no audio packet,
 invented catalog assertions, two placeholder feedback channels, and a remote
-observation rebound to the interaction event; none may reach `polish_ready`.
+observation rebound to the interaction event. It also replays the demonstrated
+one-gradient/one-triangle/no-op-animation/one-tiny-Opus alias attack in both
+dimensions; none may reach `polish_ready`.
 
 ## Expected state
 
 `bun run polish:check` intentionally exits 1 with
 `polish_assets_pending` in a fresh blank project because the canonical source
-registry is empty. A positive admitted fixture proves the same checker can emit
-`polish_ready`, but no fixture bytes ship in generated projects.
+registry is empty. Structurally valid, role-bound bytes remain
+`polish_review_required` until their processed hashes receive explicit catalog
+review; placeholder or cross-role aliases are `polish_assets_invalid`. No
+fixture bytes ship in generated projects.
 
 `polish-2d` and `polish-3d` remain `planned`. Neither becomes `available` until
 real admitted runtime bytes, presentation code, capture/check evidence, and

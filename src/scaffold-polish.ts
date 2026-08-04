@@ -10,12 +10,14 @@ import {
   POLISH_RECIPE_VERSION,
   POLISH_SOURCE_MANIFEST_VERSION,
   expectedCredits,
+  polishReviewProblems,
   polishSourceCatalogRecord,
   validatePolishAssetManifestDocument,
   validatePolishLicenceBytes,
   validatePolishMediaBytes,
   validatePolishRecipeDocument,
   validatePolishRecipeManifestBinding,
+  validatePolishSourceManifestBinding,
   validatePolishSourceManifestDocument,
   type ActionRecipe,
   type PolishAssetKind,
@@ -170,6 +172,8 @@ const validatePolishAssetManifestDocument = ${validatePolishAssetManifestDocumen
 const polishSourceCatalogRecord = ${polishSourceCatalogRecord.toString()}
 const validatePolishSourceManifestDocument = ${validatePolishSourceManifestDocument.toString()}
 const validatePolishRecipeManifestBinding = ${validatePolishRecipeManifestBinding.toString()}
+const validatePolishSourceManifestBinding = ${validatePolishSourceManifestBinding.toString()}
+const polishReviewProblems = ${polishReviewProblems.toString()}
 const validatePolishMediaBytes = ${validatePolishMediaBytes.toString()}
 const validatePolishLicenceBytes = ${validatePolishLicenceBytes.toString()}
 const here = dirname(fileURLToPath(import.meta.url))
@@ -233,6 +237,7 @@ if (hash(styleDoc.raw) !== recipe?.styleProfileHash) problems.push({ code: 'styl
 if (qualityDoc.value?.version !== 1 || JSON.stringify(qualityDoc.value?.profiles) !== JSON.stringify(recipe?.qualityProfiles)) problems.push({ code: 'quality_mismatch', message: 'quality.json differs from the authoritative recipe' })
 const required = new Map((manifest?.assets ?? []).map((asset) => [asset.id, asset])); const byId = new Map((sources?.assets ?? []).map((asset) => [asset.id, asset]))
 for (const code of validatePolishRecipeManifestBinding(recipe, manifest)) problems.push({ code, message: 'recipe/manifest semantic role binding rejected' })
+for (const code of validatePolishSourceManifestBinding(manifest, sources)) problems.push({ code, message: 'source/manifest semantic catalog binding rejected' })
 for (const id of byId.keys()) if (!required.has(id)) problems.push({ code: 'unrequired_source', id, message: 'source registry contains bytes outside the polish admission manifest' })
 const verify = (id, entry, maximum) => { try { const bytes = secureRead(entry.path, maximum, entry.bytes); if (hash(bytes) !== entry.sha256) { problems.push({ code: 'hash_mismatch', id, message: entry.path }); return null } return bytes } catch (error) { problems.push({ code: 'file_invalid', id, message: entry.path + ': ' + (error instanceof Error ? error.message : String(error)) }); return null } }
 if (sources?.credits) {
@@ -266,6 +271,11 @@ for (const [role, bytes] of roleBytes) if (bytes > (recipe?.budgets?.maxBytesByR
 if (problems.length) {
   const pending = problems.every((problem) => problem.code === 'missing_source')
   process.stderr.write(JSON.stringify({ ok: false, code: pending ? 'polish_assets_pending' : 'polish_assets_invalid', problems }) + '\\n')
+  process.exit(1)
+}
+const reviewProblems = polishReviewProblems(manifest, sources)
+if (reviewProblems.length) {
+  process.stderr.write(JSON.stringify({ ok: false, code: 'polish_review_required', admitted: required.size, visualBytes, audioBytes, aggregateBytes, problems: reviewProblems }) + '\\n')
   process.exit(1)
 }
 process.stdout.write(JSON.stringify({ ok: true, code: 'polish_ready', admitted: required.size, visualBytes, audioBytes, aggregateBytes }) + '\\n')

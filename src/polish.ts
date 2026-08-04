@@ -117,9 +117,16 @@ export interface PolishSourceManifestV1 {
 
 export interface PolishAdmissionProbe { readonly size: number; readonly sha256: string; readonly isSymlink?: boolean }
 export interface PolishAdmissionProblem { readonly code: string; readonly id?: string; readonly message: string }
-export interface PolishAdmissionReport { readonly ok: boolean; readonly code: 'polish_ready' | typeof POLISH_PENDING_CODE | 'polish_assets_invalid'; readonly problems: readonly PolishAdmissionProblem[] }
+export interface PolishAdmissionReport { readonly ok: boolean; readonly code: 'polish_ready' | 'polish_review_required' | typeof POLISH_PENDING_CODE | 'polish_assets_invalid'; readonly problems: readonly PolishAdmissionProblem[] }
 
 export interface PolishSourceCatalogRecord {
+  readonly id: string
+  readonly dimensions: readonly PolishDimension[]
+  readonly role: PolishAssetRole
+  readonly kinds: readonly PolishAssetKind[]
+  readonly semanticFamily: string
+  readonly reviewedReuseGroup: string | null
+  readonly reviewedProcessedSha256: readonly string[]
   readonly provider: 'kenney'
   readonly canonicalUrl: string
   readonly providerAssetVersion: string
@@ -142,26 +149,39 @@ export interface PolishSourceCatalogRecord {
  * This function is self-contained because its exact body is copied into the
  * generated project checker.
  */
-export function polishSourceCatalogRecord(value: unknown): PolishSourceCatalogRecord | null {
-  if (typeof value !== 'string') return null
-  const visualIds = ['hero-character','hero-motion','training-sentinel','encounter-environment','encounter-effects']
-  const audioIds = ['ambience','footstep-a','footstep-b','interaction','swing','impact','refusal','success','cooldown','recovery']
-  const audio = audioIds.includes(value)
-  if (!audio && !visualIds.includes(value)) return null
-  return {
-    provider: 'kenney',
-    canonicalUrl: audio ? 'https://kenney.nl/assets/rpg-audio' : 'https://kenney.nl/assets/tiny-dungeon',
-    providerAssetVersion: '1.0',
-    acquisitionMode: 'download',
-    sourceArchiveUrl: audio ? 'https://kenney.nl/media/pages/assets/rpg-audio/8e99002d76-1677590336/kenney_rpg-audio.zip' : 'https://kenney.nl/media/pages/assets/tiny-dungeon/f8422efb44-1674742415/kenney_tiny-dungeon.zip',
-    sourceArchiveEntry: audio ? 'Audio/bookOpen.ogg' : 'Tiles/tile_0000.png',
-    sourceSha256: audio ? '953390534377222bee89ac8cd9e60a58fdc037c71a4d7c18c43cd647c7f34ba8' : 'ebf91e6638d484dc6bdaec5f30e91589252125146b70c2911f11fac7ebe17090',
-    sourceBytes: audio ? 8_273 : 99,
-    licenceReferenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/',
-    licenceSha256: audio ? '5735dfd72cb64cbbceda4ebc00c380c41ca680edb82ff153aa7c9ab97614c539' : '9f574a2f1f636a3db8a0665ba90212f34e2b5e61ecb533d77c05237766374111',
-    licenceBytes: audio ? 478 : 570,
-    attribution: audio ? 'Kenney RPG Audio 1.0, CC0' : 'Kenney Tiny Dungeon 1.0, CC0',
-  }
+export function polishSourceCatalogRecord(value: unknown, sourceSha256?: unknown): PolishSourceCatalogRecord | null {
+  if (typeof value !== 'string' || (sourceSha256 !== undefined && typeof sourceSha256 !== 'string')) return null
+  const cc0 = 'https://creativecommons.org/publicdomain/zero/1.0/' as const
+  const record = (id: string, dimensions: readonly PolishDimension[], role: PolishAssetRole, kinds: readonly PolishAssetKind[], semanticFamily: string, reviewedReuseGroup: string | null, canonicalUrl: string, providerAssetVersion: string, sourceArchiveUrl: string, sourceArchiveEntry: string, sourceSha: string, sourceBytes: number, licenceSha256: string, licenceBytes: number, attribution: string): PolishSourceCatalogRecord => ({
+    id, dimensions, role, kinds, semanticFamily, reviewedReuseGroup, reviewedProcessedSha256: [], provider: 'kenney', canonicalUrl, providerAssetVersion, acquisitionMode: 'download', sourceArchiveUrl, sourceArchiveEntry, sourceSha256: sourceSha, sourceBytes, licenceReferenceUrl: cc0, licenceSha256, licenceBytes, attribution,
+  })
+  const tinyUrl = 'https://kenney.nl/media/pages/assets/tiny-dungeon/f8422efb44-1674742415/kenney_tiny-dungeon.zip'
+  const charactersUrl = 'https://kenney.nl/media/pages/assets/animated-characters-protagonists/608191acc4-1774773108/kenney_animated-characters-protagonists.zip'
+  const miniUrl = 'https://kenney.nl/media/pages/assets/mini-dungeon/6cd72dc849-1785314274/kenney_mini-dungeon.zip'
+  const particleUrl = 'https://kenney.nl/media/pages/assets/particle-pack/f8fe0f8cb8-1677578741/kenney_particle-pack.zip'
+  const audioUrl = 'https://kenney.nl/media/pages/assets/rpg-audio/8e99002d76-1677590336/kenney_rpg-audio.zip'
+  const records: PolishSourceCatalogRecord[] = [
+    ...['hero-character','hero-motion','training-sentinel','encounter-environment'].map((id) => record(id, ['2d'], id === 'hero-character' ? 'character' : id === 'hero-motion' ? 'rig-or-atlas' : id === 'training-sentinel' ? 'target' : 'environment', ['atlas'], id, id === 'hero-character' || id === 'hero-motion' ? 'hero-2d-atlas' : null, 'https://kenney.nl/assets/tiny-dungeon', '1.0', tinyUrl, 'Tilemap/tilemap.png', '5653222ac495d89e942f9b636300759b3f38e85b26e9b888676f2e9ab834095a', 5_533, '9f574a2f1f636a3db8a0665ba90212f34e2b5e61ecb533d77c05237766374111', 570, 'Kenney Tiny Dungeon 1.0, CC0')),
+    record('hero-character', ['3d'], 'character', ['model'], 'hero-character', null, 'https://kenney.nl/assets/animated-characters-protagonists', '1.0', charactersUrl, 'Model/characterMedium.fbx', '18835fef534eede635b081ee7fe647d01a885550a591d2e6bf071010906167d8', 167_212, '68280323c6dca1f532c71fb248a6f344abed39a574278a2edfa27801aea3d0cd', 699, 'Kenney Animated Characters Protagonists 1.0, CC0'),
+    record('hero-motion', ['3d'], 'rig-or-atlas', ['animation'], 'hero-motion', null, 'https://kenney.nl/assets/animated-characters-protagonists', '1.0', charactersUrl, 'Animations/idle.fbx', 'c8a24e0294376ee5a195c56752a13310e1c0b5f8588a4db50e094120e3e4cc74', 608_188, '68280323c6dca1f532c71fb248a6f344abed39a574278a2edfa27801aea3d0cd', 699, 'Kenney Animated Characters Protagonists 1.0, CC0'),
+    record('training-sentinel', ['3d'], 'target', ['model'], 'training-sentinel', null, 'https://kenney.nl/assets/mini-dungeon', '1.6', miniUrl, 'Models/GLB format/character-orc.glb', 'e0b021c98b34a633567ca79f7c129cca48fd7919aa9e959464deba226767c284', 199_616, 'f8b470068a1c043854101c9ff7161d376ba02c36239da3c1dbdfa928b08444b6', 701, 'Kenney Mini Dungeon 1.6, CC0'),
+    record('encounter-environment', ['3d'], 'environment', ['model'], 'encounter-environment', null, 'https://kenney.nl/assets/mini-dungeon', '1.6', miniUrl, 'Models/GLB format/floor.glb', 'e45e31b7b77370a9e3829b690e123ea2127a674e2726f7908f3ffb6ac2612f70', 1_796, 'f8b470068a1c043854101c9ff7161d376ba02c36239da3c1dbdfa928b08444b6', 701, 'Kenney Mini Dungeon 1.6, CC0'),
+    record('encounter-effects', ['2d','3d'], 'effect', ['image'], 'encounter-effects', null, 'https://kenney.nl/assets/particle-pack', '1.0', particleUrl, 'PNG (Transparent)/slash_01.png', 'cb4787978122bb863866a1681af22a7dec39a4566f08c400f233740eb1d3730c', 25_465, 'f9e70b81d8cc07c4e07c9f2eff1d94fd371a06070b18cb67c651c41158ec2975', 651, 'Kenney Particle Pack 1.0, CC0'),
+  ]
+  const cues = [
+    ['ambience','Audio/creak1.ogg','8a346186fd297254248cab8e8117060a52a5cf2a84f603153a762108550ea95e',15_761],
+    ['footstep-a','Audio/footstep00.ogg','6fe61ef1fc3bcf0e253bf2eb64759db6cb69e2fe452f4d88cc597ecf78a3d601',9_475],
+    ['footstep-b','Audio/footstep01.ogg','313472dba31fd0c855376069fa368bb5a198c27251cc8398ef464578b7047a4c',9_900],
+    ['interaction','Audio/bookOpen.ogg','953390534377222bee89ac8cd9e60a58fdc037c71a4d7c18c43cd647c7f34ba8',8_273],
+    ['swing','Audio/knifeSlice.ogg','4cd96dc630bed9840c15f1dd2306da2cc56a4da26a5d3f1a03c5a7265ac5e54f',15_532],
+    ['impact','Audio/chop.ogg','d00c2b3c9fff07e376145c8c8c45c90e5084ec192f6ce0387db233f7b86f1486',9_370],
+    ['refusal','Audio/doorClose_1.ogg','834d29c60a8a8bfb50b158cdb6b7dfa8f02812a408a1ee9703d038dfab0b1aeb',18_564],
+    ['success','Audio/handleCoins.ogg','8a91f969e932df709df80ee124d86a51389eed9b67f22e5e716bc2bbf60d8dab',25_394],
+    ['cooldown','Audio/bookClose.ogg','81e976532565f4372abd14e83d2684195fa548d0a28d345de221e56052454f32',9_292],
+    ['recovery','Audio/drawKnife1.ogg','276403e72c3b71c47bc24db3083970c23f8e5551ffa78f436f83483c56f3f0bb',11_134],
+  ] as const
+  for (const [id, entry, sha, bytes] of cues) records.push(record(id, ['2d','3d'], 'audio', ['audio'], id, null, 'https://kenney.nl/assets/rpg-audio', '1.0', audioUrl, entry, sha, bytes, '5735dfd72cb64cbbceda4ebc00c380c41ca680edb82ff153aa7c9ab97614c539', 478, 'Kenney RPG Audio 1.0, CC0'))
+  return records.find((candidate) => candidate.id === value && (sourceSha256 === undefined || candidate.sourceSha256 === sourceSha256)) ?? null
 }
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -320,7 +340,7 @@ export function validatePolishSourceManifestDocument(value: unknown): string[] {
   if (sources.version !== 1 || !exact(sources.credits, ['path','sha256','bytes']) || sources.credits?.path !== 'kei-mmo/content/THIRD_PARTY_ASSETS.md' || !hash(sources.credits?.sha256) || !Number.isInteger(sources.credits?.bytes) || sources.credits.bytes < 1 || sources.credits.bytes > 262_144 || !Array.isArray(sources.assets) || sources.assets.length > 100) problems.push('invalid_sources')
   for (const source of Array.isArray(sources.assets) ? sources.assets : []) {
     const canonical = url(source?.canonicalUrl); const licenceUrl = url(source?.licence?.referenceUrl)
-    const catalog = polishSourceCatalogRecord(source?.id)
+    const catalog = polishSourceCatalogRecord(source?.id, source?.sourceFile?.sha256)
     if (!exact(source, ['id','canonicalUrl','provider','providerAssetVersion','acquisitionMode','acquiredAt','sourceFile','licence','attribution','rawRedistribution','processedOutputs']) || !id(source.id) || ids.has(source.id) || !canonical || !['kenney','quaternius','poly-haven'].includes(source.provider) || typeof source.providerAssetVersion !== 'string' || source.providerAssetVersion.trim() !== source.providerAssetVersion || source.providerAssetVersion.length < 1 || source.providerAssetVersion.length > 120 || /^(?:latest|current)$/i.test(source.providerAssetVersion) || !['download','api'].includes(source.acquisitionMode) || !utc(source.acquiredAt) || !exact(source.sourceFile, ['path','sha256','bytes','packaged']) || !portablePath(source.sourceFile?.path) || !source.sourceFile.path.startsWith('kei-mmo/content/source-bytes/') || !hash(source.sourceFile?.sha256) || !Number.isInteger(source.sourceFile?.bytes) || source.sourceFile.bytes < 1 || source.sourceFile.bytes > 16_777_216 || source.sourceFile?.packaged !== true || !exact(source.licence, ['id','referenceUrl','filePath','sha256','bytes']) || source.licence?.id !== 'CC0-1.0' || !licenceUrl || !portablePath(source.licence?.filePath) || !source.licence.filePath.startsWith('kei-mmo/content/licenses/') || !hash(source.licence?.sha256) || !Number.isInteger(source.licence?.bytes) || source.licence.bytes < 1 || source.licence.bytes > 262_144 || typeof source.attribution !== 'string' || source.attribution.trim() !== source.attribution || source.attribution.length < 1 || source.attribution.length > 500 || source.rawRedistribution !== 'allowed' || !Array.isArray(source.processedOutputs) || source.processedOutputs.length < 1 || source.processedOutputs.length > 20) problems.push('invalid_source')
     if (canonical && ((source.provider === 'kenney' && (canonical.hostname !== 'kenney.nl' || !/^\/assets\/[a-z0-9][a-z0-9-]*$/.test(canonical.pathname) || source.acquisitionMode !== 'download')) || (source.provider === 'quaternius' && (canonical.hostname !== 'quaternius.com' || canonical.pathname.length < 2 || source.acquisitionMode !== 'download')) || (source.provider === 'poly-haven' && (canonical.hostname !== 'polyhaven.com' || !/^\/a\/[a-z0-9_-]+$/.test(canonical.pathname) || source.acquisitionMode !== 'api')))) problems.push('provider_policy_mismatch')
     if (licenceUrl && !['creativecommons.org','kenney.nl','quaternius.com','polyhaven.com'].includes(licenceUrl.hostname)) problems.push('licence_host_mismatch')
@@ -336,6 +356,51 @@ export function validatePolishSourceManifestDocument(value: unknown): string[] {
     ids.add(source.id)
   }
   return [...new Set(problems)]
+}
+
+/** Bind retained source members and processed identities to semantic requirements. */
+export function validatePolishSourceManifestBinding(manifest: unknown, sources: unknown): string[] {
+  const record = (item: unknown): item is Record<string, any> => typeof item === 'object' && item !== null && !Array.isArray(item)
+  if (!record(manifest) || !['2d','3d'].includes(manifest.dimension) || !Array.isArray(manifest.assets) || !record(sources) || !Array.isArray(sources.assets)) return ['unbound_source_documents']
+  const problems: string[] = []
+  const sourceById = new Map<string, any>()
+  for (const source of sources.assets) if (record(source) && typeof source.id === 'string') sourceById.set(source.id, source)
+  const outputOwners = new Map<string, { family: string; reuse: string | null; id: string }>()
+  for (const requirement of manifest.assets) {
+    if (!record(requirement) || typeof requirement.id !== 'string') continue
+    const source = sourceById.get(requirement.id)
+    if (!source) continue
+    const catalog = polishSourceCatalogRecord(requirement.id, source.sourceFile?.sha256)
+    if (!catalog) problems.push('source_catalog_mismatch')
+    else {
+      if (!catalog.dimensions.includes(manifest.dimension)) problems.push('source_catalog_dimension_mismatch')
+      if (catalog.role !== requirement.role) problems.push('source_catalog_role_mismatch')
+      if (!catalog.kinds.includes(requirement.kind)) problems.push('source_catalog_kind_mismatch')
+    }
+    const family = catalog?.semanticFamily ?? requirement.id
+    const reuse = catalog?.reviewedReuseGroup ?? null
+    for (const output of Array.isArray(source.processedOutputs) ? source.processedOutputs : []) {
+      if (typeof output?.sha256 !== 'string') continue
+      const owner = outputOwners.get(output.sha256)
+      if (owner && owner.family !== family && (!reuse || reuse !== owner.reuse)) problems.push('processed_output_alias')
+      else if (!owner) outputOwners.set(output.sha256, { family, reuse, id: requirement.id })
+    }
+  }
+  return [...new Set(problems)]
+}
+
+/** Successful structural admission still requires catalog-reviewed output hashes. */
+export function polishReviewProblems(manifest: unknown, sources: unknown): PolishAdmissionProblem[] {
+  if (typeof manifest !== 'object' || manifest === null || !Array.isArray((manifest as any).assets) || typeof sources !== 'object' || sources === null || !Array.isArray((sources as any).assets)) return [{ code: 'review_required_unbound_documents', message: 'semantic review cannot bind malformed documents' }]
+  const sourceById = new Map((sources as any).assets.map((source: any) => [source?.id, source]))
+  const problems: PolishAdmissionProblem[] = []
+  for (const requirement of (manifest as any).assets) {
+    const source: any = sourceById.get(requirement?.id)
+    const catalog = polishSourceCatalogRecord(requirement?.id, source?.sourceFile?.sha256)
+    if (!catalog || !Array.isArray(source?.processedOutputs)) continue
+    for (const output of source.processedOutputs) if (!catalog.reviewedProcessedSha256.includes(output?.sha256)) problems.push({ code: 'review_required_unapproved_output', id: requirement.id, message: `${output?.path ?? 'output'} has no catalog-reviewed semantic derivation` })
+  }
+  return problems
 }
 
 /**
@@ -418,6 +483,9 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     try { pixels = inflateSync(Buffer.concat(compressed.map((part) => Buffer.from(part))), { maxOutputLength: inflatedBytes + 1 }) } catch { return ['media_png_malformed'] }
     if (pixels.length !== inflatedBytes) return ['media_png_malformed']
     for (let row = 0; row < height; row += 1) if ((pixels[row * (rowBytes + 1)] as number) > 4) return ['media_png_malformed']
+    const sample = new Set<number>()
+    for (let index = 0; index < pixels.length && sample.size < 8; index += Math.max(1, Math.floor(pixels.length / 256))) sample.add(pixels[index] as number)
+    if (width * height < 256 || sample.size < 4) return ['media_png_placeholder']
     return []
   }
   if (kind === 'model' || kind === 'animation') {
@@ -449,11 +517,22 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
       if (stride < elementBytes || accessorOffset + (accessor.count - 1) * stride + elementBytes > bufferView.byteLength) return ['media_glb_malformed']
     }
     const validAccessor = (item: unknown) => integer(item, 0, accessors.length - 1)
+    const accessorFloats = (index: number): number[] | null => {
+      const accessor = accessors[index]; if (!accessor || accessor.componentType !== 5126) return null
+      const bufferView = bufferViews[accessor.bufferView]; const components = typeComponents[accessor.type]; if (!bufferView || !components) return null
+      const stride = bufferView.byteStride ?? components * 4; const start = binOffset + 8 + (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0); const values: number[] = []
+      for (let element = 0; element < accessor.count; element += 1) for (let component = 0; component < components; component += 1) { const value = view.getFloat32(start + element * stride + component * 4, true); if (!Number.isFinite(value)) return null; values.push(value) }
+      return values
+    }
     if (gltf.meshes !== undefined && (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || gltf.meshes.some((mesh: any) => !record(mesh) || !Array.isArray(mesh.primitives) || mesh.primitives.length < 1 || mesh.primitives.some((primitive: any) => !record(primitive) || !record(primitive.attributes) || Object.values(primitive.attributes).some((accessor) => !validAccessor(accessor)) || (primitive.indices !== undefined && !validAccessor(primitive.indices)))))) return ['media_glb_malformed']
     if (!Array.isArray(gltf.nodes) || gltf.nodes.length < 1 || gltf.nodes.length > 65_536 || gltf.nodes.some((node: any) => !record(node) || (node.mesh !== undefined && !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)))) return ['media_glb_malformed']
     if (!Array.isArray(gltf.scenes) || gltf.scenes.length < 1 || !integer(gltf.scene, 0, gltf.scenes.length - 1) || gltf.scenes.some((scene: any) => !record(scene) || !Array.isArray(scene.nodes) || scene.nodes.some((node: unknown) => !integer(node, 0, gltf.nodes.length - 1)))) return ['media_glb_malformed']
     if (kind === 'model') {
       if (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || !gltf.meshes.every((mesh: any) => Array.isArray(mesh?.primitives) && mesh.primitives.length > 0 && mesh.primitives.every((primitive: any) => record(primitive) && record(primitive.attributes) && validAccessor(primitive.attributes.POSITION) && accessors[primitive.attributes.POSITION]?.type === 'VEC3' && accessors[primitive.attributes.POSITION]?.componentType === 5126 && (primitive.indices === undefined || (validAccessor(primitive.indices) && accessors[primitive.indices]?.type === 'SCALAR' && [5121,5123,5125].includes(accessors[primitive.indices]?.componentType)))))) return ['media_glb_missing_mesh']
+      let vertices = 0; const axes = [Number.POSITIVE_INFINITY,Number.POSITIVE_INFINITY,Number.POSITIVE_INFINITY,Number.NEGATIVE_INFINITY,Number.NEGATIVE_INFINITY,Number.NEGATIVE_INFINITY]
+      for (const mesh of gltf.meshes) for (const primitive of mesh.primitives) { const accessor = accessors[primitive.attributes.POSITION]; const values = accessorFloats(primitive.attributes.POSITION); if (!values) return ['media_glb_malformed']; vertices += accessor.count; for (let index = 0; index < values.length; index += 3) for (let axis = 0; axis < 3; axis += 1) { axes[axis] = Math.min(axes[axis] as number, values[index + axis] as number); axes[axis + 3] = Math.max(axes[axis + 3] as number, values[index + axis] as number) } }
+      const spans = [0,1,2].map((axis) => (axes[axis + 3] as number) - (axes[axis] as number)).filter((span) => span > 1e-5)
+      if (vertices < 4 || spans.length < 2) return ['media_glb_placeholder']
     }
     if (kind === 'animation') {
       if (!Array.isArray(gltf.animations) || gltf.animations.length < 1 || !gltf.animations.every((animation: any) => Array.isArray(animation?.channels) && animation.channels.length > 0 && Array.isArray(animation?.samplers) && animation.samplers.length > 0 && animation.samplers.every((sampler: any) => record(sampler) && validAccessor(sampler.input) && validAccessor(sampler.output) && ['LINEAR','STEP','CUBICSPLINE'].includes(sampler.interpolation ?? 'LINEAR') && accessors[sampler.input]?.type === 'SCALAR' && accessors[sampler.input]?.componentType === 5126) && animation.channels.every((channel: any) => {
@@ -461,6 +540,15 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
         const sampler = animation.samplers[channel.sampler]; const input = accessors[sampler.input]; const output = accessors[sampler.output]; const expectedType = channel.target.path === 'rotation' ? 'VEC4' : 'VEC3'; const multiplier = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1
         return output?.type === expectedType && output?.componentType === 5126 && output.count === input.count * multiplier
       }))) return ['media_glb_missing_animation']
+      if (!Array.isArray(gltf.skins) || gltf.skins.length < 1 || gltf.skins.some((skin: any) => !record(skin) || !Array.isArray(skin.joints) || skin.joints.length < 2 || skin.joints.some((joint: unknown) => !integer(joint, 0, gltf.nodes.length - 1)))) return ['media_glb_animation_rig_missing']
+      let observable = false
+      for (const animation of gltf.animations) for (const sampler of animation.samplers) {
+        const times = accessorFloats(sampler.input); const values = accessorFloats(sampler.output)
+        if (!times || !values || times.length < 2 || times.some((time, index) => index > 0 && time <= (times[index - 1] as number))) return ['media_glb_animation_timeline_invalid']
+        const components = typeComponents[accessors[sampler.output].type] as number; const multiplier = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1; const first = sampler.interpolation === 'CUBICSPLINE' ? components : 0; const last = (times.length - 1) * components * multiplier + first
+        for (let component = 0; component < components; component += 1) if (Math.abs((values[last + component] as number) - (values[first + component] as number)) > 1e-5) observable = true
+      }
+      if (!observable) return ['media_glb_animation_no_motion']
     }
     return []
   }
@@ -499,7 +587,7 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     return end - cursor - used > 0
   }
   let offset = 0; let pages = 0; let terminated = false; let serial: number | null = null; let expectedSequence = 0; let finalGranule = 0n
-  let packetParts: Uint8Array[] = []; let packetBytes = 0; let packetIndex = 0; let identified = false; let tagged = false; let audioPackets = 0
+  let packetParts: Uint8Array[] = []; let packetBytes = 0; let packetIndex = 0; let identified = false; let tagged = false; let audioPackets = 0; let audioPacketBytes = 0
   while (offset < bytes.length && pages < 65_536) {
     if (offset + 27 > bytes.length || ascii(offset, 4) !== 'OggS' || bytes[offset + 4] !== 0) return ['media_ogg_malformed']
     const flags = bytes[offset + 5] as number
@@ -534,7 +622,7 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
           tagged = true
         } else {
           if (!validAudioPacket(packet)) return ['media_ogg_not_audio']
-          audioPackets += 1
+          audioPackets += 1; audioPacketBytes += packet.length
         }
         packetParts = []; packetBytes = 0; packetIndex += 1
       }
@@ -542,7 +630,8 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     if (flags & 0x04) terminated = pageEnd === bytes.length
     offset = pageEnd; pages += 1; expectedSequence += 1
   }
-  return identified && tagged && audioPackets > 0 && packetBytes === 0 && terminated && pages >= 3 && offset === bytes.length && finalGranule > 0n ? [] : ['media_ogg_malformed']
+  if (!(identified && tagged && audioPackets > 0 && packetBytes === 0 && terminated && pages >= 3 && offset === bytes.length && finalGranule > 0n)) return ['media_ogg_malformed']
+  return audioPackets >= 2 && audioPacketBytes >= 16 && finalGranule >= 4_800n ? [] : ['media_ogg_placeholder']
 }
 
 /**
@@ -551,7 +640,7 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
  * language, not merely a self-consistent hash over arbitrary bytes.
  */
 export function validatePolishLicenceBytes(bytes: Uint8Array): string[] {
-  if (!(bytes instanceof Uint8Array) || !['9f574a2f1f636a3db8a0665ba90212f34e2b5e61ecb533d77c05237766374111','5735dfd72cb64cbbceda4ebc00c380c41ca680edb82ff153aa7c9ab97614c539'].includes(createHash('sha256').update(bytes).digest('hex'))) return ['licence_text_mismatch']
+  if (!(bytes instanceof Uint8Array) || !['9f574a2f1f636a3db8a0665ba90212f34e2b5e61ecb533d77c05237766374111','5735dfd72cb64cbbceda4ebc00c380c41ca680edb82ff153aa7c9ab97614c539','68280323c6dca1f532c71fb248a6f344abed39a574278a2edfa27801aea3d0cd','f8b470068a1c043854101c9ff7161d376ba02c36239da3c1dbdfa928b08444b6','f9e70b81d8cc07c4e07c9f2eff1d94fd371a06070b18cb67c651c41158ec2975'].includes(createHash('sha256').update(bytes).digest('hex'))) return ['licence_text_mismatch']
   let text = ''
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { return ['licence_text_mismatch'] }
   if (bytes.length < 400 || bytes.length > 1_024 || /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text) || !/Creative Commons (?:Zero, )?CC0/.test(text) || !text.includes('creativecommons.org/publicdomain/zero/1.0/') || !/Kenney/i.test(text)) return ['licence_text_mismatch']
@@ -580,6 +669,7 @@ export function expectedCredits(sources: PolishSourceManifestV1): string {
 
 export function admitPolishAssets(requirements: PolishAssetManifestV1, sources: PolishSourceManifestV1, probe: (path: string) => PolishAdmissionProbe | null): PolishAdmissionReport {
   const problems: PolishAdmissionProblem[] = []
+  for (const code of validatePolishSourceManifestBinding(requirements, sources)) problems.push({ code, message: 'source catalog semantic binding rejected' })
   const byId = new Map(sources.assets.map((asset) => [asset.id, asset]))
   const roleBytes = new Map<PolishAssetRole, number>(); let aggregate = sources.credits.bytes
   const inspect = (id: string, entry: { path: string; sha256: string; bytes: number }, maxBytes: number) => {
@@ -600,5 +690,7 @@ export function admitPolishAssets(requirements: PolishAssetManifestV1, sources: 
   }
   if (aggregate > 25_165_824) problems.push({ code: 'aggregate_budget_exceeded', message: 'packaged credits, sources, licences, and outputs exceed the absolute V1 aggregate budget' })
   const pending = problems.length > 0 && problems.every((problem) => problem.code === 'missing_source' || problem.id === 'credits')
-  return Object.freeze({ ok: problems.length === 0, code: problems.length === 0 ? 'polish_ready' : pending ? POLISH_PENDING_CODE : 'polish_assets_invalid', problems: Object.freeze(problems.map((problem) => Object.freeze(problem))) })
+  if (problems.length > 0) return Object.freeze({ ok: false, code: pending ? POLISH_PENDING_CODE : 'polish_assets_invalid', problems: Object.freeze(problems.map((problem) => Object.freeze(problem))) })
+  const review = polishReviewProblems(requirements, sources)
+  return Object.freeze({ ok: review.length === 0, code: review.length === 0 ? 'polish_ready' : 'polish_review_required', problems: Object.freeze(review.map((problem) => Object.freeze(problem))) })
 }

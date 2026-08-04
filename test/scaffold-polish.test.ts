@@ -77,13 +77,14 @@ describe('generated project-owned polish checker', () => {
       expect(pendingResult.status).toBe(1)
       expect(pendingResult.report).toMatchObject({ code: 'polish_assets_pending' })
     })
-    test(`${dimension} is ready only with fully admitted project bytes`, async () => {
+    test(`${dimension} rejects the demonstrated one-placeholder-per-kind alias attack`, async () => {
       const ready = fixture(dimension, true)
       const result = await check(ready.root)
-      expect(result.status).toBe(0)
-      expect(result.report).toMatchObject({ ok: true, code: 'polish_ready', admitted: ready.manifest.assets.length })
-      const packaged = ready.sources.credits.bytes + ready.sources.assets.reduce((total: number, record: any) => total + record.sourceFile.bytes + record.licence.bytes + record.processedOutputs.reduce((sum: number, output: any) => sum + output.bytes, 0), 0)
-      expect(result.report.aggregateBytes).toBe(packaged)
+      expect(result.status).toBe(1)
+      expect(result.report).toMatchObject({ ok: false, code: 'polish_assets_invalid' })
+      expect(result.report.problems).toContainEqual(expect.objectContaining({ code: 'processed_output_alias' }))
+      expect(result.report.problems).toContainEqual(expect.objectContaining({ code: dimension === '2d' ? 'media_png_placeholder' : 'media_glb_placeholder' }))
+      expect(result.report.problems).toContainEqual(expect.objectContaining({ code: 'media_ogg_placeholder' }))
     })
   }
 

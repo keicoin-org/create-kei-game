@@ -15,6 +15,7 @@ import {
   validatePolishMediaBytes,
   validatePolishRecipeDocument,
   validatePolishRecipeManifestBinding,
+  validatePolishSourceManifestBinding,
   validatePolishSourceManifestDocument,
   type PolishSourceManifestV1,
 } from '../src/polish.js'
@@ -124,12 +125,12 @@ describe('PolishRecipeV1 authority and presentation contract', () => {
 })
 
 describe('admitted media and licence byte semantics', () => {
-  test('accepts structurally valid PNG, GLB, and Ogg Opus runtime bytes', () => {
-    expect(validatePolishMediaBytes('atlas', tinyPng())).toEqual([])
-    expect(validatePolishMediaBytes('image', tinyPng())).toEqual([])
-    expect(validatePolishMediaBytes('model', tinyGlb('model'))).toEqual([])
-    expect(validatePolishMediaBytes('animation', tinyGlb('animation'))).toEqual([])
-    expect(validatePolishMediaBytes('audio', tinyOgg())).toEqual([])
+  test('rejects structurally valid but production-trivial placeholder media', () => {
+    expect(validatePolishMediaBytes('atlas', tinyPng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('image', tinyPng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('model', tinyGlb('model'))).toEqual(['media_glb_placeholder'])
+    expect(validatePolishMediaBytes('animation', tinyGlb('animation'))).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('audio', tinyOgg())).toEqual(['media_ogg_placeholder'])
   })
 
   test.each([
@@ -186,6 +187,19 @@ describe('portable path and provenance contract', () => {
     expect(validatePolishSourceManifestDocument(registry)).toContain('source_catalog_mismatch')
   })
 
+  test('binds catalog members to dimensions, roles, kinds, and distinct processed identities', () => {
+    const manifest = generated('2d').manifest
+    const registry = sources(manifest.assets.map((requirement: any) => source(requirement.id))).value as any
+    expect(validatePolishSourceManifestBinding(manifest, registry)).toEqual([])
+    registry.assets.find((asset: any) => asset.id === 'training-sentinel').processedOutputs[0].sha256 = registry.assets.find((asset: any) => asset.id === 'hero-character').processedOutputs[0].sha256
+    expect(validatePolishSourceManifestBinding(manifest, registry)).toContain('processed_output_alias')
+    const wrongRole = structuredClone(manifest)
+    wrongRole.assets.find((asset: any) => asset.id === 'hero-character').role = 'target'
+    expect(validatePolishSourceManifestBinding(wrongRole, sources(wrongRole.assets.map((requirement: any) => source(requirement.id))).value)).toContain('source_catalog_role_mismatch')
+    const threeDimensionalHero = polishSourceCatalogRecord('hero-character', '18835fef534eede635b081ee7fe647d01a885550a591d2e6bf071010906167d8')
+    expect(threeDimensionalHero).toMatchObject({ dimensions: ['3d'], role: 'character', kinds: ['model'], sourceArchiveEntry: 'Model/characterMedium.fbx' })
+  })
+
   test('refuses cross-record case and Unicode path collisions', () => {
     const second = source('training-sentinel', { processedOutputs: [{ path: 'ASSETS/POLISH/HERO-CHARACTER.PNG', sha256: 'b'.repeat(64), bytes: 10 }] })
     const first = source('hero-character', { processedOutputs: [{ path: 'assets/polish/hero-character.png', sha256: 'a'.repeat(64), bytes: 10 }] })
@@ -203,7 +217,7 @@ describe('portable path and provenance contract', () => {
       files.set(record.licence.filePath, { size: record.licence.bytes, sha256: record.licence.sha256 })
       files.set(record.processedOutputs[0]!.path, { size: record.processedOutputs[0]!.bytes, sha256: record.processedOutputs[0]!.sha256 })
     }
-    expect(admitPolishAssets(parsedManifest, parsedSources, (path) => files.get(path) ?? null).code).toBe('polish_ready')
+    expect(admitPolishAssets(parsedManifest, parsedSources, (path) => files.get(path) ?? null).code).toBe('polish_review_required')
     const first = parsedSources.assets[0]!
     files.set(first.licence.filePath, { size: first.licence.bytes, sha256: 'b'.repeat(64) })
     expect(admitPolishAssets(parsedManifest, parsedSources, (path) => files.get(path) ?? null).problems).toContainEqual(expect.objectContaining({ code: 'hash_mismatch' }))
