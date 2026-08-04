@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 
 import { planFiles, scaffoldWorkspace } from '../src/source.js'
 import { planFor } from './fixtures.js'
+import { processFailureDiagnostic, runProcess } from './process.js'
 
 const roots: string[] = []
 const COMMAND_TIMEOUT_MS = 120_000
@@ -17,6 +18,7 @@ setDefaultTimeout(240_000)
 
 interface FailureDetails {
   readonly code: string
+  readonly executable?: 'bun'
   readonly phase: string
   readonly message: string
   readonly status?: number | null
@@ -33,29 +35,28 @@ class SmokeFailure extends Error {
   }
 }
 
-function run(directory: string, phase: string, args: readonly string[]): string {
-  const result = spawnSync(BUN, [...args], {
+async function run(directory: string, phase: string, args: readonly string[]): Promise<string> {
+  const result = await runProcess(BUN, args, {
     cwd: directory,
-    encoding: 'utf8',
-    timeout: COMMAND_TIMEOUT_MS,
-    windowsHide: true,
     env: { ...process.env, NO_COLOR: '1' },
+    timeoutMs: COMMAND_TIMEOUT_MS,
   })
   if (result.error !== undefined || result.status !== 0) {
+    const diagnostic = JSON.parse(processFailureDiagnostic(phase, result)) as {
+      readonly errorCode?: string
+    }
     throw new SmokeFailure({
-      code: result.error?.name === 'Error' && 'code' in result.error && result.error.code === 'ETIMEDOUT'
+      code: diagnostic.errorCode === 'ETIMEDOUT'
         ? `${phase}_timed_out`
         : `${phase}_failed`,
+      executable: 'bun',
       phase,
-      message: result.error?.message ?? `bun exited ${String(result.status)}`,
+      message: result.error === undefined
+        ? `bun exited ${String(result.status)}`
+        : 'bun failed before producing an exit status',
       status: result.status,
       signal: result.signal,
-      osCode:
-        result.error !== undefined && 'code' in result.error
-          ? String(result.error.code)
-          : undefined,
-      stdout: result.stdout,
-      stderr: result.stderr,
+      osCode: diagnostic.errorCode,
     })
   }
   return result.stdout
@@ -335,7 +336,7 @@ async function startAndProbe(directory: string): Promise<void> {
 
       await expectCrossOriginRefused(directory, ready.socketUrl)
 
-      const encounter = run(directory, 'shared_encounter', ['run', 'headless', '--', ready.socketUrl])
+      const encounter = await run(directory, 'shared_encounter', ['run', 'headless', '--', ready.socketUrl])
       const evidence = encounter
         .split(/\r?\n/)
         .filter((line) => line.trim().startsWith('{'))
@@ -406,8 +407,8 @@ describe('generated projects install, build, and start without the harness', () 
 
       // The harness install populated Bun's global cache. Offline mode proves
       // this generated-project check cannot silently depend on registry access.
-      run(directory, 'install', ['install', '--offline'])
-      run(directory, 'build', ['run', 'build'])
+      await run(directory, 'install', ['install', '--offline'])
+      await run(directory, 'build', ['run', 'build'])
       expect(existsSync(join(directory, 'dist', 'client', 'main.js'))).toBeTrue()
       expect(existsSync(join(directory, 'dist', 'server', 'main.js'))).toBeTrue()
       expect(existsSync(join(directory, 'dist', 'headless', 'headless.js'))).toBeTrue()
