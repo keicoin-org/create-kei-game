@@ -1,15 +1,12 @@
 import { beforeAll, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { ensureBuilt } from './built.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const entry = fileURLToPath(new URL('../dist/runtime-main.js', import.meta.url))
 
-beforeAll(() => {
-  const built = spawnSync(process.execPath, ['run', 'build'], { cwd: root, encoding: 'utf8', timeout: 30_000 })
-  if (built.error) throw built.error
-  if (built.status !== 0) throw new Error(`Runtime test build failed: ${built.stderr}`)
-})
+beforeAll(ensureBuilt)
 
 test('built engine executable speaks protocol-only JSONL', () => {
   const request = {

@@ -4,21 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
+import { ensureBuilt } from './built.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const entry = fileURLToPath(new URL('../dist/index.js', import.meta.url))
 const temporary: string[] = []
 const secret = 'sk-cli-secret-never-print'
 
-beforeAll(() => {
-  const built = spawnSync(process.execPath, ['run', 'build'], {
-    cwd: root,
-    encoding: 'utf8',
-    timeout: 30_000,
-  })
-  if (built.error) throw built.error
-  if (built.status !== 0) throw new Error(`CLI test build failed: ${built.stderr}`)
-})
+beforeAll(ensureBuilt)
 
 interface RunResult {
   readonly status: number | null
