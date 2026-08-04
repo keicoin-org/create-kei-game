@@ -150,9 +150,13 @@ describe('scaffolded source', () => {
         'package.json',
         'README.md',
         '.gitignore',
+        'tsconfig.json',
+        'static/index.html',
+        'scripts/build.mjs',
         'src/shared/simulation.ts',
         'src/client/main.ts',
         'src/server/main.ts',
+        'src/server/dev-server.mjs',
         // SCAFFOLD_PLAN is 3D, so the content pipeline lands with it. No
         // cut-scene or player: nothing in that intent asked for one.
         'kei-mmo/content/manifest.json',
@@ -187,7 +191,7 @@ describe('scaffolded source', () => {
     )
     expect(result.created).toBe(true)
     expect(forced.fs.entries.get('/work/my-game')).toEqual(['notes.txt'])
-    expect(forced.fs.writes.size).toBe(11)
+    expect(forced.fs.writes.size).toBe(15)
   })
 
   test('refuses to treat a file as a destination, including under force', async () => {

@@ -315,7 +315,7 @@ process.stdout.write('Content admitted: manifest and ' + cutsceneFiles.length + 
 
 /**
  * The player the project owns. Pure functions over the assembled document —
- * no renderer, no audio context, no imports — so it drives three.js, a test,
+ * no renderer, no audio context, no imports — so it drives Babylon.js, a test,
  * or a headless tick equally well, and survives the harness's deletion.
  */
 function playerModule(): string {

@@ -31,6 +31,16 @@ export const MMO_PLAN_VERSION = 2 as const
  */
 export const MAX_PLAN_BRIEF_LENGTH = 28_000
 
+/**
+ * Where the plan lives inside every project the harness prepares. They sit here
+ * rather than beside the code that writes them because the generated README and
+ * the source layer both name these paths, and a constant two modules import is
+ * better than an import cycle between them.
+ */
+export const PLAN_DIRECTORY = 'kei-mmo'
+export const PLAN_JSON_PATH = `${PLAN_DIRECTORY}/plan.json`
+export const PLAN_MARKDOWN_PATH = `${PLAN_DIRECTORY}/PLAN.md`
+
 export type EngineDimension = '2d' | '3d'
 
 export interface EngineChoice {

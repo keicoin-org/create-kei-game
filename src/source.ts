@@ -13,10 +13,19 @@
  * temporary directory, or git installed at all.
  */
 
-import { contentProjectFiles, CONTENT_CHECK_PATH } from './content-project.js'
 import { fail } from './errors.js'
-import { planJson, renderPlanMarkdown, type ImplementationPlan } from './plan.js'
+import {
+  PLAN_DIRECTORY,
+  PLAN_JSON_PATH,
+  PLAN_MARKDOWN_PATH,
+  planJson,
+  renderPlanMarkdown,
+  type ImplementationPlan,
+} from './plan.js'
 import { REFERENCE_PROJECTS, type ReferenceProject } from './references.js'
+import { projectFiles } from './scaffold.js'
+
+export { PLAN_DIRECTORY, PLAN_JSON_PATH, PLAN_MARKDOWN_PATH }
 
 // ── The data model ───────────────────────────────────────────────────────────
 
@@ -443,11 +452,6 @@ export interface WorkspaceFile {
   readonly contents: string
 }
 
-/** Where the plan lives inside every project this prepares. */
-export const PLAN_DIRECTORY = 'kei-mmo'
-export const PLAN_JSON_PATH = `${PLAN_DIRECTORY}/plan.json`
-export const PLAN_MARKDOWN_PATH = `${PLAN_DIRECTORY}/PLAN.md`
-
 /** The plan as two files: the one a model reads, and the one a person argues with. */
 export function planFiles(plan: ImplementationPlan): readonly WorkspaceFile[] {
   return Object.freeze([
@@ -457,182 +461,13 @@ export function planFiles(plan: ImplementationPlan): readonly WorkspaceFile[] {
 }
 
 /**
- * The one opinion the scaffold holds: client, server, and a simulation neither
- * of them owns. Everything else here is a stub, because the plan is the design
- * and a scaffold that pre-writes the game would be arguing with it.
+ * The project itself. `scaffold.ts` holds every file and every opinion in them;
+ * this stays the layer that decides *where* things land and what is refused,
+ * which is the only reason it can be tested without a disk.
  */
 export function scaffoldWorkspace(
   project: ProjectIdentity,
   plan: ImplementationPlan,
 ): readonly WorkspaceFile[] {
-  // The 3D content pipeline runs for real, right here: manifest built,
-  // admission passed, the intro cut-scene rehearsed and assembled. A 2D plan
-  // gets an empty list and a scaffold identical to what it always was.
-  const contentFiles = contentProjectFiles(project, plan)
-
-  const manifest = {
-    name: project.slug,
-    version: '0.0.0',
-    private: true,
-    type: 'module',
-    description: project.title,
-    scripts: {
-      dev: 'echo "Wire this up in the first plan step." && exit 1',
-      test: 'bun test',
-      ...(contentFiles.length > 0 ? { 'content:check': `node ${CONTENT_CHECK_PATH}` } : {}),
-    },
-  }
-
-  return Object.freeze([
-    { path: 'package.json', contents: `${JSON.stringify(manifest, null, 2)}\n` },
-    { path: 'README.md', contents: readme(project, plan) },
-    { path: '.gitignore', contents: 'node_modules/\ndist/\n*.sqlite*\n.DS_Store\n' },
-    { path: 'src/shared/simulation.ts', contents: simulation() },
-    { path: 'src/client/main.ts', contents: client(project) },
-    { path: 'src/server/main.ts', contents: server() },
-    ...contentFiles,
-  ])
-}
-
-function readme(project: ProjectIdentity, plan: ImplementationPlan): string {
-  const start =
-    plan.reference.strategy === 'clone' && plan.reference.reference
-      ? `This started from the **${plan.reference.reference.label}** reference project, because the plan judged it a closer starting point than an empty directory.`
-      : 'This started from a scaffold rather than a reference project. The plan says why.'
-
-  return `# ${project.title}
-
-A ${plan.engine.dimension.toUpperCase()} Kei MMORPG, planned by Create Kei MMO.
-
-${start}
-
-## The plan
-
-\`${PLAN_MARKDOWN_PATH}\` is the readable version and \`${PLAN_JSON_PATH}\` is the
-machine-readable original. Between them they hold the engine decision, the
-reference decision, the constraints, the acceptance criteria, the build order,
-and one capability packet per piece of work — each naming its prerequisites,
-its tools, and the calls that do the job.
-
-Disagree with it. It was derived from what you asked for, and it is a file in
-your repository, not a contract.
-
-## Shape
-
-| Path | What lives here |
-|---|---|
-| \`src/shared/\` | The simulation, and the wire schema. Imported by both sides. |
-| \`src/client/\` | Rendering, input, and prediction. Owns no authority. |
-| \`src/server/\` | The fixed tick, validation, persistence, and settlement. |
-
-Renderer: ${plan.engine.renderer}
-
-Server: ${plan.engine.server}
-${contentReadme(plan)}`
-}
-
-function contentReadme(plan: ImplementationPlan): string {
-  if (plan.content === undefined) return ''
-  const style = plan.content.style
-  return `
-## Content
-
-Style: **${style.setting}**, ${style.finish} finish — read from what you described,
-recorded in the plan, and assumed nowhere else.
-
-| Path | What lives here |
-|---|---|
-| \`kei-mmo/content/manifest.json\` | Every asset as a versioned record: prop specs, the rig, motion clips${plan.content.selections.some((selection) => selection.area === 'audio') ? ', audio cues' : ''}. |
-| \`kei-mmo/content/pipelines.json\` | The pipeline workflows, and the external generators with their honest statuses. |
-| \`kei-mmo/content/check.mjs\` | Your admission gate: \`npm run content:check\` (or \`node kei-mmo/content/check.mjs\`). A declared file that is missing, unlicensed, or empty fails the check — so does a cut-scene referencing a clip that is not admitted. |
-${plan.content.selections.some((selection) => selection.area === 'cutscene') ? '| `kei-mmo/content/cutscenes/` | Assembled cut-scene documents. Played by `src/shared/cutscene.ts`, which is yours and imports nothing. |\n' : ''}
-Starter content is previs grade on purpose: primitive props, blocking clips,
-synthesized cue voices. Replace records as real assets arrive — the check
-script holds every replacement to the same bar.
-`
-}
-
-function simulation(): string {
-  return `/**
- * The simulation both sides run.
- *
- * Client and server import this same function. That is what makes prediction
- * possible and what keeps the server the only authority: the client guesses
- * with the same rules, then accepts a correction.
- *
- * Keep it pure. No fetch, no Date.now(), no Math.random() — a seeded generator
- * passed in, or the replay tests stop meaning anything.
- */
-
-export interface PlayerInput {
-  /** Monotonic per player. The server echoes the last one it applied. */
-  readonly seq: number
-  readonly moveX: number
-  readonly moveY: number
-  readonly buttons: number
-}
-
-export interface WorldState {
-  readonly tick: number
-  readonly players: Readonly<Record<string, { x: number; y: number; z: number }>>
-}
-
-export const TICK_HZ = 20
-export const STEP_MS = 1000 / TICK_HZ
-
-export function step(
-  state: WorldState,
-  inputs: Readonly<Record<string, PlayerInput>>,
-  dtSeconds: number,
-): WorldState {
-  void inputs
-  void dtSeconds
-  // Plan step "Project shape" replaces this with the real simulation.
-  return { tick: state.tick + 1, players: state.players }
-}
-`
-}
-
-function client(project: ProjectIdentity): string {
-  // The title is data, not source. A name with `*/` in it would otherwise close
-  // the comment above and put whatever follows into the file as code.
-  return `/** Client entry. Renders and predicts; decides nothing. */
-
-import { step, type WorldState } from '../shared/simulation.js'
-
-export const TITLE = ${JSON.stringify(project.title)}
-
-export function start(canvas: HTMLCanvasElement): void {
-  void canvas
-  void step
-  // Plan step "First frame" replaces this with the renderer and the frame loop.
-}
-
-export const EMPTY: WorldState = { tick: 0, players: {} }
-`
-}
-
-function server(): string {
-  return `/** Shard entry. Owns the tick, the truth, and every economic action. */
-
-import { STEP_MS, step, type WorldState } from '../shared/simulation.js'
-
-export function createShard(): { state: WorldState; advance: (elapsedMs: number) => void } {
-  let state: WorldState = { tick: 0, players: {} }
-  let accumulator = 0
-
-  return {
-    get state() {
-      return state
-    },
-    advance(elapsedMs: number) {
-      accumulator += elapsedMs
-      while (accumulator >= STEP_MS) {
-        state = step(state, {}, STEP_MS / 1000)
-        accumulator -= STEP_MS
-      }
-    },
-  }
-}
-`
+  return projectFiles(project, plan)
 }

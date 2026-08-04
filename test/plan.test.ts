@@ -30,7 +30,7 @@ describe('the brief the model receives', () => {
     expect(brief).toContain('tools:')
     expect(brief).toContain('methods:')
     expect(brief).toContain('done when:')
-    expect(brief).toContain('renderer.render(scene, camera)')
+    expect(brief).toContain('engine.runRenderLoop(() => scene.render())')
   })
 
   test('says which reference it is starting from, when it is', () => {
@@ -56,7 +56,7 @@ describe('the brief the model receives', () => {
   test('drops the explanations before it drops the calls', () => {
     const compact = planBrief(SCAFFOLD_PLAN, 20_000)
     expect(compact.length).toBeLessThanOrEqual(20_000)
-    expect(compact).toContain('renderer.render(scene, camera)')
+    expect(compact).toContain('engine.runRenderLoop(() => scene.render())')
     expect(compact).not.toContain('→')
   })
 

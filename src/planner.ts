@@ -113,16 +113,16 @@ function engineFor(intent: MmoIntent, decision: DimensionDecision): EngineChoice
     dimension: decision.dimension,
     requested: intent.dimension,
     renderer: solid
-      ? 'three.js over WebGL2, with instanced draws for crowds'
-      : 'Canvas2D over one texture atlas, with a WebGL2 instanced path when the crowd outgrows it',
+      ? 'A Babylon.js WebGL2 construction scene; assets, crowds, and presentation remain plan steps'
+      : 'A Canvas2D construction frame; sprites, atlases, tiles, and crowd rendering remain plan steps',
     client: 'A static browser bundle that owns the canvas and predicts the simulation',
     server: 'One authoritative process per shard, running the same fixed-step simulation over WebSockets',
     language: 'TypeScript, with the simulation in a shared module both sides import',
     rationale: Object.freeze([
       ...decision.rationale,
       solid
-        ? 'three.js is chosen over raw WebGL because scene graph, glTF loading, and skinning are the parts an MMO cannot skip and should not rewrite.'
-        : 'Canvas2D is chosen first because it is enough for tiles and sprites, and the WebGL2 path is named so the escalation is planned rather than a rewrite.',
+        ? 'Babylon.js is chosen over raw WebGL, but the emitted first frame stays construction-grade until later plan steps add assets and presentation.'
+        : 'Canvas2D establishes a readable camera and fixed-step seam; the emitted project says plainly that tiles, sprites, atlases, and animation are not implemented.',
       'Client and server share one step() so prediction and authority cannot drift apart.',
     ]),
   })
@@ -352,7 +352,7 @@ function acceptanceFor(dimension: EngineDimension): readonly AcceptanceCriterion
       ? {
           id: 'frame-budget-3d',
           statement: 'The frame budget holds with the target crowd on screen.',
-          check: 'A draw-call assertion against renderer.info.render.calls, plus a frame timer under load.',
+          check: 'A draw-call assertion against SceneInstrumentation.drawCallsCounter, plus a frame timer under load.',
         }
       : {
           id: 'frame-budget-2d',
@@ -388,8 +388,8 @@ function contentPlanFor(intent: MmoIntent, present: ReadonlySet<string>): Conten
       area: 'materials',
       choice:
         style.finish === 'stylized'
-          ? 'three MeshToonMaterial with flat ramps'
-          : 'three MeshStandardMaterial, grounded PBR',
+          ? 'Babylon StandardMaterial with flattened lighting ramps'
+          : 'Babylon PBRMaterial, grounded PBR',
       capability: 'content-3d-props',
       reason:
         style.finish === 'stylized'

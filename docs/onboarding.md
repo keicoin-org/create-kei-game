@@ -130,15 +130,24 @@ salvage-run/
 │   ├── PLAN.md
 │   └── plan.json
 ├── package.json
+├── scripts/build.mjs
+├── static/index.html
+├── tsconfig.json
 └── src/
     ├── client/main.ts
+    ├── server/dev-server.mjs
     ├── server/main.ts
     └── shared/simulation.ts
 ```
 
 `src/shared/` is imported by both sides, which is the one architectural opinion
 the scaffold holds: the simulation belongs to neither the client nor the server.
-Everything else in there is a stub, because the plan is the design.
+Run `bun install`, `bun run build`, then `PORT=0 bun run dev`; the local static
+server reports its actual URL in one JSON readiness line. The 3D client is a
+minimal project-owned Babylon.js construction scene. The 2D client is a Canvas
+construction frame, not a tile or sprite renderer. Neither path implements
+networking, authority, persistence, Kei trade, or presentation polish yet, and
+neither imports the harness at runtime.
 
 Use `--force` only when those files may be overwritten in a nonempty directory.
 Other files are left in place and nothing is deleted.
