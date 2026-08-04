@@ -5,16 +5,26 @@ import { join } from 'node:path'
 
 import {
   TERMINATION_BUDGET_MS,
+  classifyOwnedDescendants,
+  ownedDescendants,
+  parseProcessTable,
+  parseWmicProcessTable,
   processFailureDiagnostic,
   requireProcessSuccess,
   runProcess,
   safeOsMessage,
 } from './process.js'
 
-setDefaultTimeout(60_000)
+setDefaultTimeout(180_000)
 
 const roots: string[] = []
-const ownedPids: number[] = []
+const ownedPids = new Set<number>()
+
+function rememberPid(value: unknown): void {
+  if (
+    typeof value === 'number' && Number.isSafeInteger(value) && value > 4 && value !== process.pid
+  ) ownedPids.add(value)
+}
 
 function isAlive(pid: number): boolean {
   try {
@@ -38,6 +48,18 @@ function isAlive(pid: number): boolean {
 afterAll(() => {
   // Nothing this suite spawned may outlive it, including a descendant left
   // behind by an assertion that failed before the harness returned.
+  for (const root of roots) {
+    try {
+      const recorded = JSON.parse(readFileSync(join(root, 'pids.json'), 'utf8')) as {
+        readonly parent?: unknown
+        readonly descendant?: unknown
+      }
+      rememberPid(recorded.parent)
+      rememberPid(recorded.descendant)
+    } catch {
+      // The child may have failed before recording its identities.
+    }
+  }
   for (const pid of ownedPids) {
     try {
       process.kill(pid, 'SIGKILL')
@@ -78,7 +100,8 @@ interface TreePids {
 
 function readTreePids(recordPath: string): TreePids {
   const pids = JSON.parse(readFileSync(recordPath, 'utf8')) as TreePids
-  ownedPids.push(pids.parent, pids.descendant)
+  rememberPid(pids.parent)
+  rememberPid(pids.descendant)
   return pids
 }
 
@@ -211,6 +234,118 @@ describe('bounded process diagnostics', () => {
     expect(isAlive(pids.descendant)).toBeFalse()
   })
 
+  test('a terminator that resolves without acting cannot settle while the tree lives', async () => {
+    const node = requireNode()
+    const recordPath = join(temporaryRoot(), 'pids.json')
+    const observed: { parentAlive?: boolean; descendantAlive?: boolean } = {}
+
+    const started = Date.now()
+    const result = await runProcess(node, ['-e', DESCENDANT_SOURCE, recordPath], {
+      cwd: process.cwd(),
+      timeoutMs: 1_500,
+      // Far past the elapsed assertion below, so a pass can only come from the
+      // resolved claim being independently confirmed, never from the deadline.
+      terminationTimeoutMs: 30_000,
+      terminate: async () => {
+        const pids = readTreePids(recordPath)
+        observed.parentAlive = isAlive(pids.parent)
+        observed.descendantAlive = isAlive(pids.descendant)
+        // Resolves immediately: a false claim of complete termination.
+      },
+    })
+    const elapsed = Date.now() - started
+
+    // The defect's precondition: the whole tree was live when the terminator
+    // claimed success.
+    expect(observed.parentAlive).toBeTrue()
+    expect(observed.descendantAlive).toBeTrue()
+
+    const diagnostic = JSON.parse(processFailureDiagnostic('no-op-terminator', result)) as {
+      readonly errorCode?: unknown
+    }
+    expect(diagnostic.errorCode).toBe('ETIMEDOUT')
+    expect(elapsed).toBeLessThan(1_500 + TERMINATION_BUDGET_MS)
+
+    const pids = readTreePids(recordPath)
+    expect(isAlive(pids.parent)).toBeFalse()
+    expect(isAlive(pids.descendant)).toBeFalse()
+  })
+
+  test('a terminator that kills only the parent and resolves cannot settle while its descendant lives', async () => {
+    const node = requireNode()
+    const recordPath = join(temporaryRoot(), 'pids.json')
+    const observed: { parentAlive?: boolean; descendantAlive?: boolean } = {}
+
+    const started = Date.now()
+    const result = await runProcess(node, ['-e', DESCENDANT_SOURCE, recordPath], {
+      cwd: process.cwd(),
+      timeoutMs: 1_500,
+      terminationTimeoutMs: 30_000,
+      terminate: async (child) => {
+        child.kill('SIGKILL')
+        await new Promise<void>((resolve) => {
+          if (child.exitCode !== null || child.signalCode !== null) {
+            resolve()
+            return
+          }
+          const timer = setTimeout(resolve, 2_000)
+          child.once('exit', () => { clearTimeout(timer); resolve() })
+        })
+        const pids = readTreePids(recordPath)
+        observed.parentAlive = isAlive(pids.parent)
+        observed.descendantAlive = isAlive(pids.descendant)
+        // Resolves here: claims completion with the descendant still running.
+      },
+    })
+    const elapsed = Date.now() - started
+
+    expect(observed.parentAlive).toBeFalse()
+    expect(observed.descendantAlive).toBeTrue()
+
+    const diagnostic = JSON.parse(processFailureDiagnostic('parent-only-terminator', result)) as {
+      readonly errorCode?: unknown
+    }
+    expect(diagnostic.errorCode).toBe('ETIMEDOUT')
+    expect(elapsed).toBeLessThan(1_500 + TERMINATION_BUDGET_MS)
+
+    const pids = readTreePids(recordPath)
+    expect(isAlive(pids.parent)).toBeFalse()
+    expect(isAlive(pids.descendant)).toBeFalse()
+  })
+
+  test('terminator rejection text and run sentinels never reach a diagnostic', async () => {
+    const node = requireNode()
+    const recordPath = join(temporaryRoot(), 'pids.json')
+    const rejectionSentinel = 'KEI_PRIVATE_REJECTION_9d41f7'
+    const environmentSentinel = 'KEI_PRIVATE_ENV_9d41f7'
+    const inputSentinel = 'KEI_PRIVATE_INPUT_9d41f7'
+    const commandSentinel = 'KEI_PRIVATE_COMMAND_9d41f7'
+
+    const result = await runProcess(node, ['-e', DESCENDANT_SOURCE, recordPath, commandSentinel], {
+      cwd: process.cwd(),
+      env: { ...process.env, KEI_PROCESS_SENTINEL: environmentSentinel },
+      input: inputSentinel,
+      timeoutMs: 1_500,
+      terminationTimeoutMs: 30_000,
+      terminate: async () => {
+        throw new Error(`refused ${rejectionSentinel} over ${environmentSentinel} ${commandSentinel}`)
+      },
+    })
+
+    expect(result.error?.code).toBe('ETERMINATE')
+    // Exact stable prose: the callback's rejection text is replaced, not scrubbed.
+    expect(result.error?.message).toBe('configured process-tree termination failed')
+    const diagnostic = processFailureDiagnostic('sentinel-redaction', result)
+    for (const sentinel of [rejectionSentinel, environmentSentinel, inputSentinel, commandSentinel]) {
+      expect(result.error?.message).not.toContain(sentinel)
+      expect(diagnostic).not.toContain(sentinel)
+    }
+
+    const pids = readTreePids(recordPath)
+    expect(isAlive(pids.parent)).toBeFalse()
+    expect(isAlive(pids.descendant)).toBeFalse()
+  })
+
   test('a terminator that kills only the parent and hangs still loses its descendant to the fallback', async () => {
     const node = requireNode()
     const recordPath = join(temporaryRoot(), 'pids.json')
@@ -282,5 +417,223 @@ describe('bounded process diagnostics', () => {
     const pids = readTreePids(recordPath)
     expect(isAlive(pids.parent)).toBeFalse()
     expect(isAlive(pids.descendant)).toBeFalse()
+  })
+})
+
+describe('Windows owned-tree ownership graph', () => {
+  // The harness recorded Date.now() = 1000 just before spawning root PID 100.
+  const SPAWNED_AT = 1_000
+
+  function tableOf(rows: readonly (readonly [pid: number, parent: number, created: number])[]) {
+    return parseProcessTable(rows.map(([pid, parent, created]) => `${pid} ${parent} ${created}`).join('\n'))
+  }
+
+  test('a live root owns children created at or after it, however late, and none created before it', () => {
+    const table = tableOf([
+      [100, 4, 1_010], // the root itself, still running
+      [200, 100, 1_500], // owned child
+      [300, 100, 500], // survivor from an older use of PID 100, never owned
+      [400, 200, 1_600], // owned grandchild
+      [500, 200, 900], // grandchild-position PID predating its parent: recycled
+      [600, 100, 9_000], // late child long after spawn: owned while the root lives
+    ])
+    expect(ownedDescendants(table, {
+      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
+    }))
+      .toEqual([200, 600, 400])
+  })
+
+  test('a dead unrecycled root still owns its orphans from the recorded spawn instant', () => {
+    const table = tableOf([
+      [100, 4, 1_010], // the original root still has a table entry while exiting
+      [200, 100, 1_500], // orphan still listing the dead root as its parent
+      [300, 100, 500], // unrelated survivor from an older use of PID 100
+      [400, 200, 1_600], // the orphan's own child
+    ])
+    expect(ownedDescendants(table, {
+      root: 100, spawnedAtMs: SPAWNED_AT, rootCreatedMs: 1_010,
+    }))
+      .toEqual([200, 400])
+  })
+
+  test('an absent root keeps only orphan identities captured while the root was live', () => {
+    const table = tableOf([
+      [200, 100, 1_500],
+      [400, 200, 1_600],
+    ])
+    const priorOwned = new Map([[200, 1_500]])
+    expect(classifyOwnedDescendants(table, {
+      root: 100,
+      spawnedAtMs: SPAWNED_AT,
+      rootCreatedMs: 1_010,
+      priorOwned,
+    })).toEqual({ descendants: [200, 400], ambiguous: false })
+  })
+
+  test('an absent root with an unrecorded child fails closed as vanished-successor ambiguity', () => {
+    const table = tableOf([
+      // This could be an original orphan or a child of a successor that already
+      // exited. Creation times in this one snapshot cannot distinguish them.
+      [200, 100, 1_500],
+    ])
+    expect(classifyOwnedDescendants(table, {
+      root: 100,
+      spawnedAtMs: SPAWNED_AT,
+      rootCreatedMs: 1_010,
+    })).toEqual({ descendants: [], ambiguous: true })
+  })
+
+  test("a recycled dead root keeps its orphans and never touches the recycled process' children", () => {
+    const table = tableOf([
+      [100, 4, 5_000], // unrelated process now holding the dead root's PID
+      [200, 100, 1_500], // original orphan, created before the recycled process
+      [600, 100, 6_000], // the recycled process' own child
+      [700, 600, 6_100], // ...whose subtree must never even be traversed
+      [210, 200, 1_800], // the orphan's child, still owned
+    ])
+    const owned = ownedDescendants(table, {
+      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
+    })
+    expect(owned).toEqual([200, 210])
+    expect(owned).not.toContain(600)
+    expect(owned).not.toContain(700)
+  })
+
+  test('the creation floor admits its exact instant and the ceiling excludes its own', () => {
+    const table = tableOf([
+      [100, 4, 5_000], // recycled holder of the dead root's PID
+      [200, 100, 1_000], // created at the exact spawn instant: owned
+      [300, 100, 999], // created just before the spawn instant: not owned
+      [400, 100, 5_000], // created at the recycled instant: ambiguous, never killed
+      [500, 100, 4_999], // created just under the ceiling: an owned orphan
+    ])
+    expect(ownedDescendants(table, {
+      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
+    }))
+      .toEqual([200, 500])
+  })
+
+  test('a root listed under its own recorded instant keeps its children after the handle exits', () => {
+    // The snapshot that catches a root exiting mid-read still lists it, under
+    // the very instant an earlier snapshot recorded while it was alive.
+    const table = tableOf([
+      [100, 4, 1_010],
+      [200, 100, 1_500], // a child, and so created after the root by definition
+    ])
+
+    // The known-alive boundary proves the entry predates any possible
+    // successor, so the root resolves as itself.
+    expect(ownedDescendants(table, {
+      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
+    }))
+      .toEqual([200])
+    // Sampled after the read instead, the recorded instant is what still
+    // identifies the entry as the root rather than a successor.
+    expect(ownedDescendants(table, {
+      root: 100, spawnedAtMs: SPAWNED_AT, rootCreatedMs: 1_010,
+    })).toEqual([200])
+    // The boundary also works when no earlier table captured the exact root
+    // creation instant, as with a parent-only custom terminator.
+    expect(ownedDescendants(table, {
+      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
+    })).toEqual([200])
+  })
+
+  test('a recorded root instant still exposes a successor holding the same PID', () => {
+    const table = tableOf([
+      [100, 4, 5_000], // a different process: the instant does not match
+      [200, 100, 1_500], // the original root's orphan
+      [600, 100, 6_000], // the successor's own child
+    ])
+    expect(ownedDescendants(table, {
+      root: 100, spawnedAtMs: SPAWNED_AT,
+      rootKnownAliveAtMs: 2_000, rootCreatedMs: 1_010,
+    })).toEqual([200])
+  })
+
+  test('a PID holder created at the known-alive boundary is treated as a successor', () => {
+    const table = tableOf([
+      [100, 4, 2_000], // cannot be the root that was already alive at this instant
+      [200, 100, 1_999], // original orphan immediately below the ceiling
+      [300, 100, 2_000], // ambiguous boundary child: never touched
+      [400, 100, 2_001], // successor child
+    ])
+    expect(ownedDescendants(table, {
+      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
+    })).toEqual([200])
+  })
+
+  test('a truncated process table is rejected instead of narrowing ownership', () => {
+    expect(() => parseProcessTable('100 4 1010\n200 100 1500', true))
+      .toThrow('the Windows process table exceeded its bounded size')
+    expect(() => parseProcessTable('not a process table'))
+      .toThrow('the Windows process table contained no valid records')
+    expect(() => parseProcessTable('100 4 0'))
+      .toThrow('the Windows process table contained an invalid record')
+  })
+
+  test('WMIC timestamps are normalized to epoch milliseconds without accepting malformed output', () => {
+    const table = parseWmicProcessTable([
+      'CreationDate=20260804123045.123456-240',
+      'ParentProcessId=100',
+      'ProcessId=200',
+    ].join('\r\n\r\n'))
+    expect(table.parents.get(200)).toBe(100)
+    expect(table.created.get(200)).toBe(Date.UTC(2026, 7, 4, 16, 30, 45, 123))
+    expect(() => parseWmicProcessTable('CreationDate=bad\nParentProcessId=1\nProcessId=2'))
+      .toThrow('the Windows process table contained an invalid creation time')
+  })
+
+  test('repeated snapshots reach late children through revalidated intermediaries and converge', () => {
+    // Snapshot 1: the live root and one descendant.
+    const first = tableOf([
+      [100, 4, 1_010],
+      [200, 100, 1_500],
+    ])
+    const priorOwned = new Map<number, number>()
+    const firstPass = ownedDescendants(first, {
+      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
+    })
+    expect(firstPass).toEqual([200])
+    for (const pid of firstPass) priorOwned.set(pid, first.created.get(pid)!)
+
+    // Snapshot 2, after the first signals: the intermediary survived under the
+    // exact recorded creation identity and exposed a child that did not exist in
+    // snapshot 1. The fresh identity match makes both re-signalling and traversal
+    // safe; a missing/recycled intermediary is covered by fail-closed fixtures.
+    const second = tableOf([
+      [200, 100, 1_500], // the same owned intermediary survived the first signal
+      [210, 200, 1_990],
+    ])
+    const secondPass = ownedDescendants(second, {
+      root: 100, spawnedAtMs: SPAWNED_AT,
+      rootKnownAliveAtMs: 2_000, rootCreatedMs: 1_010, priorOwned,
+    })
+    expect(secondPass).toEqual([200, 210])
+    for (const pid of secondPass) priorOwned.set(pid, second.created.get(pid)!)
+
+    // Snapshot 3: the dead descendant's PID has been recycled by an unrelated
+    // process with a child of its own. Nothing is owned: the sweep converged
+    // without aiming at the recycled tree.
+    const third = tableOf([
+      [200, 4, 9_000],
+      [220, 200, 9_100],
+    ])
+    expect(ownedDescendants(third, {
+      root: 100, spawnedAtMs: SPAWNED_AT,
+      rootKnownAliveAtMs: 2_000, rootCreatedMs: 1_010, priorOwned,
+    })).toEqual([])
+  })
+
+  test('an unrecorded child of a vanished prior holder is also ambiguous', () => {
+    const table = tableOf([
+      [210, 200, 1_990],
+    ])
+    expect(classifyOwnedDescendants(table, {
+      root: 100,
+      spawnedAtMs: SPAWNED_AT,
+      rootCreatedMs: 1_010,
+      priorOwned: new Map([[200, 1_500]]),
+    })).toEqual({ descendants: [], ambiguous: true })
   })
 })

@@ -4,21 +4,32 @@ import { readFileSync, readdirSync } from 'node:fs'
 const OUTPUT_LIMIT_BYTES = 64 * 1024
 const PROCESS_TABLE_LIMIT_BYTES = 4 * 1024 * 1024
 const DIAGNOSTIC_LIMIT = 240
-// A cold PowerShell start plus first use of the CIM module was measured at
-// 2.6s, and over 4s inside a loaded test runner, so this leaves real headroom.
-const PROCESS_TABLE_TIMEOUT_MS = 12_000
+// Each process-table reader is independently bounded. WMIC is the fast primary
+// on Windows versions that still ship it; PowerShell/CIM is the portable
+// fallback. A complete read can consume both budgets when WMIC is unavailable.
+const PROCESS_TABLE_TIMEOUT_MS = 20_000
+const PROCESS_TABLE_READ_BUDGET_MS = PROCESS_TABLE_TIMEOUT_MS * 2
 const EXIT_CONFIRM_TIMEOUT_MS = 2_000
 const LIVENESS_POLL_MS = 25
 const CLOSE_FLUSH_TIMEOUT_MS = 2_000
 const TERMINATION_TIMEOUT_MS = 5_000
+// The Windows sweep re-reads the process table until a snapshot shows nothing
+// owned, so a child spawned between a snapshot and its kills is still caught.
+// Convergence needs one clean snapshot; this cap allows one late-child round on
+// top of that before the sweep reports failure instead of looping.
+const SWEEP_SNAPSHOT_LIMIT = 3
 
 /**
- * Ceiling for one bounded owned-tree termination attempt plus the terminated
- * child's final stdio flush. Callers assert elapsed time against this instead of
- * a hand-picked number.
+ * Ceiling for one bounded owned-tree termination plus the terminated child's
+ * final stdio flush. The termination itself may take up to
+ * `SWEEP_SNAPSHOT_LIMIT` table snapshots with a kill-confirmation window after
+ * every non-empty one, plus one pre-terminator identity capture on Windows.
+ * Callers assert elapsed time against this instead of a hand-picked number.
  */
 export const TERMINATION_BUDGET_MS =
-  PROCESS_TABLE_TIMEOUT_MS + EXIT_CONFIRM_TIMEOUT_MS + CLOSE_FLUSH_TIMEOUT_MS
+  (SWEEP_SNAPSHOT_LIMIT + 1) * PROCESS_TABLE_READ_BUDGET_MS +
+  SWEEP_SNAPSHOT_LIMIT * EXIT_CONFIRM_TIMEOUT_MS +
+  CLOSE_FLUSH_TIMEOUT_MS
 
 export interface ProcessResult {
   readonly status: number | null
@@ -34,9 +45,11 @@ export interface ProcessOptions {
   readonly input?: string
   readonly timeoutMs: number
   /**
-   * Test seam for proving the secondary termination deadline. A terminator that
-   * hangs, rejects, or kills only the direct child must still reach the real
-   * bounded fallback before `runProcess` resolves.
+   * Test seam for proving the secondary termination deadline. Every outcome of
+   * a configured terminator — resolving (even without doing anything), killing
+   * only the direct child, rejecting, or hanging — is followed by the real
+   * internally bounded full-tree sweep before `runProcess` resolves, and no
+   * rejection text from the callback is ever reflected in a diagnostic.
    */
   readonly terminate?: (child: ChildProcessWithoutNullStreams) => Promise<void>
   readonly terminationTimeoutMs?: number
@@ -140,16 +153,21 @@ async function waitForProcessExit(
   })
 }
 
-async function waitForPidsGone(pids: readonly number[], timeoutMs: number): Promise<boolean> {
-  if (pids.length === 0) return true
+/**
+ * Waits, without signalling anything, for pids the caller already killed to
+ * leave the table. Re-signalling here would be unsound: a bare PID carries no
+ * identity on Windows, so a pid recycled inside this window would be terminated
+ * as if it were still the owned process. Every kill is therefore issued only
+ * against a pid a fresh snapshot just proved owned by creation instant, and
+ * this wait exists purely so the next snapshot is not spent on processes that
+ * are already on their way out. Timing out is not a failure; the next
+ * creation-validated snapshot is what decides whether the tree is gone.
+ */
+async function waitForPidsExit(pids: readonly number[], timeoutMs: number): Promise<void> {
+  if (pids.length === 0) return
   const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const alive = pids.filter(pidAlive)
-    if (alive.length === 0) return true
-    if (Date.now() >= deadline) return false
-    // Deepest first: terminating a middle process would otherwise orphan the
-    // level below it out of the parent chain this sweep walked.
-    for (let index = alive.length - 1; index >= 0; index -= 1) killPid(alive[index]!)
+  while (pids.some(pidAlive)) {
+    if (Date.now() >= deadline) return
     await pause(LIVENESS_POLL_MS)
   }
 }
@@ -169,7 +187,7 @@ async function waitForGroupGone(group: number, timeoutMs: number): Promise<boole
   }
 }
 
-interface ProcessTable {
+export interface ProcessTable {
   readonly children: ReadonlyMap<number, readonly number[]>
   readonly parents: ReadonlyMap<number, number>
   readonly created: ReadonlyMap<number, number>
@@ -185,7 +203,8 @@ const PROCESS_TABLE_SCRIPT =
   '{ $t = ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }; ' +
   '"$($_.ProcessId) $($_.ParentProcessId) $t" }'
 
-function parseProcessTable(text: string): ProcessTable {
+export function parseProcessTable(text: string, truncated = false): ProcessTable {
+  if (truncated) throw new Error('the Windows process table exceeded its bounded size')
   const children = new Map<number, number[]>()
   const parents = new Map<number, number>()
   const created = new Map<number, number>()
@@ -194,62 +213,112 @@ function parseProcessTable(text: string): ProcessTable {
     if (triple === null) continue
     const pid = Number(triple[1])
     const parent = Number(triple[2])
+    const createdAt = Number(triple[3])
+    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(parent) || createdAt <= 0) {
+      throw new Error('the Windows process table contained an invalid record')
+    }
     parents.set(pid, parent)
-    created.set(pid, Number(triple[3]))
+    created.set(pid, createdAt)
     const siblings = children.get(parent)
     if (siblings === undefined) children.set(parent, [pid])
     else siblings.push(pid)
   }
+  if (created.size === 0) throw new Error('the Windows process table contained no valid records')
   return { children, parents, created }
 }
 
+function dmtfTimestampMs(value: string): number | undefined {
+  const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.(\d{6})([+-])(\d{3})$/.exec(value)
+  if (match === null) return undefined
+  const local = Date.UTC(
+    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+    Number(match[4]), Number(match[5]), Number(match[6]),
+    Number(match[7]!.slice(0, 3)),
+  )
+  const offsetMinutes = Number(match[9]) * (match[8] === '+' ? 1 : -1)
+  return local - offsetMinutes * 60_000
+}
+
+export function parseWmicProcessTable(text: string, truncated = false): ProcessTable {
+  if (truncated) throw new Error('the Windows process table exceeded its bounded size')
+  const triples: string[] = []
+  const records = /CreationDate=([^\r\n]*)\s+ParentProcessId=(\d+)\s+ProcessId=(\d+)/g
+  for (const match of text.matchAll(records)) {
+    const created = dmtfTimestampMs(match[1]!)
+    if (created === undefined) {
+      throw new Error('the Windows process table contained an invalid creation time')
+    }
+    triples.push(`${match[3]} ${match[2]} ${created}`)
+  }
+  return parseProcessTable(triples.join('\n'))
+}
+
+interface ProcessTableReaderResult {
+  readonly text: string
+  readonly truncated: boolean
+}
+
+async function runProcessTableReader(
+  executable: string,
+  args: readonly string[],
+): Promise<ProcessTableReaderResult> {
+  return await new Promise<ProcessTableReaderResult>(
+    (resolve, reject) => {
+      let reader: ChildProcessWithoutNullStreams
+      try {
+        reader = spawn(executable, [...args], { windowsHide: true, stdio: 'pipe' })
+      } catch {
+        reject(new Error('the Windows process table reader could not be started'))
+        return
+      }
+
+      const table = new BoundedOutput(PROCESS_TABLE_LIMIT_BYTES)
+      let settled = false
+      const finish = (complete: () => void): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        complete()
+      }
+      const timer = setTimeout(() => finish(() => {
+        killDirectly(reader)
+        reject(new Error('the Windows process table was not read within its bounded budget'))
+      }), PROCESS_TABLE_TIMEOUT_MS)
+
+      reader.stdout.on('data', (chunk: Buffer | string) => { table.append(chunk) })
+      // CLIXML progress records land on stderr and are never reported.
+      reader.stderr.resume()
+      reader.stdin.on('error', () => {
+        // The reader can exit before its stdin is closed.
+      })
+      reader.once('error', () => finish(() => {
+        reject(new Error('the Windows process table reader failed to run'))
+      }))
+      reader.once('close', (status) => finish(() => {
+        if (status !== 0) {
+          reject(new Error(`the Windows process table reader exited ${String(status)}`))
+        } else resolve({ text: table.text(), truncated: table.truncated })
+      }))
+      reader.stdin.end()
+    },
+  )
+}
+
 async function readWindowsProcessTable(): Promise<ProcessTable> {
-  // -EncodedCommand keeps the script a single argv token, so no quoting of the
-  // caller's data is involved.
+  try {
+    const result = await runProcessTableReader('wmic.exe', [
+      'process', 'get', 'CreationDate,ParentProcessId,ProcessId', '/FORMAT:LIST',
+    ])
+    return parseWmicProcessTable(result.text, result.truncated)
+  } catch {
+    // WMIC is optional on current Windows releases. Fall back to CIM with an
+    // encoded script so no caller-controlled text crosses the shell boundary.
+  }
   const encoded = Buffer.from(PROCESS_TABLE_SCRIPT, 'utf16le').toString('base64')
-  const text = await new Promise<string>((resolve, reject) => {
-    let reader: ChildProcessWithoutNullStreams
-    try {
-      reader = spawn('powershell.exe', [
-        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded,
-      ], { windowsHide: true, stdio: 'pipe' })
-    } catch {
-      reject(new Error('the Windows process table reader could not be started'))
-      return
-    }
-
-    const table = new BoundedOutput(PROCESS_TABLE_LIMIT_BYTES)
-    let settled = false
-    const finish = (complete: () => void): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      complete()
-    }
-    const timer = setTimeout(() => finish(() => {
-      killDirectly(reader)
-      reject(new Error('the Windows process table was not read within its bounded budget'))
-    }), PROCESS_TABLE_TIMEOUT_MS)
-
-    reader.stdout.on('data', (chunk: Buffer | string) => { table.append(chunk) })
-    // CLIXML progress records land on stderr and are never reported.
-    reader.stderr.resume()
-    reader.stdin.on('error', () => {
-      // The reader can exit before its stdin is closed.
-    })
-    reader.once('error', () => finish(() => {
-      reject(new Error('the Windows process table reader failed to run'))
-    }))
-    reader.once('close', (status) => finish(() => {
-      if (status !== 0) reject(new Error(`the Windows process table reader exited ${String(status)}`))
-      // A truncated table could hide a live descendant, so it must fail the
-      // sweep instead of silently narrowing it.
-      else if (table.truncated) reject(new Error('the Windows process table exceeded its bounded size'))
-      else resolve(table.text())
-    }))
-    reader.stdin.end()
-  })
-  return parseProcessTable(text)
+  const result = await runProcessTableReader('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded,
+  ])
+  return parseProcessTable(result.text, result.truncated)
 }
 
 /** Keeps a recycled root PID from ever aiming a sweep at this test runner. */
@@ -263,56 +332,257 @@ function ownAncestry(parents: ReadonlyMap<number, number>): ReadonlySet<number> 
   return protectedPids
 }
 
+export interface OwnedTreeQuery {
+  /** PID the harness spawned as the tree root. */
+  readonly root: number
+  /** Date.now() instant just before the root was spawned; 0 disables the floor. */
+  readonly spawnedAtMs: number
+  /**
+   * Latest instant at which the child handle still proved the original root
+   * alive. A process currently holding the same PID but created at or after
+   * this instant is necessarily a successor, never the owned root.
+   */
+  readonly rootKnownAliveAtMs?: number
+  /**
+   * The root's creation instant as recorded from an earlier snapshot that saw
+   * it alive, once one exists. It distinguishes the root's own lingering table
+   * entry from an unrelated process that has taken over its PID.
+   */
+  readonly rootCreatedMs?: number
+  /**
+   * Creation instants, as recorded from earlier snapshots, of pids this sweep
+   * already proved owned. A later snapshot reaches their children through these
+   * even after the pid itself died between snapshots.
+   */
+  readonly priorOwned?: ReadonlyMap<number, number>
+}
+
+interface OwnedSeed {
+  readonly pid: number
+  /** Children created before this instant belong to an older use of the PID. */
+  readonly floor: number
+  /** Children created at or after this instant belong to a recycled PID. */
+  readonly ceiling: number
+  /** No current holder exists, so an unrecorded child cannot be attributed safely. */
+  readonly missingHolder: boolean
+}
+
+export interface OwnedTreeSnapshot {
+  readonly descendants: readonly number[]
+  /** An absent PID holder has an unrecorded child that may belong to a vanished successor. */
+  readonly ambiguous: boolean
+}
+
 /**
- * Breadth-first owned descendants of `root`, shallowest first. Windows recycles
- * PIDs quickly, so a candidate only counts as owned when it was created after
- * its parent — or, where the parent is already dead and so absent from the
- * table, after the instant the harness spawned the root. A recycled PID names
- * an older process and fails that ordering.
+ * Breadth-first owned descendants for one table snapshot, shallowest first.
+ * Windows recycles PIDs quickly, so ownership is decided by creation instants:
+ *
+ * - A live root appears in the table as itself, and a candidate child is owned
+ *   only when it was created at or after its parent.
+ * - A dead root whose PID has been taken over by an unrelated process is
+ *   recognised by a table entry whose creation instant differs from the one
+ *   recorded while the root was alive. That instant becomes a ceiling: the
+ *   original root's orphans were created before it (and no earlier than the
+ *   recorded spawn instant), while the recycled process' own children were
+ *   created after it and are never touched or traversed.
+ * - An absent root (or previously owned intermediary) is not enough evidence
+ *   to admit a new child. A successor may have appeared, spawned it, and exited
+ *   between snapshots. Only identities recorded by an earlier snapshot remain
+ *   safe in that case; any other candidate makes the snapshot ambiguous.
+ *
+ * The same floor/ceiling rule guards every previously owned pid in
+ * `priorOwned`, using its recorded creation instant in place of the spawn
+ * instant, so a descendant's PID recycled between snapshots cannot aim the
+ * sweep at an unrelated tree either.
  */
-function descendantsOf(table: ProcessTable, root: number, rootFloor: number): readonly number[] {
+export function classifyOwnedDescendants(
+  table: ProcessTable,
+  query: OwnedTreeQuery,
+): OwnedTreeSnapshot {
+  const seeds: OwnedSeed[] = []
   const order: number[] = []
-  const seen = new Set<number>([root])
-  const queue = [{ pid: root, floor: rootFloor }]
-  while (queue.length > 0) {
-    const { pid: parent, floor } = queue.shift()!
-    const parentFloor = table.created.get(parent) ?? floor
-    for (const pid of table.children.get(parent) ?? []) {
-      if (pid <= 4 || seen.has(pid)) continue
-      if ((table.created.get(pid) ?? 0) < parentFloor) continue
-      seen.add(pid)
+  const seen = new Set<number>([query.root])
+  const rootCreated = table.created.get(query.root)
+  const rootIsOriginal = rootCreated !== undefined && (
+    rootCreated === query.rootCreatedMs || (
+      query.rootKnownAliveAtMs !== undefined &&
+      rootCreated >= query.spawnedAtMs &&
+      rootCreated < query.rootKnownAliveAtMs
+    )
+  )
+  if (rootCreated !== undefined && rootIsOriginal) {
+    // The entry is the root itself, even if its handle reported exit while the
+    // table was being read. Its children therefore have no recycling ceiling.
+    seeds.push({ pid: query.root, floor: rootCreated, ceiling: Infinity, missingHolder: false })
+  } else if (rootCreated !== undefined) {
+    // A visible successor provides a safe exclusive ceiling for original
+    // orphans; its own children are at or above that instant.
+    seeds.push({
+      pid: query.root,
+      floor: query.spawnedAtMs,
+      ceiling: rootCreated,
+      missingHolder: false,
+    })
+  } else {
+    seeds.push({
+      pid: query.root,
+      floor: query.rootCreatedMs ?? query.spawnedAtMs,
+      ceiling: Infinity,
+      missingHolder: true,
+    })
+  }
+  for (const [pid, createdWhenOwned] of query.priorOwned ?? []) {
+    if (pid === query.root) continue
+    const current = table.created.get(pid)
+    seen.add(pid)
+    if (current === createdWhenOwned) {
+      // It survived the previous signal. The fresh creation-time match makes
+      // re-signalling this PID safe and prevents false convergence.
       order.push(pid)
-      queue.push({ pid, floor: parentFloor })
+      seeds.push({ pid, floor: createdWhenOwned, ceiling: Infinity, missingHolder: false })
+    } else if (current !== undefined) {
+      seeds.push({ pid, floor: createdWhenOwned, ceiling: current, missingHolder: false })
+    } else {
+      seeds.push({ pid, floor: createdWhenOwned, ceiling: Infinity, missingHolder: true })
     }
   }
-  return order
+
+  let ambiguous = false
+  const queue = [...seeds]
+  while (queue.length > 0) {
+    const { pid: parent, floor, ceiling, missingHolder } = queue.shift()!
+    for (const pid of table.children.get(parent) ?? []) {
+      if (pid <= 4) continue
+      const created = table.created.get(pid) ?? 0
+      if (created < floor || created >= ceiling) continue
+      const wasRecorded = query.priorOwned?.get(pid) === created
+      if (missingHolder && !wasRecorded) {
+        ambiguous = true
+        continue
+      }
+      if (seen.has(pid)) continue
+      seen.add(pid)
+      order.push(pid)
+      queue.push({ pid, floor: created, ceiling: Infinity, missingHolder: false })
+    }
+  }
+  return { descendants: order, ambiguous }
+}
+
+export function ownedDescendants(table: ProcessTable, query: OwnedTreeQuery): readonly number[] {
+  return classifyOwnedDescendants(table, query).descendants
+}
+
+interface WindowsOwnershipContext {
+  readonly rootCreatedMs?: number
+  readonly priorOwned: ReadonlyMap<number, number>
+}
+
+/**
+ * Captures identities while the configured terminator has not yet been allowed
+ * to remove the root. A parent-only terminator can then leave a known orphan
+ * that the confirmation sweep may safely revalidate by creation instant.
+ */
+async function captureWindowsOwnership(
+  root: number,
+  spawnedAtMs: number,
+  rootKnownAliveAtMs: number,
+): Promise<WindowsOwnershipContext> {
+  const table = await readWindowsProcessTable()
+  const currentRootCreated = table.created.get(root)
+  const rootCreatedMs = currentRootCreated !== undefined &&
+    currentRootCreated >= spawnedAtMs && currentRootCreated < rootKnownAliveAtMs
+    ? currentRootCreated
+    : undefined
+  const snapshot = classifyOwnedDescendants(table, {
+    root,
+    spawnedAtMs,
+    rootKnownAliveAtMs,
+    rootCreatedMs,
+  })
+  if (snapshot.ambiguous) {
+    throw new Error('the owned process tree identity was ambiguous before configured termination')
+  }
+  const protectedPids = ownAncestry(table.parents)
+  const priorOwned = new Map<number, number>()
+  for (const pid of snapshot.descendants) {
+    if (!protectedPids.has(pid)) priorOwned.set(pid, table.created.get(pid) ?? spawnedAtMs)
+  }
+  return { rootCreatedMs, priorOwned }
 }
 
 async function terminateWindowsTree(
   child: ChildProcessWithoutNullStreams,
   root: number,
   spawnedAtMs: number,
+  initialRootKnownAliveAtMs?: number,
+  initialContext?: WindowsOwnershipContext,
 ): Promise<void> {
   // Windows leaves a dead process' PID in its children's ParentProcessId, so the
   // owned tree stays reachable after a terminator killed only the direct child.
   // `taskkill /t` cannot do that: it refuses an already-exited root and so never
   // reaches the orphaned descendants.
-  const table = await readWindowsProcessTable()
-  const protectedPids = ownAncestry(table.parents)
-  const descendants = descendantsOf(table, root, spawnedAtMs).filter((pid) => !protectedPids.has(pid))
-  const rootAlive = child.exitCode === null && child.signalCode === null
+  const priorOwned = new Map(initialContext?.priorOwned)
+  let rootCreatedMs = initialContext?.rootCreatedMs
+  let rootKnownAliveAtMs = initialRootKnownAliveAtMs
+  for (let snapshot = 1; ; snapshot += 1) {
+    // Sampled before the read, so a root that exits mid-read is still resolved
+    // as itself rather than mistaken for a successor holding its PID.
+    const rootAlive = child.exitCode === null && child.signalCode === null
+    if (rootAlive) rootKnownAliveAtMs = Date.now()
+    const table = await readWindowsProcessTable()
+    const protectedPids = ownAncestry(table.parents)
+    const currentRootCreated = table.created.get(root)
+    if (
+      rootCreatedMs === undefined &&
+      currentRootCreated !== undefined &&
+      rootKnownAliveAtMs !== undefined &&
+      currentRootCreated >= spawnedAtMs &&
+      currentRootCreated < rootKnownAliveAtMs
+    ) rootCreatedMs = currentRootCreated
+    const ownership = classifyOwnedDescendants(table, {
+      root, spawnedAtMs, rootKnownAliveAtMs, rootCreatedMs, priorOwned,
+    })
+    const descendants = ownership.descendants.filter((pid) => !protectedPids.has(pid))
 
-  for (let index = descendants.length - 1; index >= 0; index -= 1) killPid(descendants[index]!)
-  // A dead root's PID may already belong to an unrelated process, so the only
-  // root ever signalled is the child handle this harness owns.
-  if (rootAlive) killDirectly(child)
+    // Only a snapshot that finds nothing owned proves the tree complete, and
+    // only once the root was already dead before that snapshot was taken:
+    // a still-live root could spawn a child the moment the read finished, and a
+    // child spawned between the previous snapshot and its kills is owned but
+    // was invisible to that snapshot.
+    if (!ownership.ambiguous && !rootAlive && descendants.length === 0) return
+    for (const pid of descendants) priorOwned.set(pid, table.created.get(pid) ?? spawnedAtMs)
+    // Deepest first: terminating a middle process would otherwise orphan the
+    // level below it out of the parent chain this snapshot walked.
+    for (let index = descendants.length - 1; index >= 0; index -= 1) killPid(descendants[index]!)
+    // A dead root's PID may already belong to an unrelated process, so the only
+    // root ever signalled is the child handle this harness owns.
+    if (rootAlive) killDirectly(child)
 
-  const [exited, swept] = await Promise.all([
-    waitForProcessExit(child, EXIT_CONFIRM_TIMEOUT_MS),
-    waitForPidsGone(descendants, EXIT_CONFIRM_TIMEOUT_MS),
-  ])
-  if (!exited || !swept) {
-    throw new Error('the owned process tree was still alive after bounded termination')
+    const [exited] = await Promise.all([
+      waitForProcessExit(child, EXIT_CONFIRM_TIMEOUT_MS),
+      waitForPidsExit(descendants, EXIT_CONFIRM_TIMEOUT_MS),
+    ])
+    // The handle proves the root's death outright, so a root still running here
+    // will never converge. Descendants get no such verdict from a bare PID and
+    // are judged by the next snapshot instead.
+    if (!exited) {
+      throw new Error('the owned process tree was still alive after bounded termination')
+    }
+    // Ambiguity is a fail-closed verdict, but it does not excuse leaving other
+    // identities from this same snapshot running after they were independently
+    // revalidated. Clean those known processes first, then report the stable
+    // failure without ever signalling the ambiguous candidate.
+    if (ownership.ambiguous) {
+      throw new Error('the owned process tree identity became ambiguous during bounded termination')
+    }
+    // A final non-empty snapshot cannot prove convergence, but every identity
+    // it did prove owned has still been signalled and given the normal bounded
+    // exit window. Returning failure without cleaning already-known work would
+    // make the failure path itself leak processes.
+    if (snapshot === SWEEP_SNAPSHOT_LIMIT) {
+      throw new Error('the owned process tree was still alive after bounded termination')
+    }
   }
 }
 
@@ -341,15 +611,28 @@ async function terminatePosixTree(
  * does not short-circuit once the direct child has exited, because that is
  * precisely the state a partial terminator leaves behind. `spawnedAtMs` is the
  * Date.now() instant just before the root was spawned; it anchors the Windows
- * PID-recycling guard, and omitting it disables only that guard.
+ * PID-recycling creation floor, and omitting it disables only that floor — the
+ * dead-root recycling ceiling does not depend on it.
  */
 export async function terminateProcessTree(
   child: ChildProcessWithoutNullStreams,
   spawnedAtMs = 0,
+  rootKnownAliveAtMs?: number,
+): Promise<void> {
+  await terminateOwnedProcessTree(child, spawnedAtMs, rootKnownAliveAtMs)
+}
+
+async function terminateOwnedProcessTree(
+  child: ChildProcessWithoutNullStreams,
+  spawnedAtMs: number,
+  rootKnownAliveAtMs?: number,
+  windowsContext?: WindowsOwnershipContext,
 ): Promise<void> {
   const root = child.pid
   if (root === undefined) return
-  if (process.platform === 'win32') await terminateWindowsTree(child, root, spawnedAtMs)
+  if (process.platform === 'win32') {
+    await terminateWindowsTree(child, root, spawnedAtMs, rootKnownAliveAtMs, windowsContext)
+  }
   else await terminatePosixTree(child, root)
 }
 
@@ -481,7 +764,8 @@ export async function runProcess(
     let closed: { readonly status: number | null; readonly signal: NodeJS.Signals | null } | undefined
     let childError: Error | undefined
     let pendingError: Error | undefined
-    let fallbackStarted = false
+    let sweepStarted = false
+    let rootKnownAliveAtMs: number | undefined
     let terminationTimer: ReturnType<typeof setTimeout> | undefined
     let flushTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -534,16 +818,30 @@ export async function runProcess(
       flushTimer = setTimeout(() => finish(error), CLOSE_FLUSH_TIMEOUT_MS)
     }
 
-    const runFallback = (deadlineError: Error & { readonly code: 'ETERMINATE' }): void => {
-      if (settled || fallbackStarted) return
-      fallbackStarted = true
+    /**
+     * The real, internally bounded owned-tree sweep. Every route out of a
+     * timed-out run funnels through here exactly once: a configured
+     * terminator's resolution is only a claim, so nothing it reports is
+     * trusted until this sweep has independently proven the tree gone. The run
+     * settles with `outcome` only on that proof; a failed sweep replaces it
+     * with the sweep's own diagnosis.
+     */
+    const confirmOwnedTreeGone = (
+      outcome: Error,
+      windowsContext?: WindowsOwnershipContext,
+    ): void => {
+      if (settled || sweepStarted) return
+      sweepStarted = true
       if (terminationTimer !== undefined) clearTimeout(terminationTimer)
-      void terminateProcessTree(child, spawnedAt).then(
-        () => settleAfterTermination(deadlineError),
-        (fallbackError: unknown) => settleAfterTermination(Object.assign(
-          new Error(`${deadlineError.message}; bounded fallback failed: ${safeOsMessage(
-            fallbackError instanceof Error ? fallbackError.message : fallbackError,
-          )}`),
+      void terminateOwnedProcessTree(
+        child,
+        spawnedAt,
+        rootKnownAliveAtMs,
+        windowsContext,
+      ).then(
+        () => settleAfterTermination(outcome),
+        () => settleAfterTermination(Object.assign(
+          new Error('bounded process-tree termination could not be confirmed'),
           { code: 'ETERMINATE' as const },
         )),
       )
@@ -554,30 +852,52 @@ export async function runProcess(
         code: 'ETIMEDOUT' as const,
       })
       timeoutError = timedOut
-      terminationTimer = setTimeout(() => runFallback(Object.assign(
-        new Error('process tree did not close before the secondary termination deadline'),
-        { code: 'ETERMINATE' as const },
-      )), options.terminationTimeoutMs ?? TERMINATION_TIMEOUT_MS)
-
-      const terminate = options.terminate ??
-        (async (target: ChildProcessWithoutNullStreams) => { await terminateProcessTree(target, spawnedAt) })
-      void (async () => { await terminate(child) })().then(
-        () => {
-          if (fallbackStarted) return
-          if (terminationTimer !== undefined) clearTimeout(terminationTimer)
-          settleAfterTermination(timedOut)
-        },
-        (terminationError: unknown) => {
-          // A rejected terminator has not proven the tree is dead either, so the
-          // real bounded fallback still runs instead of settling here.
-          runFallback(Object.assign(
-            new Error(`configured process-tree termination failed: ${safeOsMessage(
-              terminationError instanceof Error ? terminationError.message : terminationError,
-            )}`),
+      if (child.exitCode === null && child.signalCode === null) {
+        rootKnownAliveAtMs = Date.now()
+      }
+      const configured = options.terminate
+      if (configured === undefined) {
+        confirmOwnedTreeGone(timedOut)
+        return
+      }
+      void (async () => {
+        let windowsContext: WindowsOwnershipContext | undefined
+        if (
+          process.platform === 'win32' &&
+          child.pid !== undefined &&
+          rootKnownAliveAtMs !== undefined
+        ) {
+          try {
+            windowsContext = await captureWindowsOwnership(
+              child.pid,
+              spawnedAt,
+              rootKnownAliveAtMs,
+            )
+          } catch {
+            confirmOwnedTreeGone(Object.assign(
+              new Error('configured process-tree termination could not start safely'),
+              { code: 'ETERMINATE' as const },
+            ))
+            return
+          }
+        }
+        if (settled || sweepStarted) return
+        terminationTimer = setTimeout(() => confirmOwnedTreeGone(Object.assign(
+          new Error('process tree did not close before the secondary termination deadline'),
+          { code: 'ETERMINATE' as const },
+        ), windowsContext), options.terminationTimeoutMs ?? TERMINATION_TIMEOUT_MS)
+        try {
+          await configured(child)
+          confirmOwnedTreeGone(timedOut, windowsContext)
+        } catch {
+          // Rejection text can carry command lines, environment values, or
+          // captured input. It is replaced, never scrubbed or reflected.
+          confirmOwnedTreeGone(Object.assign(
+            new Error('configured process-tree termination failed'),
             { code: 'ETERMINATE' as const },
-          ))
-        },
-      )
+          ), windowsContext)
+        }
+      })()
     }, options.timeoutMs)
 
     child.stdout.on('data', onStdout)
