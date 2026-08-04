@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 
 import { planFiles, scaffoldWorkspace } from '../src/source.js'
 import { planFor } from './fixtures.js'
-import { processFailureDiagnostic, runProcess } from './process.js'
+import { processFailureDiagnostic, runProcess, safeOsMessage, terminateProcessTree } from './process.js'
 
 const roots: string[] = []
 const COMMAND_TIMEOUT_MS = 120_000
@@ -81,49 +81,22 @@ function writeProject(dimension: '2d' | '3d'): string {
   return directory
 }
 
-async function waitForExit(child: ChildProcessWithoutNullStreams): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new SmokeFailure({
-      code: 'dev_exit_timed_out',
+/**
+ * Teardown shares the harness terminator so this proof cannot report a reaped
+ * tree while a descendant of the dev server is still holding its port. The
+ * shared terminator keeps sweeping after the direct child exits, which a
+ * `taskkill /t` on an already-exited root never does.
+ */
+async function terminateTree(child: ChildProcessWithoutNullStreams, spawnedAtMs: number): Promise<void> {
+  try {
+    await terminateProcessTree(child, spawnedAtMs)
+  } catch (error) {
+    throw new SmokeFailure({
+      code: 'tree_termination_failed',
       phase: 'teardown',
-      message: 'the dev process tree did not exit within 10 seconds',
-    })), 10_000)
-    child.once('exit', () => { clearTimeout(timeout); resolve() })
-  })
-}
-
-async function terminateTree(child: ChildProcessWithoutNullStreams): Promise<void> {
-  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return
-  if (process.platform === 'win32') {
-    const killed = spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
-      encoding: 'utf8',
-      timeout: 10_000,
-      windowsHide: true,
+      message: safeOsMessage(error instanceof Error ? error.message : error),
     })
-    if (killed.error !== undefined) {
-      throw new SmokeFailure({
-        code: 'taskkill_failed',
-        phase: 'teardown',
-        message: killed.error.message,
-        status: killed.status,
-        signal: killed.signal,
-        stdout: killed.stdout,
-        stderr: killed.stderr,
-      })
-    }
-  } else {
-    try {
-      process.kill(-child.pid, 'SIGTERM')
-    } catch {
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        // It exited between the exitCode check and the signal.
-      }
-    }
   }
-  await waitForExit(child)
 }
 
 async function expectPortReleased(host: string, port: number): Promise<void> {
@@ -178,6 +151,7 @@ async function expectCrossOriginRefused(directory: string, socketUrl: string): P
 }
 
 async function startAndProbe(directory: string): Promise<void> {
+  const spawnedAt = Date.now()
   const child = spawn(BUN, ['run', 'dev'], {
     cwd: directory,
     detached: process.platform !== 'win32',
@@ -362,7 +336,7 @@ async function startAndProbe(directory: string): Promise<void> {
       })
     }
   } finally {
-    await terminateTree(child)
+    await terminateTree(child, spawnedAt)
     if (bound !== null) await expectPortReleased(bound.host, bound.port)
   }
 }
