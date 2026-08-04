@@ -89,12 +89,14 @@ describe('the intent schema', () => {
     expect(INTENT_GOAL_FIELDS[0]).toBe('gameplay')
   })
 
-  test('the signal text spans every goal at once, lowercased', () => {
+  test('the signal text spans every semantic goal at once, lowercased, without the display name', () => {
     const text = intentSignalText(
-      parseMmoIntent({ name: 'Realm', gameplay: 'Questing', art: 'ISOMETRIC pixel art' }),
+      parseMmoIntent({ name: 'Pixel Voice Realm', gameplay: 'Questing', art: 'ISOMETRIC art' }),
     )
     expect(text).toContain('isometric')
     expect(text).toContain('questing')
     expect(text).not.toContain('ISOMETRIC')
+    expect(text).not.toContain('pixel')
+    expect(text).not.toContain('voice')
   })
 })

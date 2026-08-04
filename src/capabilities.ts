@@ -17,6 +17,12 @@
  * failure this file is shaped to avoid.
  */
 
+import {
+  firstMatchFor,
+  matchSignalText,
+  type IntentSignalRecord,
+} from './signals.js'
+
 export const CAPABILITY_DOMAINS = [
   'rendering',
   'animation',
@@ -68,7 +74,7 @@ export interface CapabilityPacket {
    * hit and the miss.
    */
   readonly core: boolean
-  /** Lowercase substrings that pull an optional packet into a plan. */
+  /** Exact lowercase words or phrases that pull an optional packet into a plan. */
   readonly signals: readonly string[]
   /** What has to be true before this work can start. */
   readonly prerequisites: readonly string[]
@@ -837,6 +843,10 @@ export interface CapabilitySelection {
   readonly deferred: readonly DeferredCapability[]
 }
 
+export const CAPABILITY_SIGNALS: readonly string[] = Object.freeze(
+  CAPABILITY_PACKETS.flatMap((packet) => packet.signals),
+)
+
 /**
  * Which packets this plan gets. Dimension decides the rendering and animation
  * pair; an optional packet needs the intent to have asked for it, and when it
@@ -851,11 +861,13 @@ export interface CapabilitySelection {
  */
 export function selectCapabilities(
   dimension: '2d' | '3d',
-  signalText: string,
+  signalInput: string | IntentSignalRecord,
 ): CapabilitySelection {
   const selected: SelectedCapability[] = []
   const deferred: DeferredCapability[] = []
-  const haystack = signalText.toLowerCase()
+  const signalRecord = typeof signalInput === 'string'
+    ? matchSignalText(signalInput, CAPABILITY_SIGNALS)
+    : signalInput
 
   for (const packet of CAPABILITY_PACKETS) {
     if (packet.dimension !== 'any' && packet.dimension !== dimension) {
@@ -868,13 +880,13 @@ export function selectCapabilities(
       continue
     }
     if (packet.status !== 'available') {
-      const asked = packet.signals.find((signal) => haystack.includes(signal))
+      const asked = firstMatchFor(signalRecord, packet.signals)
       const reason = packet.statusReason ?? 'No reason was recorded, which is itself a defect.'
       deferred.push({
         id: packet.id,
         reason: asked === undefined
           ? `Declared ${packet.status}: ${reason}`
-          : `The intent mentions "${asked}", but this method is ${packet.status}: ${reason}`,
+          : `The ${asked.field} goal mentions "${asked.signal}", but this method is ${packet.status}: ${reason}`,
       })
       continue
     }
@@ -888,7 +900,7 @@ export function selectCapabilities(
       })
       continue
     }
-    const hit = packet.signals.find((signal) => haystack.includes(signal))
+    const hit = firstMatchFor(signalRecord, packet.signals)
     if (hit === undefined) {
       deferred.push({
         id: packet.id,
@@ -896,7 +908,7 @@ export function selectCapabilities(
       })
       continue
     }
-    selected.push({ packet, reason: `The intent mentions "${hit}".` })
+    selected.push({ packet, reason: `The ${hit.field} goal mentions "${hit.signal}".` })
   }
 
   return Object.freeze({ selected: Object.freeze(selected), deferred: Object.freeze(deferred) })

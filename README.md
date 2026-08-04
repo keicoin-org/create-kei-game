@@ -94,6 +94,21 @@ shapes, and failure handling.
 | When it is done | Criteria with a concrete way to check each | `plan.acceptance` |
 | What order to build in | Steps, each naming the packets it draws on | `plan.steps` |
 
+Intent signals have a strict deterministic boundary. The project `name` labels
+files and output only; it never steers dimension, references, style,
+capabilities, or deferrals. Only the five description goals are matched. A
+word-like signal must occupy Unicode-aware token boundaries, so `voice` matches
+`voice` but not `invoice`, and `space` matches `space` but not `workspace`.
+Multiword signals accept normalized whitespace (`open world`, including line
+breaks and repeated spaces); hyphen and space variants are accepted only when
+both are explicitly listed in the catalog. There is no stemming, fuzzy match,
+locale-dependent segmentation, provider call, or model inference.
+
+The planner derives one immutable, source-field-attributed match record and
+passes it to its dimension, reference, style, and capability consumers. That
+record is an in-process implementation detail, not a new persisted intent,
+plan, JSONL, or session schema, so no boundary version changes in this release.
+
 A capability packet is not a topic. Each one states what must already exist,
 which packages and platform APIs do the work, the exact calls that do it, and
 how the developer will know it worked — for animation, shaders, post-processing,

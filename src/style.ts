@@ -15,7 +15,14 @@
  * dragon into somebody's shipping simulator.
  */
 
-import { intentSignalText, type MmoIntent } from './intent.js'
+import type { MmoIntent } from './intent.js'
+import {
+  describeSignalMatch,
+  matchIntentSignals,
+  matchesFor,
+  type IntentSignalMatch,
+  type IntentSignalRecord,
+} from './signals.js'
 
 export const STYLE_PROFILE_VERSION = 1 as const
 
@@ -46,12 +53,11 @@ export interface StyleProfile {
 }
 
 /**
- * Lowercase substrings, matched against every goal at once. Loose on purpose —
- * the same looseness the capability signals use — because a brief is prose, not
- * a form. Each list is evidence *for* its setting; absence of all of them is
+ * Exact lowercase words and phrases, matched against every description goal at
+ * once. Each list is evidence *for* its setting; absence of all of them is
  * evidence for nothing, which is what `unspecified` records.
  */
-const SETTING_SIGNALS: Readonly<Record<Exclude<StyleSetting, 'unspecified'>, readonly string[]>> =
+export const STYLE_SETTING_SIGNALS: Readonly<Record<Exclude<StyleSetting, 'unspecified'>, readonly string[]>> =
   Object.freeze({
     'science-fiction': Object.freeze([
       'sci-fi', 'science fiction', 'science-fiction', 'space', 'starship', 'spaceship',
@@ -76,7 +82,7 @@ const SETTING_SIGNALS: Readonly<Record<Exclude<StyleSetting, 'unspecified'>, rea
     ]),
   })
 
-const STYLIZED_SIGNALS: readonly string[] = Object.freeze([
+export const STYLIZED_SIGNALS: readonly string[] = Object.freeze([
   'toon', 'cel-shaded', 'cel shaded', 'cel shading', 'cartoon', 'stylized', 'stylised',
   'low-poly', 'low poly', 'voxel', 'papercraft', 'claymation', 'hand-painted',
   'hand painted', 'painterly', 'flat-shaded', 'flat shaded', 'chibi', 'pixel',
@@ -84,18 +90,23 @@ const STYLIZED_SIGNALS: readonly string[] = Object.freeze([
 
 interface SettingReading {
   readonly setting: Exclude<StyleSetting, 'unspecified'>
-  readonly matches: readonly string[]
+  readonly matches: readonly IntentSignalMatch[]
   /** Where this setting's earliest signal sits in the text. */
   readonly firstIndex: number
 }
 
-function readSetting(haystack: string): SettingReading | undefined {
+export const STYLE_SIGNALS: readonly string[] = Object.freeze([
+  ...Object.values(STYLE_SETTING_SIGNALS).flat(),
+  ...STYLIZED_SIGNALS,
+])
+
+function readSetting(record: IntentSignalRecord): SettingReading | undefined {
   const readings: SettingReading[] = []
-  for (const setting of Object.keys(SETTING_SIGNALS) as Array<keyof typeof SETTING_SIGNALS>) {
-    const matches = SETTING_SIGNALS[setting].filter((signal) => haystack.includes(signal))
+  for (const setting of Object.keys(STYLE_SETTING_SIGNALS) as Array<keyof typeof STYLE_SETTING_SIGNALS>) {
+    const matches = matchesFor(record, STYLE_SETTING_SIGNALS[setting])
     if (matches.length === 0) continue
-    const firstIndex = Math.min(...matches.map((signal) => haystack.indexOf(signal)))
-    readings.push({ setting, matches: Object.freeze(matches), firstIndex })
+    const firstIndex = Math.min(...matches.map((match) => match.index))
+    readings.push({ setting, matches, firstIndex })
   }
   if (readings.length === 0) return undefined
 
@@ -114,18 +125,18 @@ function readSetting(haystack: string): SettingReading | undefined {
  * The one place a style is decided. Pure: the same intent yields the same
  * profile, byte for byte, and the profile carries the words that decided it.
  */
-export function resolveStyle(intent: MmoIntent): StyleProfile {
-  const haystack = intentSignalText(intent)
-  const reading = readSetting(haystack)
-  const finishMatches = Object.freeze(
-    STYLIZED_SIGNALS.filter((signal) => haystack.includes(signal)),
-  )
+export function resolveStyle(
+  intent: MmoIntent,
+  signalRecord: IntentSignalRecord = matchIntentSignals(intent, STYLE_SIGNALS),
+): StyleProfile {
+  const reading = readSetting(signalRecord)
+  const finishMatches = matchesFor(signalRecord, STYLIZED_SIGNALS)
   const finish: StyleFinish = finishMatches.length > 0 ? 'stylized' : 'grounded'
 
   const rationale: string[] = []
   if (reading) {
     rationale.push(
-      `The brief reads as ${reading.setting}: it says ${reading.matches.slice(0, 4).join(', ')}.`,
+      `The brief reads as ${reading.setting}: ${reading.matches.slice(0, 4).map(describeSignalMatch).join(', ')}.`,
     )
   } else {
     rationale.push(
@@ -134,7 +145,7 @@ export function resolveStyle(intent: MmoIntent): StyleProfile {
   }
   rationale.push(
     finishMatches.length > 0
-      ? `The finish is stylized: the brief says ${finishMatches.slice(0, 3).join(', ')}.`
+      ? `The finish is stylized: ${finishMatches.slice(0, 3).map(describeSignalMatch).join(', ')}.`
       : 'No stylized finish was asked for, so materials stay grounded PBR — the cheapest look to keep coherent.',
   )
 
@@ -143,8 +154,8 @@ export function resolveStyle(intent: MmoIntent): StyleProfile {
     setting: reading?.setting ?? 'unspecified',
     finish,
     evidence: Object.freeze({
-      setting: reading?.matches ?? Object.freeze([]),
-      finish: finishMatches,
+      setting: reading?.matches.map(({ signal }) => signal) ?? Object.freeze([]),
+      finish: Object.freeze(finishMatches.map(({ signal }) => signal)),
     }),
     rationale: Object.freeze(rationale),
   })

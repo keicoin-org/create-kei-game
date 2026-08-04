@@ -14,6 +14,7 @@
  */
 
 import {
+  CAPABILITY_SIGNALS,
   CAPABILITY_PACKETS,
   selectCapabilities,
   type CapabilityPacket,
@@ -21,7 +22,6 @@ import {
 } from './capabilities.js'
 import { audioPaletteFor, propKitFor, CONTENT_WORKFLOWS } from './content.js'
 import {
-  intentSignalText,
   unspecifiedGoals,
   type MmoIntent,
 } from './intent.js'
@@ -43,8 +43,15 @@ import {
   type ReferenceDecision,
 } from './plan.js'
 import { REFERENCE_PROJECTS, type ReferenceProject } from './references.js'
+import {
+  describeSignalMatch,
+  matchIntentSignals,
+  matchesFor,
+  type IntentSignalMatch,
+  type IntentSignalRecord,
+} from './signals.js'
 import type { SourceSelection } from './source.js'
-import { resolveStyle } from './style.js'
+import { resolveStyle, STYLE_SIGNALS } from './style.js'
 
 /** Flat-world words. An intent that uses these is not describing a 3D camera. */
 const TWO_D_SIGNALS = [
@@ -57,14 +64,28 @@ const THREE_D_SIGNALS = [
   'voxel', 'open world', 'low-poly', 'low poly', 'pbr', 'mesh', 'skeletal', 'terrain', 'flight',
 ]
 
+const DIMENSION_SIGNALS: readonly string[] = Object.freeze([
+  ...TWO_D_SIGNALS,
+  ...THREE_D_SIGNALS,
+])
+const REFERENCE_SIGNALS: readonly string[] = Object.freeze(
+  REFERENCE_PROJECTS.flatMap((reference) => reference.signals),
+)
+const PLANNING_SIGNALS: readonly string[] = Object.freeze([
+  ...DIMENSION_SIGNALS,
+  ...REFERENCE_SIGNALS,
+  ...STYLE_SIGNALS,
+  ...CAPABILITY_SIGNALS,
+])
+
 /** A reference has to clear this before cloning beats starting clean. */
 export const CLONE_SCORE_THRESHOLD = 5
 /** And it has to beat the runner-up by this much, or the choice is a coin toss. */
 export const CLONE_SCORE_MARGIN = 2
 const MAX_SIGNAL_POINTS = 5
 
-function matched(haystack: string, signals: readonly string[]): readonly string[] {
-  return signals.filter((signal) => haystack.includes(signal))
+function matched(record: IntentSignalRecord, signals: readonly string[]): readonly IntentSignalMatch[] {
+  return matchesFor(record, signals)
 }
 
 export interface DimensionDecision {
@@ -78,7 +99,10 @@ export interface DimensionDecision {
  * world with avatars in it is the shape most people mean by MMORPG, and the
  * plan says that is what happened rather than hiding it.
  */
-export function resolveDimension(intent: MmoIntent): DimensionDecision {
+export function resolveDimension(
+  intent: MmoIntent,
+  signalRecord: IntentSignalRecord = matchIntentSignals(intent, DIMENSION_SIGNALS),
+): DimensionDecision {
   if (intent.dimension !== 'auto') {
     return Object.freeze({
       dimension: intent.dimension,
@@ -86,13 +110,12 @@ export function resolveDimension(intent: MmoIntent): DimensionDecision {
     })
   }
 
-  const haystack = intentSignalText(intent)
-  const flat = matched(haystack, TWO_D_SIGNALS)
-  const solid = matched(haystack, THREE_D_SIGNALS)
+  const flat = matched(signalRecord, TWO_D_SIGNALS)
+  const solid = matched(signalRecord, THREE_D_SIGNALS)
   const rationale = [
     'The intent left the dimension to the harness, so it was inferred from the goals.',
-    flat.length === 0 ? 'No 2D signal appeared.' : `2D signals: ${flat.join(', ')}.`,
-    solid.length === 0 ? 'No 3D signal appeared.' : `3D signals: ${solid.join(', ')}.`,
+    flat.length === 0 ? 'No 2D signal appeared.' : `2D signals: ${flat.map(describeSignalMatch).join(', ')}.`,
+    solid.length === 0 ? 'No 3D signal appeared.' : `3D signals: ${solid.map(describeSignalMatch).join(', ')}.`,
   ]
 
   if (flat.length > solid.length) {
@@ -137,7 +160,7 @@ interface ScoredReference {
 function scoreReference(
   reference: ReferenceProject,
   dimension: EngineDimension,
-  haystack: string,
+  signalRecord: IntentSignalRecord,
 ): ScoredReference {
   const notes: string[] = []
   let score = 0
@@ -152,10 +175,10 @@ function scoreReference(
     }
   }
 
-  const hits = matched(haystack, reference.signals)
+  const hits = matched(signalRecord, reference.signals)
   if (hits.length > 0) {
     score += Math.min(hits.length, MAX_SIGNAL_POINTS)
-    notes.push(`matches on ${hits.join(', ')}`)
+    notes.push(`matches on ${hits.map(describeSignalMatch).join(', ')}`)
   } else {
     notes.push('nothing in the intent matches what it demonstrates')
   }
@@ -170,9 +193,12 @@ function scoreReference(
  * a waste. The margin rule exists so that two close candidates produce a clean
  * start rather than an arbitrary winner.
  */
-export function chooseReference(intent: MmoIntent, dimension: EngineDimension): ReferenceDecision {
-  const haystack = intentSignalText(intent)
-  const scored = REFERENCE_PROJECTS.map((reference) => scoreReference(reference, dimension, haystack))
+export function chooseReference(
+  intent: MmoIntent,
+  dimension: EngineDimension,
+  signalRecord: IntentSignalRecord = matchIntentSignals(intent, REFERENCE_SIGNALS),
+): ReferenceDecision {
+  const scored = REFERENCE_PROJECTS.map((reference) => scoreReference(reference, dimension, signalRecord))
   const ranked = [...scored].sort((left, right) =>
     right.score - left.score || left.reference.id.localeCompare(right.reference.id),
   )
@@ -368,8 +394,12 @@ function acceptanceFor(dimension: EngineDimension): readonly AcceptanceCriterion
  * pipeline workflows. Pure, like everything else here — and absent from a 2D
  * plan entirely rather than present and empty.
  */
-function contentPlanFor(intent: MmoIntent, present: ReadonlySet<string>): ContentPlan {
-  const style = resolveStyle(intent)
+function contentPlanFor(
+  intent: MmoIntent,
+  present: ReadonlySet<string>,
+  signalRecord: IntentSignalRecord,
+): ContentPlan {
+  const style = resolveStyle(intent, signalRecord)
   const kit = propKitFor(style.setting)
   const palette = audioPaletteFor(style.setting)
 
@@ -582,13 +612,16 @@ export function selectionForPlan(plan: ImplementationPlan): SourceSelection {
 
 /** Intent in, plan out. The only function in the harness that decides anything. */
 export function planMmo(intent: MmoIntent): ImplementationPlan {
-  const dimension = resolveDimension(intent)
+  const signalRecord = matchIntentSignals(intent, PLANNING_SIGNALS)
+  const dimension = resolveDimension(intent, signalRecord)
   const engine = engineFor(intent, dimension)
-  const reference = chooseReference(intent, dimension.dimension)
-  const selection = selectCapabilities(dimension.dimension, intentSignalText(intent))
+  const reference = chooseReference(intent, dimension.dimension, signalRecord)
+  const selection = selectCapabilities(dimension.dimension, signalRecord)
   const capabilities = Object.freeze(selection.selected.map(planCapability))
   const present = new Set(capabilities.map((capability) => capability.id))
-  const content = dimension.dimension === '3d' ? contentPlanFor(intent, present) : undefined
+  const content = dimension.dimension === '3d'
+    ? contentPlanFor(intent, present, signalRecord)
+    : undefined
 
   return Object.freeze({
     planVersion: MMO_PLAN_VERSION,
