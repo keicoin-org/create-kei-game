@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -18,13 +18,7 @@ import {
 setDefaultTimeout(180_000)
 
 const roots: string[] = []
-const ownedPids = new Set<number>()
-
-function rememberPid(value: unknown): void {
-  if (
-    typeof value === 'number' && Number.isSafeInteger(value) && value > 4 && value !== process.pid
-  ) ownedPids.add(value)
-}
+const COOPERATIVE_CLEANUP_TIMEOUT_MS = 5_000
 
 function isAlive(pid: number): boolean {
   try {
@@ -45,29 +39,44 @@ function isAlive(pid: number): boolean {
   }
 }
 
-afterAll(() => {
-  // Nothing this suite spawned may outlive it, including a descendant left
-  // behind by an assertion that failed before the harness returned.
+afterAll(async () => {
+  // A stale numeric PID is not an identity, so teardown never signals one.
+  // Every probe instead watches its unique stop marker and exits itself. This
+  // also cleans a tree left behind by an assertion that failed before the
+  // harness returned, without risking a recycled unrelated process.
+  const recordedPids = new Set<number>()
   for (const root of roots) {
+    const recordPath = join(root, 'pids.json')
     try {
-      const recorded = JSON.parse(readFileSync(join(root, 'pids.json'), 'utf8')) as {
+      writeFileSync(`${recordPath}.stop`, '')
+    } catch {
+      // A test may have removed its temporary root before suite teardown.
+    }
+    try {
+      const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as {
         readonly parent?: unknown
         readonly descendant?: unknown
       }
-      rememberPid(recorded.parent)
-      rememberPid(recorded.descendant)
+      for (const pid of [recorded.parent, recorded.descendant]) {
+        if (
+          typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 4 && pid !== process.pid
+        ) recordedPids.add(pid)
+      }
     } catch {
       // The child may have failed before recording its identities.
     }
   }
-  for (const pid of ownedPids) {
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch {
-      // Already reaped by the harness under test.
-    }
+
+  const deadline = Date.now() + COOPERATIVE_CLEANUP_TIMEOUT_MS
+  let survivors = [...recordedPids].filter(isAlive)
+  while (survivors.length > 0 && Date.now() < deadline) {
+    await new Promise<void>((resolve) => { setTimeout(resolve, 25) })
+    survivors = survivors.filter(isAlive)
   }
   for (const root of roots) rmSync(root, { recursive: true, force: true })
+  if (survivors.length > 0) {
+    throw new Error(`process probe cleanup did not converge for pids ${survivors.join(',')}`)
+  }
 })
 
 function temporaryRoot(): string {
@@ -82,15 +91,23 @@ function temporaryRoot(): string {
  * descendant was detached; on POSIX the descendant has to stay in the child's
  * process group, so detaching there would take it out of the owned tree.
  */
+const DESCENDANT_WORKER_SOURCE = [
+  "const {existsSync}=require('node:fs')",
+  'const stop=process.argv[1]',
+  'setInterval(()=>{if(existsSync(stop))process.exit(0)},25)',
+].join(';')
+
 const DESCENDANT_SOURCE = [
   "const {spawn}=require('node:child_process')",
-  "const {writeFileSync}=require('node:fs')",
-  "const descendant=spawn(process.execPath,['-e','setInterval(()=>{},1000)']," +
+  "const {existsSync,writeFileSync}=require('node:fs')",
+  'const record=process.argv[1]',
+  "const stop=record+'.stop'",
+  `const descendant=spawn(process.execPath,['-e',${JSON.stringify(DESCENDANT_WORKER_SOURCE)},stop],` +
     "{stdio:'ignore',detached:process.platform==='win32'})",
   'descendant.unref()',
-  'writeFileSync(process.argv[1],JSON.stringify({parent:process.pid,descendant:descendant.pid}))',
+  'writeFileSync(record,JSON.stringify({parent:process.pid,descendant:descendant.pid}))',
   "process.stdout.write('ready')",
-  'setInterval(()=>{},1000)',
+  'setInterval(()=>{if(existsSync(stop))process.exit(0)},25)',
 ].join(';')
 
 interface TreePids {
@@ -99,10 +116,7 @@ interface TreePids {
 }
 
 function readTreePids(recordPath: string): TreePids {
-  const pids = JSON.parse(readFileSync(recordPath, 'utf8')) as TreePids
-  rememberPid(pids.parent)
-  rememberPid(pids.descendant)
-  return pids
+  return JSON.parse(readFileSync(recordPath, 'utf8')) as TreePids
 }
 
 function requireNode(): string {
