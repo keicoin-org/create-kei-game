@@ -21,7 +21,7 @@ export interface ReferenceProject {
   readonly dimension: '2d' | '3d' | 'any'
   /** What a reader would find already working in it. */
   readonly demonstrates: readonly string[]
-  /** Lowercase intent substrings that argue for starting here. */
+  /** Exact lowercase intent words or phrases that argue for starting here. */
   readonly signals: readonly string[]
   /** Why it can be the wrong start, stated so the planner can quote it. */
   readonly caveats: readonly string[]

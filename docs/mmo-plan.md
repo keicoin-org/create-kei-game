@@ -44,6 +44,20 @@ the plan records both lists. A tie lands on 3D, because a persistent world with
 avatars in it is what most people mean by MMORPG, and the plan says so in as many
 words rather than hiding it.
 
+“Across every goal” means the five description fields, never `name`. The name is
+a display/path label and cannot change any semantic decision. Signals are exact
+Unicode-bounded words or normalized-whitespace phrases: `voice` does not match
+`invoice`, `space` does not match `workspace`, and a phrase such as `open world`
+may span repeated spaces or a line break. Hyphen/space aliases are explicit
+catalog entries; the matcher does no stemming, fuzzy inference, locale-specific
+segmentation, or model call. Each match retains its exact catalog term and
+source field so rationale can say what was actually read.
+
+One immutable match record is derived per `planMmo` call and shared by the
+dimension, reference, style, and capability decisions. It exists only during
+that pure function call and does not cross the versioned intent, plan, JSONL, or
+session boundary; it is not the future complete normalized-intent record.
+
 ### Whether to start from a reference project
 
 Each reference in `create-kei-mmo/references` is scored against the intent:

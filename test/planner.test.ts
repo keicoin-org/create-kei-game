@@ -118,6 +118,74 @@ describe('the reference decision', () => {
 })
 
 describe('the plan', () => {
+  const semanticDecisions = (plan: ReturnType<typeof planMmo>) => ({
+    engine: plan.engine,
+    reference: plan.reference,
+    capabilities: plan.capabilities,
+    deferred: plan.deferred,
+    constraints: plan.constraints,
+    acceptance: plan.acceptance,
+    steps: plan.steps,
+    assumptions: plan.assumptions,
+    content: plan.content,
+  })
+
+  test('project display names never steer semantic planning', () => {
+    const names = ['Ledger', 'Pixel Ledger', 'Voice Market', 'Space Guild']
+    const plans = names.map((name) => planFor({
+      name,
+      dimension: 'auto',
+      gameplay: 'Players manage records and trade together.',
+    }))
+    for (const plan of plans.slice(1)) {
+      expect(semanticDecisions(plan)).toEqual(semanticDecisions(plans[0]!))
+    }
+    expect(plans[0]!.engine.dimension).toBe('3d')
+    expect(plans[0]!.content?.style.finish).toBe('grounded')
+  })
+
+  test('invoice and workspace do not become voice and space intent', () => {
+    const plan = planFor({
+      name: 'Ledger',
+      dimension: 'auto',
+      gameplay: 'Players manage invoices in a shared workspace and trade.',
+    })
+    const selected = plan.capabilities.map(({ id }) => id)
+    expect(selected).not.toContain('audio')
+    expect(selected).not.toContain('content-3d-audio')
+    expect(plan.content?.style.setting).toBe('unspecified')
+    expect(plan.content?.style.evidence.setting).toEqual([])
+    expect(plan.engine.rationale.join(' ')).not.toContain('"space"')
+    expect(plan.capabilities.every(({ reason }) => !reason.includes('"voice"'))).toBeTrue()
+  })
+
+  test('exact voice and space terms retain their intended behavior and source evidence', () => {
+    const plan = planFor({
+      name: 'Ledger',
+      gameplay: 'Players coordinate by voice while exploring space.',
+    })
+    expect(plan.capabilities.find(({ id }) => id === 'audio')?.reason).toBe(
+      'The gameplay goal mentions "voice".',
+    )
+    expect(plan.capabilities.map(({ id }) => id)).toContain('content-3d-audio')
+    expect(plan.content?.style.setting).toBe('science-fiction')
+    expect(plan.content?.style.evidence.setting).toContain('space')
+    expect(plan.content?.style.rationale.join(' ')).toContain('"space" in gameplay')
+  })
+
+  test('explicit dimensions stay authoritative under adversarial names and fragments', () => {
+    expect(planFor({
+      name: '3D Voice Space',
+      dimension: '2d',
+      gameplay: 'Invoices in a workspace.',
+    }).engine.dimension).toBe('2d')
+    expect(planFor({
+      name: '2D Pixel',
+      dimension: '3d',
+      gameplay: 'Invoices in a workspace.',
+    }).engine.dimension).toBe('3d')
+  })
+
   test('is deterministic: the same intent produces the same document', () => {
     expect(JSON.stringify(planFor(CLONE_INTENT))).toBe(JSON.stringify(planFor(CLONE_INTENT)))
   })

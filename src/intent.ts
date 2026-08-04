@@ -160,13 +160,13 @@ export function unspecifiedGoals(intent: MmoIntent): readonly IntentGoalField[] 
 }
 
 /**
- * Every goal as one lowercase haystack. The planner reads signals out of this
- * rather than out of individual fields, because somebody describing an
- * isometric camera under "art" has said the same thing as somebody describing
- * it under "world".
+ * Every semantic goal as one lowercase haystack. The project name is a display
+ * label and never participates in planning. New planner code uses the
+ * field-attributed match record in signals.ts; this remains the public text
+ * projection for callers that need the five goals together.
  */
 export function intentSignalText(intent: MmoIntent): string {
-  return [intent.name, ...INTENT_GOAL_FIELDS.map((field) => intent[field])]
+  return INTENT_GOAL_FIELDS.map((field) => intent[field])
     .filter((value) => value !== '')
     .join('\n')
     .toLowerCase()
