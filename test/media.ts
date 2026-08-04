@@ -433,6 +433,23 @@ function skinnedAnimationGlb(options: SkinnedAnimationOptions = {}): Buffer {
 /** Observable motion on an influencing joint of a genuinely skinned scene mesh. */
 export function riggedAnimationGlb(): Buffer { return skinnedAnimationGlb() }
 
+/** A valid admitted GLB with only one forbidden accessor-normalization mutation. */
+export function forbiddenNormalizedAccessorGlb(target: 'model-position' | 'model-unsigned-int' | 'animation-input' | 'animation-output'): Buffer {
+  const bytes = target.startsWith('animation-') ? riggedAnimationGlb() : indexedQuadGlb()
+  const jsonLength = bytes.readUInt32LE(12)
+  const gltf = JSON.parse(bytes.subarray(20, 20 + jsonLength).toString('utf8')) as any
+  const binOffset = 20 + jsonLength
+  const binLength = bytes.readUInt32LE(binOffset)
+  const bin = Buffer.from(bytes.subarray(binOffset + 8, binOffset + 8 + binLength))
+  if (target === 'model-position') gltf.accessors[0].normalized = true
+  else if (target === 'model-unsigned-int') gltf.accessors.push({ bufferView: 0, componentType: 5125, count: 12, type: 'SCALAR', normalized: true })
+  else {
+    const sampler = gltf.animations[0].samplers[0]
+    gltf.accessors[target === 'animation-input' ? sampler.input : sampler.output].normalized = true
+  }
+  return packedGlb(gltf, bin)
+}
+
 /** Two joints share the scene-visible skinned mesh node as a root without an explicit skeleton. */
 export function sharedRootSkinAnimationGlb(): Buffer { return skinnedAnimationGlb() }
 

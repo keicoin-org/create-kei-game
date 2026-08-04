@@ -12,6 +12,7 @@ import {
   portablePolishPathKey,
   safePolishPath,
   validatePolishLicenceBytes,
+  validatePolishAssetManifestDocument,
   validatePolishMediaBytes,
   validatePolishRecipeDocument,
   validatePolishRecipeManifestBinding,
@@ -21,7 +22,7 @@ import {
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { ancestorSkeletonAnimationGlb, CC0_TEXT, cyclicSceneGlb, disconnectedJointAnimationGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, hugeSkinWeightAnimationGlb, indexedQuadGlb, invalidInverseBindMatricesAnimationGlb, misalignedAccessorAnimationGlb, misalignedJointVertexAttributeGlb, misalignedNonSkinVertexAttributeGlb, mismatchedSkinAccessorCountAnimationGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, nonFiniteSkinWeightAnimationGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkeletonAnimationGlb, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, outOfRangeSkinJointAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, sharedRootSkinAnimationGlb, siblingSkeletonAnimationGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unnormalizedSkinWeightsAnimationGlb, unpairedSkinSetAnimationGlb, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
+import { ancestorSkeletonAnimationGlb, CC0_TEXT, cyclicSceneGlb, disconnectedJointAnimationGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, forbiddenNormalizedAccessorGlb, glbWithOutOfRangePosition, hugeSkinWeightAnimationGlb, indexedQuadGlb, invalidInverseBindMatricesAnimationGlb, misalignedAccessorAnimationGlb, misalignedJointVertexAttributeGlb, misalignedNonSkinVertexAttributeGlb, mismatchedSkinAccessorCountAnimationGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, nonFiniteSkinWeightAnimationGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkeletonAnimationGlb, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, outOfRangeSkinJointAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, sharedRootSkinAnimationGlb, siblingSkeletonAnimationGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unnormalizedSkinWeightsAnimationGlb, unpairedSkinSetAnimationGlb, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -84,6 +85,39 @@ describe('PolishRecipeV1 authority and presentation contract', () => {
     expect(parsePolishRecipe(recipe)).toBeNull()
   })
 
+  test.each([
+    ['null action', (recipe: any) => { recipe.actions[0] = null }, 'invalid_action'],
+    ['primitive action', (recipe: any) => { recipe.actions[0] = 7 }, 'invalid_action'],
+    ['null authority event', (recipe: any) => { recipe.authority.events[0] = null }, 'invalid_authority_event'],
+    ['primitive authority event', (recipe: any) => { recipe.authority.events[0] = 'event' }, 'invalid_authority_event'],
+    ['null capture step', (recipe: any) => { recipe.capture.steps[0] = null }, 'invalid_capture_step'],
+    ['primitive capture step', (recipe: any) => { recipe.capture.steps[0] = false }, 'invalid_capture_step'],
+    ['null remote observers', (recipe: any) => { recipe.capture.steps[5].observerIds = null }, 'invalid_capture_step'],
+    ['null quality profile', (recipe: any) => { recipe.qualityProfiles.medium = null }, 'invalid_quality_medium'],
+    ['non-numeric duration', (recipe: any) => { recipe.durationMs = '30000' }, 'invalid_recipe_bounds'],
+  ] as const)('is total over a %s', (_name, mutate, expectedCode) => {
+    const recipe = structuredClone(generated().recipe); mutate(recipe)
+    let problems: string[] = []
+    expect(() => { problems = validatePolishRecipeDocument(recipe) }).not.toThrow()
+    expect(problems).toContain(expectedCode)
+    expect(() => parsePolishRecipe(recipe)).not.toThrow()
+    expect(parsePolishRecipe(recipe)).toBeNull()
+  })
+
+  test.each([
+    ['effect camera impulse', (recipe: any, value: number) => { recipe.effects.contact.cameraImpulse = value }, 'invalid_effect_contact'],
+    ['quality camera impulse scale', (recipe: any, value: number) => { recipe.qualityProfiles.medium.cameraImpulseScale = value }, 'invalid_quality_medium'],
+    ['quality p95 frame time', (recipe: any, value: number) => { recipe.qualityProfiles.medium.p95FrameMs = value }, 'invalid_quality_medium'],
+    ['quality p99 frame time', (recipe: any, value: number) => { recipe.qualityProfiles.medium.p99FrameMs = value }, 'invalid_quality_medium'],
+    ['quality maximum long frame', (recipe: any, value: number) => { recipe.qualityProfiles.medium.maxLongFrameMs = value }, 'invalid_quality_medium'],
+  ] as const)('rejects every non-finite %s before cloning', (_name, mutate, expectedCode) => {
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const recipe = structuredClone(generated().recipe); mutate(recipe, value)
+      expect(validatePolishRecipeDocument(recipe)).toContain(expectedCode)
+      expect(parsePolishRecipe(recipe)).toBeNull()
+    }
+  })
+
   test('requires every feedback channel to carry the capture-step semantic', () => {
     const recipe = structuredClone(generated().recipe)
     const strike = recipe.capture.steps.find((step: any) => step.kind === 'strike')
@@ -107,6 +141,16 @@ describe('PolishRecipeV1 authority and presentation contract', () => {
     ['duplicate character role', (manifest: any) => { manifest.assets.push({ ...manifest.assets[0], id: 'second-hero' }) }],
   ])('rejects a manifest with %s', (_name, mutate) => {
     const manifest = structuredClone(generated().manifest); mutate(manifest)
+    expect(parsePolishAssetManifest(manifest)).toBeNull()
+  })
+
+  test.each([null, 'asset', 9, false])('returns manifest problems for malformed asset entry %p', (entry) => {
+    const manifest = structuredClone(generated().manifest)
+    manifest.assets[0] = entry
+    let problems: string[] = []
+    expect(() => { problems = validatePolishAssetManifestDocument(manifest) }).not.toThrow()
+    expect(problems).toContain('invalid_requirement')
+    expect(() => parsePolishAssetManifest(manifest)).not.toThrow()
     expect(parsePolishAssetManifest(manifest)).toBeNull()
   })
 
@@ -180,6 +224,10 @@ describe('admitted media and licence byte semantics', () => {
     ['an index accessor count above the global bound', oversizedSkinIndexCountAnimationGlb],
   ] as const)('bounds %s before skin influence traversal', (_name, build) => {
     expect(validatePolishMediaBytes('animation', build())).toEqual(['media_glb_malformed'])
+  })
+
+  test.each(['model-position', 'model-unsigned-int', 'animation-input', 'animation-output'] as const)('rejects glTF normalized:true on forbidden %s accessors', (target) => {
+    expect(validatePolishMediaBytes(target.startsWith('animation-') ? 'animation' : 'model', forbiddenNormalizedAccessorGlb(target))).toEqual(['media_glb_malformed'])
   })
 
   test.each([
@@ -265,6 +313,21 @@ describe('portable path and provenance contract', () => {
     expect(validatePolishSourceManifestDocument(registry)).toEqual([])
     registry.assets[0].sourceFile.sha256 = 'b'.repeat(64)
     expect(validatePolishSourceManifestDocument(registry)).toContain('source_catalog_mismatch')
+  })
+
+  test.each([
+    ['null source', (registry: any) => { registry.assets[0] = null }, 'invalid_source'],
+    ['primitive source', (registry: any) => { registry.assets[0] = 11 }, 'invalid_source'],
+    ['null source file', (registry: any) => { registry.assets[0].sourceFile = null }, 'invalid_source'],
+    ['null licence', (registry: any) => { registry.assets[0].licence = null }, 'invalid_source'],
+    ['null processed output', (registry: any) => { registry.assets[0].processedOutputs[0] = null }, 'invalid_output'],
+  ] as const)('is total over a %s', (_name, mutate, expectedCode) => {
+    const registry = sources([source()]).value as any; mutate(registry)
+    let problems: string[] = []
+    expect(() => { problems = validatePolishSourceManifestDocument(registry) }).not.toThrow()
+    expect(problems).toContain(expectedCode)
+    expect(() => parsePolishSourceManifest(registry)).not.toThrow()
+    expect(parsePolishSourceManifest(registry)).toBeNull()
   })
 
   test('binds catalog members to dimensions, roles, kinds, and distinct processed identities', () => {

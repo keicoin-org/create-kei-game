@@ -231,39 +231,42 @@ for (const code of validatePolishRecipeDocument(recipeDoc.value)) problems.push(
 for (const code of validatePolishAssetManifestDocument(manifestDoc.value)) problems.push({ code, id: 'polish-manifest.json', message: 'asset manifest rejected by the authoritative V1 validator' })
 for (const code of validatePolishSourceManifestDocument(sourceDoc.value)) problems.push({ code, id: 'sources.json', message: 'source registry rejected by the authoritative V1 validator' })
 const recipe = recipeDoc.value; const manifest = manifestDoc.value; const sources = sourceDoc.value
+const records = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === 'object' && entry !== null && !Array.isArray(entry)) : []
 if (recipe?.dimension !== manifest?.dimension) problems.push({ code: 'dimension_mismatch', message: 'recipe and content manifest dimensions differ' })
 if (hash(sourceDoc.raw) !== recipe?.sourceManifestHash) problems.push({ code: 'source_manifest_hash_mismatch', message: 'recipe source hash is stale' })
 if (hash(styleDoc.raw) !== recipe?.styleProfileHash) problems.push({ code: 'style_profile_hash_mismatch', message: 'recipe style hash is stale' })
 if (qualityDoc.value?.version !== 1 || JSON.stringify(qualityDoc.value?.profiles) !== JSON.stringify(recipe?.qualityProfiles)) problems.push({ code: 'quality_mismatch', message: 'quality.json differs from the authoritative recipe' })
-const required = new Map((manifest?.assets ?? []).map((asset) => [asset.id, asset])); const byId = new Map((sources?.assets ?? []).map((asset) => [asset.id, asset]))
+const required = new Map(records(manifest?.assets).map((asset) => [asset.id, asset])); const byId = new Map(records(sources?.assets).map((asset) => [asset.id, asset]))
 for (const code of validatePolishRecipeManifestBinding(recipe, manifest)) problems.push({ code, message: 'recipe/manifest semantic role binding rejected' })
 for (const code of validatePolishSourceManifestBinding(manifest, sources)) problems.push({ code, message: 'source/manifest semantic catalog binding rejected' })
 for (const id of byId.keys()) if (!required.has(id)) problems.push({ code: 'unrequired_source', id, message: 'source registry contains bytes outside the polish admission manifest' })
-const verify = (id, entry, maximum) => { try { const bytes = secureRead(entry.path, maximum, entry.bytes); if (hash(bytes) !== entry.sha256) { problems.push({ code: 'hash_mismatch', id, message: entry.path }); return null } return bytes } catch (error) { problems.push({ code: 'file_invalid', id, message: entry.path + ': ' + (error instanceof Error ? error.message : String(error)) }); return null } }
+const verify = (id, entry, maximum) => { const path = typeof entry?.path === 'string' ? entry.path : '<invalid-path>'; try { const bytes = secureRead(path, maximum, entry?.bytes); if (hash(bytes) !== entry?.sha256) { problems.push({ code: 'hash_mismatch', id, message: path }); return null } return bytes } catch (error) { problems.push({ code: 'file_invalid', id, message: path + ': ' + (error instanceof Error ? error.message : String(error)) }); return null } }
 if (sources?.credits) {
   verify('credits', sources.credits, 262_144)
   try {
     const actual = secureRead(sources.credits.path, 262_144, sources.credits.bytes).toString('utf8')
     const lines = ['# Third-party assets', '', 'This inventory is generated from \`kei-mmo/content/sources.json\`.', '']
-    for (const source of [...(sources.assets ?? [])].sort((a,b) => a.id.localeCompare(b.id))) lines.push('## ' + source.id, '', '- Provider: ' + source.provider, '- Source: ' + source.canonicalUrl, '- Version: ' + source.providerAssetVersion, '- Licence: ' + source.licence.id + ' (' + source.licence.referenceUrl + ')', '- Attribution: ' + source.attribution, '')
+    for (const source of records(sources.assets).sort((a,b) => String(a.id).localeCompare(String(b.id)))) lines.push('## ' + source.id, '', '- Provider: ' + source.provider, '- Source: ' + source.canonicalUrl, '- Version: ' + source.providerAssetVersion, '- Licence: ' + source.licence?.id + ' (' + source.licence?.referenceUrl + ')', '- Attribution: ' + source.attribution, '')
     if (actual !== lines.join('\\n') + '\\n') problems.push({ code: 'credits_content_mismatch', message: 'generated credits do not exactly describe sources.json' })
   } catch {}
 }
-let visualBytes = 0; let audioBytes = 0; let aggregateBytes = sources?.credits?.bytes ?? 0; const roleBytes = new Map()
-for (const asset of manifest?.assets ?? []) {
+let visualBytes = 0; let audioBytes = 0; let aggregateBytes = typeof sources?.credits?.bytes === 'number' && Number.isFinite(sources.credits.bytes) ? sources.credits.bytes : 0; const roleBytes = new Map()
+for (const asset of records(manifest?.assets)) {
   const source = byId.get(asset.id)
   if (!source) { problems.push({ code: 'missing_source', id: asset.id, message: 'required polish asset has no source record' }); continue }
   verify(asset.id, source.sourceFile, 16_777_216)
-  const licenceBytes = verify(asset.id, { path: source.licence.filePath, sha256: source.licence.sha256, bytes: source.licence.bytes }, 262_144)
-  if (licenceBytes) for (const code of validatePolishLicenceBytes(licenceBytes)) problems.push({ code, id: asset.id, message: source.licence.filePath })
-  aggregateBytes += source.sourceFile.bytes + source.licence.bytes
+  const licenceBytes = verify(asset.id, source.licence && { path: source.licence.filePath, sha256: source.licence.sha256, bytes: source.licence.bytes }, 262_144)
+  if (licenceBytes) for (const code of validatePolishLicenceBytes(licenceBytes)) problems.push({ code, id: asset.id, message: source.licence?.filePath })
+  aggregateBytes += (typeof source.sourceFile?.bytes === 'number' ? source.sourceFile.bytes : 0) + (typeof source.licence?.bytes === 'number' ? source.licence.bytes : 0)
   const extensions = { atlas: ['.png'], image: ['.png'], model: ['.glb'], animation: ['.glb'], audio: ['.ogg'] }[asset.kind] ?? []
-  for (const output of source.processedOutputs) {
-    if (!extensions.some((extension) => output.path.toLocaleLowerCase('en-US').endsWith(extension))) problems.push({ code: 'asset_kind_mismatch', id: asset.id, message: output.path })
+  for (const output of records(source.processedOutputs)) {
+    const outputPath = typeof output.path === 'string' ? output.path : '<invalid-path>'
+    if (!extensions.some((extension) => outputPath.toLocaleLowerCase('en-US').endsWith(extension))) problems.push({ code: 'asset_kind_mismatch', id: asset.id, message: outputPath })
     const outputBytes = verify(asset.id, output, asset.maxBytes)
-    if (outputBytes) for (const code of validatePolishMediaBytes(asset.kind, outputBytes)) problems.push({ code, id: asset.id, message: output.path })
-    aggregateBytes += output.bytes; roleBytes.set(asset.role, (roleBytes.get(asset.role) ?? 0) + output.bytes)
-    if (asset.role === 'audio') audioBytes += output.bytes; else visualBytes += output.bytes
+    if (outputBytes) for (const code of validatePolishMediaBytes(asset.kind, outputBytes)) problems.push({ code, id: asset.id, message: outputPath })
+    const declaredBytes = typeof output.bytes === 'number' && Number.isFinite(output.bytes) ? output.bytes : 0
+    aggregateBytes += declaredBytes; roleBytes.set(asset.role, (roleBytes.get(asset.role) ?? 0) + declaredBytes)
+    if (asset.role === 'audio') audioBytes += declaredBytes; else visualBytes += declaredBytes
   }
 }
 if (visualBytes > (recipe?.budgets?.maxVisualBytes ?? 0) || audioBytes > (recipe?.budgets?.maxAudioBytes ?? 0) || aggregateBytes > (recipe?.budgets?.maxAggregateBytes ?? 0)) problems.push({ code: 'aggregate_budget_exceeded', message: 'packaged credits, source, licence, and output bytes exceed recipe budgets' })

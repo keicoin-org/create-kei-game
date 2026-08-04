@@ -14,7 +14,7 @@ import {
   polishProjectFiles,
 } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { ancestorSkeletonAnimationGlb, catalogLicenceBytes, catalogSourceBytes, cyclicSceneGlb, disconnectedJointAnimationGlb, dummySkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, misalignedJointVertexAttributeGlb, misalignedNonSkinVertexAttributeGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, sharedRootSkinAnimationGlb, siblingSkeletonAnimationGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, unusedFourthPositionGlb } from './media.js'
+import { ancestorSkeletonAnimationGlb, catalogLicenceBytes, catalogSourceBytes, cyclicSceneGlb, disconnectedJointAnimationGlb, dummySkinAnimationGlb, extraUnreferencedMeshGlb, forbiddenNormalizedAccessorGlb, glbWithOutOfRangePosition, misalignedJointVertexAttributeGlb, misalignedNonSkinVertexAttributeGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, sharedRootSkinAnimationGlb, siblingSkeletonAnimationGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, unusedFourthPositionGlb } from './media.js'
 import { runProcess } from './process.js'
 
 const temporary: string[] = []
@@ -244,6 +244,40 @@ describe('generated project-owned polish checker', () => {
     expect(result.status).toBe(1)
     expect(result.report.code).toBe('polish_assets_invalid')
     expect(result.report.problems).toContainEqual(expect.objectContaining({ code: expectedCode }))
+  })
+
+  test.each([
+    ['null recipe action', (current: any) => { current.recipe.actions[0] = null }, 'invalid_action'],
+    ['primitive authority event', (current: any) => { current.recipe.authority.events[0] = 7 }, 'invalid_authority_event'],
+    ['null capture step', (current: any) => { current.recipe.capture.steps[0] = null }, 'invalid_capture_step'],
+    ['non-finite effect serialized as null', (current: any) => { current.recipe.effects.contact.cameraImpulse = Number.NaN }, 'invalid_effect_contact'],
+    ['non-finite quality serialized as null', (current: any) => { current.recipe.qualityProfiles.medium.p95FrameMs = Number.POSITIVE_INFINITY }, 'invalid_quality_medium'],
+    ['null manifest requirement', (current: any) => { current.manifest.assets[0] = null }, 'invalid_requirement'],
+    ['null source record', (current: any) => { current.sources.assets[0] = null }, 'invalid_source'],
+    ['null retained source file', (current: any) => { current.sources.assets[0].sourceFile = null }, 'invalid_source'],
+    ['null licence record', (current: any) => { current.sources.assets[0].licence = null }, 'invalid_source'],
+    ['null processed output', (current: any) => { current.sources.assets[0].processedOutputs[0] = null }, 'invalid_output'],
+    ['malformed processed output', (current: any) => { current.sources.assets[0].processedOutputs[0] = { path: null, sha256: [], bytes: Number.NaN } }, 'invalid_output'],
+  ] as const)('returns a structured report for %s', async (_name, mutate, expectedCode) => {
+    const current = fixture('2d', true); mutate(current)
+    put(current.root, POLISH_ASSET_MANIFEST_PATH, json(current.manifest))
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report).toMatchObject({ ok: false, code: 'polish_assets_invalid' })
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ code: expectedCode }))
+  })
+
+  test.each(['model-position', 'model-unsigned-int', 'animation-input', 'animation-output'] as const)('generated checker rejects forbidden normalized %s accessor', async (target) => {
+    const current = fixture('3d', true)
+    const id = target.startsWith('animation-') ? 'hero-motion' : 'training-sentinel'
+    const output = current.sources.assets.find((asset: any) => asset.id === id).processedOutputs[0]
+    const bytes = forbiddenNormalizedAccessorGlb(target)
+    put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id, code: 'media_glb_malformed' }))
   })
 
   test.each([

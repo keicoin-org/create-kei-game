@@ -217,7 +217,7 @@ function cloneFrozen<T>(value: T): T { return deepFreeze(JSON.parse(JSON.stringi
  */
 export function validatePolishRecipeDocument(value: unknown): string[] {
   const problems: string[] = []
-  const record = (item: unknown): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item)
+  const record = (item: unknown): item is Record<string, any> => typeof item === 'object' && item !== null && !Array.isArray(item)
   const exact = (item: unknown, keys: readonly string[]) => record(item) && Object.keys(item).sort().join('|') === [...keys].sort().join('|')
   const id = (item: unknown): item is string => typeof item === 'string' && item.length <= 80 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item)
   const hash = (item: unknown): item is string => typeof item === 'string' && /^[a-f0-9]{64}$/.test(item) && !/^0{64}$/.test(item)
@@ -237,10 +237,11 @@ export function validatePolishRecipeDocument(value: unknown): string[] {
   const actionIds = new Set<string>(); const actionById = new Map<string, any>()
   if (!Array.isArray(recipe.actions) || recipe.actions.length < 2 || recipe.actions.length > 12) problems.push('invalid_actions')
   for (const action of Array.isArray(recipe.actions) ? recipe.actions : []) {
-    if (!exact(action, ['id','kind','anticipationMs','contactMs','recoveryMs','cooldownMs','interrupt','cancel','events','cueOverrides']) || !id(action.id) || actionIds.has(action.id) || !['interact','strike'].includes(action.kind) || !integer(action.anticipationMs, 50, 10_000) || !integer(action.contactMs, 51, 10_000) || !integer(action.recoveryMs, 52, 10_000) || !integer(action.cooldownMs, 52, 10_000) || action.contactMs <= action.anticipationMs || action.recoveryMs <= action.contactMs || action.cooldownMs < action.recoveryMs || !['before-contact','never'].includes(action.interrupt) || !['on-refusal','before-contact'].includes(action.cancel) || !Array.isArray(action.events) || action.events.join('|') !== eventNames.join('|') || !exact(action.cueOverrides, ['anticipation','contact']) || !cueNames.includes(action.cueOverrides?.anticipation) || !cueNames.includes(action.cueOverrides?.contact)) problems.push('invalid_action')
-    actionIds.add(action.id); actionById.set(action.id, action)
+    if (!record(action)) { problems.push('invalid_action'); continue }
+    if (!exact(action, ['id','kind','anticipationMs','contactMs','recoveryMs','cooldownMs','interrupt','cancel','events','cueOverrides']) || !id(action.id) || actionIds.has(action.id) || !['interact','strike'].includes(action.kind as string) || !integer(action.anticipationMs, 50, 10_000) || !integer(action.contactMs, 51, 10_000) || !integer(action.recoveryMs, 52, 10_000) || !integer(action.cooldownMs, 52, 10_000) || (action.contactMs as number) <= (action.anticipationMs as number) || (action.recoveryMs as number) <= (action.contactMs as number) || (action.cooldownMs as number) < (action.recoveryMs as number) || !['before-contact','never'].includes(action.interrupt as string) || !['on-refusal','before-contact'].includes(action.cancel as string) || !Array.isArray(action.events) || action.events.join('|') !== eventNames.join('|') || !exact(action.cueOverrides, ['anticipation','contact']) || !cueNames.includes((action.cueOverrides as any)?.anticipation) || !cueNames.includes((action.cueOverrides as any)?.contact)) problems.push('invalid_action')
+    if (id(action.id)) { actionIds.add(action.id); actionById.set(action.id, action) }
   }
-  if (!['interact','strike'].every((kind) => recipe.actions?.some((action: any) => action.kind === kind))) problems.push('missing_action_kind')
+  if (!['interact','strike'].every((kind) => Array.isArray(recipe.actions) && recipe.actions.some((action: unknown) => record(action) && action.kind === kind))) problems.push('missing_action_kind')
 
   if (!exact(recipe.cues, cueNames)) problems.push('invalid_cues')
   for (const cue of cueNames) {
@@ -250,19 +251,19 @@ export function validatePolishRecipeDocument(value: unknown): string[] {
   if (!exact(recipe.effects, eventNames)) problems.push('invalid_effects')
   for (const event of eventNames) {
     const effect = recipe.effects?.[event]
-    if (!exact(effect, ['event','cue','visual','cameraImpulse','hud','reducedMotion']) || effect?.event !== event || !cueNames.includes(effect?.cue) || !['telegraph','contact','status'].includes(effect?.visual) || typeof effect?.cameraImpulse !== 'number' || effect.cameraImpulse < 0 || effect.cameraImpulse > 1 || !['action','success','refusal','cooldown','recovery'].includes(effect?.hud) || !exact(effect?.reducedMotion, ['visual','hud','cameraImpulse']) || effect?.reducedMotion?.visual !== effect?.visual || effect?.reducedMotion?.hud !== effect?.hud || effect?.reducedMotion?.cameraImpulse !== 0) problems.push('invalid_effect_' + event)
+    if (!exact(effect, ['event','cue','visual','cameraImpulse','hud','reducedMotion']) || effect?.event !== event || !cueNames.includes(effect?.cue) || !['telegraph','contact','status'].includes(effect?.visual) || typeof effect?.cameraImpulse !== 'number' || !Number.isFinite(effect.cameraImpulse) || effect.cameraImpulse < 0 || effect.cameraImpulse > 1 || !['action','success','refusal','cooldown','recovery'].includes(effect?.hud) || !exact(effect?.reducedMotion, ['visual','hud','cameraImpulse']) || effect?.reducedMotion?.visual !== effect?.visual || effect?.reducedMotion?.hud !== effect?.hud || effect?.reducedMotion?.cameraImpulse !== 0) problems.push('invalid_effect_' + event)
   }
 
   if (!exact(recipe.qualityProfiles, tiers)) problems.push('invalid_quality_profiles')
   const quality: any[] = []
   for (const tier of tiers) {
     const profile = recipe.qualityProfiles?.[tier]
-    quality.push(profile)
-    if (!exact(profile, ['tier','maxParticles','maxVoices','postProcessing','shadows','cameraImpulseScale','targetFps','p95FrameMs','p99FrameMs','maxLongFrameMs']) || profile?.tier !== tier || !integer(profile?.maxParticles, 0, 512) || !integer(profile?.maxVoices, 1, 64) || !Array.isArray(profile?.postProcessing) || profile.postProcessing.some((entry: unknown) => !['fxaa','bloom','ssao'].includes(String(entry))) || new Set(profile?.postProcessing).size !== profile?.postProcessing?.length || typeof profile?.shadows !== 'boolean' || typeof profile?.cameraImpulseScale !== 'number' || profile.cameraImpulseScale < 0 || profile.cameraImpulseScale > 1 || ![30,60].includes(profile?.targetFps) || typeof profile?.p95FrameMs !== 'number' || typeof profile?.p99FrameMs !== 'number' || typeof profile?.maxLongFrameMs !== 'number' || profile.p95FrameMs <= 0 || profile.p95FrameMs > profile.p99FrameMs || profile.p99FrameMs > profile.maxLongFrameMs || profile.maxLongFrameMs > 100) problems.push('invalid_quality_' + tier)
+    quality.push(record(profile) ? profile : null)
+    if (!exact(profile, ['tier','maxParticles','maxVoices','postProcessing','shadows','cameraImpulseScale','targetFps','p95FrameMs','p99FrameMs','maxLongFrameMs']) || profile?.tier !== tier || !integer(profile?.maxParticles, 0, 512) || !integer(profile?.maxVoices, 1, 64) || !Array.isArray(profile?.postProcessing) || profile.postProcessing.some((entry: unknown) => !['fxaa','bloom','ssao'].includes(String(entry))) || new Set(profile?.postProcessing).size !== profile?.postProcessing?.length || typeof profile?.shadows !== 'boolean' || typeof profile?.cameraImpulseScale !== 'number' || !Number.isFinite(profile.cameraImpulseScale) || profile.cameraImpulseScale < 0 || profile.cameraImpulseScale > 1 || ![30,60].includes(profile?.targetFps) || typeof profile?.p95FrameMs !== 'number' || !Number.isFinite(profile.p95FrameMs) || typeof profile?.p99FrameMs !== 'number' || !Number.isFinite(profile.p99FrameMs) || typeof profile?.maxLongFrameMs !== 'number' || !Number.isFinite(profile.maxLongFrameMs) || profile.p95FrameMs <= 0 || profile.p95FrameMs > profile.p99FrameMs || profile.p99FrameMs > profile.maxLongFrameMs || profile.maxLongFrameMs > 100) problems.push('invalid_quality_' + tier)
   }
   for (let index = 1; index < quality.length; index += 1) {
     const lower = quality[index - 1]; const higher = quality[index]
-    if (!lower || !higher || lower.maxParticles > higher.maxParticles || lower.maxVoices > higher.maxVoices || lower.cameraImpulseScale > higher.cameraImpulseScale || (lower.shadows && !higher.shadows) || lower.postProcessing.some((entry: string) => !higher.postProcessing.includes(entry)) || lower.targetFps > higher.targetFps || higher.p95FrameMs > lower.p95FrameMs || higher.p99FrameMs > lower.p99FrameMs || higher.maxLongFrameMs > lower.maxLongFrameMs) problems.push('non_monotonic_quality')
+    if (!lower || !higher || !Array.isArray(lower.postProcessing) || !Array.isArray(higher.postProcessing) || lower.maxParticles > higher.maxParticles || lower.maxVoices > higher.maxVoices || lower.cameraImpulseScale > higher.cameraImpulseScale || (lower.shadows && !higher.shadows) || lower.postProcessing.some((entry: string) => !higher.postProcessing.includes(entry)) || lower.targetFps > higher.targetFps || higher.p95FrameMs > lower.p95FrameMs || higher.p99FrameMs > lower.p99FrameMs || higher.maxLongFrameMs > lower.maxLongFrameMs) problems.push('non_monotonic_quality')
   }
 
   const budgets = recipe.budgets
@@ -272,8 +273,10 @@ export function validatePolishRecipeDocument(value: unknown): string[] {
   if (!exact(recipe.authority, ['tickRateHz','events']) || recipe.authority?.tickRateHz !== 20 || !Array.isArray(recipe.authority?.events) || recipe.authority.events.length < 5 || recipe.authority.events.length > 20) problems.push('invalid_authority')
   const eventById = new Map<string, any>(); let previousTick = -1
   for (const event of Array.isArray(recipe.authority?.events) ? recipe.authority.events : []) {
-    if (!exact(event, ['eventId','tick','actorId','targetId','kind','outcome','contact']) || !id(event.eventId) || eventById.has(event.eventId) || !integer(event.tick, 0, 1_000_000) || event.tick <= previousTick || !id(event.actorId) || !id(event.targetId) || !['interact','strike'].includes(event.kind) || !['accepted','refused','cooldown','recovered'].includes(event.outcome) || typeof event.contact !== 'boolean' || (event.contact !== (event.outcome === 'accepted'))) problems.push('invalid_authority_event')
-    previousTick = event.tick; eventById.set(event.eventId, event)
+    if (!record(event)) { problems.push('invalid_authority_event'); continue }
+    if (!exact(event, ['eventId','tick','actorId','targetId','kind','outcome','contact']) || !id(event.eventId) || eventById.has(event.eventId) || !integer(event.tick, 0, 1_000_000) || (event.tick as number) <= previousTick || !id(event.actorId) || !id(event.targetId) || !['interact','strike'].includes(event.kind as string) || !['accepted','refused','cooldown','recovered'].includes(event.outcome as string) || typeof event.contact !== 'boolean' || (event.contact !== (event.outcome === 'accepted'))) problems.push('invalid_authority_event')
+    if (integer(event.tick, 0, 1_000_000)) previousTick = event.tick as number
+    if (id(event.eventId)) eventById.set(event.eventId, event)
   }
   for (const outcome of ['accepted','refused','cooldown','recovered']) if (![...eventById.values()].some((event) => event.outcome === outcome)) problems.push('missing_authority_' + outcome)
   for (const kind of ['interact','strike']) if (![...eventById.values()].some((event) => event.kind === kind)) problems.push('missing_authority_kind_' + kind)
@@ -282,9 +285,11 @@ export function validatePolishRecipeDocument(value: unknown): string[] {
   const feedback = (item: unknown): item is string => typeof item === 'string' && item.trim() === item && item.length >= 12 && item.length <= 160 && !/[\0-\x1f\x7f]/.test(item) && /^\S+(?: \S+)+$/.test(item)
   const stepSemantics: Record<string, RegExp> = { 'connect-local': /connect|identity/i, 'connect-scripted-remote': /scripted|automation/i, approach: /approach|distance|footstep/i, interact: /interact/i, strike: /strike|impact/i, 'remote-observe': /remote/i, refusal: /refus/i, cooldown: /cooldown/i, recovery: /recover|ready/i, reset: /reset|loop/i }
   const outcomeByStepKind: Record<string, string> = { interact: 'accepted', strike: 'accepted', 'remote-observe': 'accepted', refusal: 'refused', cooldown: 'cooldown', recovery: 'recovered' }
+  const captureMaxMs = integer(recipe.durationMs, 25_000, 35_000) ? recipe.durationMs - 1 : -1
   const stepKinds: string[] = []; let previousMs = -1; let strikeCapture: any = null
   for (const step of Array.isArray(recipe.capture?.steps) ? recipe.capture.steps : []) {
-    if (!exact(step, ['atMs','kind','actorId','targetId','actionId','expectedEventId','expectedOutcome','expectedContact','observerIds','visual','audio','hud']) || !integer(step.atMs, 0, recipe.durationMs - 1) || step.atMs <= previousMs || !['connect-local','connect-scripted-remote','approach','interact','strike','remote-observe','refusal','cooldown','recovery','reset'].includes(step.kind) || !id(step.actorId) || (step.targetId !== null && !id(step.targetId)) || (step.actionId !== null && (!id(step.actionId) || !actionIds.has(step.actionId))) || (step.expectedEventId !== null && !id(step.expectedEventId)) || (step.expectedOutcome !== null && !['accepted','refused','cooldown','recovered'].includes(step.expectedOutcome)) || (step.expectedContact !== null && typeof step.expectedContact !== 'boolean') || !Array.isArray(step.observerIds) || step.observerIds.some((entry: unknown) => !id(entry)) || new Set(step.observerIds).size !== step.observerIds.length || !feedback(step.visual) || !feedback(step.audio) || !feedback(step.hud)) problems.push('invalid_capture_step')
+    if (!record(step)) { problems.push('invalid_capture_step'); continue }
+    if (!exact(step, ['atMs','kind','actorId','targetId','actionId','expectedEventId','expectedOutcome','expectedContact','observerIds','visual','audio','hud']) || !integer(step.atMs, 0, captureMaxMs) || (step.atMs as number) <= previousMs || !['connect-local','connect-scripted-remote','approach','interact','strike','remote-observe','refusal','cooldown','recovery','reset'].includes(step.kind as string) || !id(step.actorId) || (step.targetId !== null && !id(step.targetId)) || (step.actionId !== null && (!id(step.actionId) || !actionIds.has(step.actionId))) || (step.expectedEventId !== null && !id(step.expectedEventId)) || (step.expectedOutcome !== null && !['accepted','refused','cooldown','recovered'].includes(step.expectedOutcome as string)) || (step.expectedContact !== null && typeof step.expectedContact !== 'boolean') || !Array.isArray(step.observerIds) || step.observerIds.some((entry: unknown) => !id(entry)) || new Set(step.observerIds).size !== step.observerIds.length || !feedback(step.visual) || !feedback(step.audio) || !feedback(step.hud)) problems.push('invalid_capture_step')
     const semantic = stepSemantics[step.kind]
     if (step.visual === step.audio || step.visual === step.hud || step.audio === step.hud || (semantic && ![step.visual, step.audio, step.hud].every((channel) => typeof channel === 'string' && semantic.test(channel)))) problems.push('weak_capture_feedback')
     const authority = step.expectedEventId === null ? undefined : eventById.get(step.expectedEventId)
@@ -294,10 +299,11 @@ export function validatePolishRecipeDocument(value: unknown): string[] {
     if (step.kind in outcomeByStepKind && (!action || !authority || authority.kind !== action.kind || step.expectedOutcome !== outcomeByStepKind[step.kind] || (['interact','strike'].includes(step.kind) && action.kind !== step.kind))) problems.push('capture_binding_mismatch')
     if (step.kind === 'strike') strikeCapture = step
     if (step.kind === 'remote-observe') {
-      if (!authority || authority.kind !== 'strike' || !step.observerIds.includes('scripted-remote')) problems.push('missing_remote_observation')
+      if (!authority || authority.kind !== 'strike' || !Array.isArray(step.observerIds) || !step.observerIds.includes('scripted-remote')) problems.push('missing_remote_observation')
       if (!strikeCapture || step.expectedEventId !== strikeCapture.expectedEventId || step.actionId !== strikeCapture.actionId || step.actorId !== strikeCapture.actorId || step.targetId !== strikeCapture.targetId || step.expectedOutcome !== strikeCapture.expectedOutcome || step.expectedContact !== strikeCapture.expectedContact) problems.push('remote_observation_mismatch')
     }
-    previousMs = step.atMs; stepKinds.push(step.kind)
+    if (integer(step.atMs, 0, captureMaxMs)) previousMs = step.atMs as number
+    if (typeof step.kind === 'string') stepKinds.push(step.kind)
   }
   const requiredSteps = ['connect-local','connect-scripted-remote','approach','interact','strike','remote-observe','refusal','cooldown','recovery','reset']
   let cursor = -1
@@ -307,15 +313,17 @@ export function validatePolishRecipeDocument(value: unknown): string[] {
 
 /** Exact V1 asset requirement validator, also embedded in the generated checker. */
 export function validatePolishAssetManifestDocument(value: unknown): string[] {
-  const record = (item: unknown): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item)
+  const record = (item: unknown): item is Record<string, any> => typeof item === 'object' && item !== null && !Array.isArray(item)
   const exact = (item: unknown, keys: readonly string[]) => record(item) && Object.keys(item).sort().join('|') === [...keys].sort().join('|')
   const id = (item: unknown): item is string => typeof item === 'string' && item.length <= 80 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item)
   if (!exact(value, ['version','recipeId','dimension','assets'])) return ['invalid_manifest_shape']
   const manifest = value as Record<string, any>; const problems: string[] = []; const ids = new Set<string>(); const roleCounts = new Map<string, number>()
   if (manifest.version !== 1 || manifest.recipeId !== 'first-encounter' || !['2d','3d'].includes(manifest.dimension) || !Array.isArray(manifest.assets) || manifest.assets.length < 1 || manifest.assets.length > 100) problems.push('invalid_manifest')
   for (const asset of Array.isArray(manifest.assets) ? manifest.assets : []) {
-    if (!exact(asset, ['id','role','kind','maxBytes']) || !id(asset.id) || ids.has(asset.id) || !['character','rig-or-atlas','target','environment','audio','effect'].includes(asset.role) || !['atlas','image','model','animation','audio'].includes(asset.kind) || !Number.isInteger(asset.maxBytes) || asset.maxBytes < 1 || asset.maxBytes > 12_582_912 || (asset.role === 'audio') !== (asset.kind === 'audio') || (manifest.dimension === '2d' && ['character','rig-or-atlas','target','environment'].includes(asset.role) && !['atlas','image'].includes(asset.kind)) || (manifest.dimension === '3d' && ['character','target','environment'].includes(asset.role) && asset.kind !== 'model') || (manifest.dimension === '3d' && asset.role === 'rig-or-atlas' && asset.kind !== 'animation')) problems.push('invalid_requirement')
-    ids.add(asset.id); if (typeof asset?.role === 'string') roleCounts.set(asset.role, (roleCounts.get(asset.role) ?? 0) + 1)
+    if (!record(asset)) { problems.push('invalid_requirement'); continue }
+    if (!exact(asset, ['id','role','kind','maxBytes']) || !id(asset.id) || ids.has(asset.id) || !['character','rig-or-atlas','target','environment','audio','effect'].includes(asset.role as string) || !['atlas','image','model','animation','audio'].includes(asset.kind as string) || !Number.isInteger(asset.maxBytes) || (asset.maxBytes as number) < 1 || (asset.maxBytes as number) > 12_582_912 || (asset.role === 'audio') !== (asset.kind === 'audio') || (manifest.dimension === '2d' && ['character','rig-or-atlas','target','environment'].includes(asset.role as string) && !['atlas','image'].includes(asset.kind as string)) || (manifest.dimension === '3d' && ['character','target','environment'].includes(asset.role as string) && asset.kind !== 'model') || (manifest.dimension === '3d' && asset.role === 'rig-or-atlas' && asset.kind !== 'animation')) problems.push('invalid_requirement')
+    if (id(asset.id)) ids.add(asset.id)
+    if (typeof asset.role === 'string') roleCounts.set(asset.role, (roleCounts.get(asset.role) ?? 0) + 1)
   }
   for (const role of ['character','rig-or-atlas','target']) if ((roleCounts.get(role) ?? 0) !== 1) problems.push(((roleCounts.get(role) ?? 0) > 1 ? 'duplicate_role_' : 'missing_role_') + role)
   for (const role of ['environment','effect','audio']) if (!(roleCounts.get(role) ?? 0)) problems.push('missing_role_' + role)
@@ -324,7 +332,7 @@ export function validatePolishAssetManifestDocument(value: unknown): string[] {
 
 /** Exact V1 provenance validator, also embedded in the generated checker. */
 export function validatePolishSourceManifestDocument(value: unknown): string[] {
-  const record = (item: unknown): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item)
+  const record = (item: unknown): item is Record<string, any> => typeof item === 'object' && item !== null && !Array.isArray(item)
   const exact = (item: unknown, keys: readonly string[]) => record(item) && Object.keys(item).sort().join('|') === [...keys].sort().join('|')
   const id = (item: unknown): item is string => typeof item === 'string' && item.length <= 80 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item)
   const hash = (item: unknown): item is string => typeof item === 'string' && /^[a-f0-9]{64}$/.test(item) && !/^0{64}$/.test(item)
@@ -339,6 +347,7 @@ export function validatePolishSourceManifestDocument(value: unknown): string[] {
   const sources = value as Record<string, any>; const problems: string[] = []; const ids = new Set<string>(); const paths = new Set<string>(['kei-mmo/content/third_party_assets.md'])
   if (sources.version !== 1 || !exact(sources.credits, ['path','sha256','bytes']) || sources.credits?.path !== 'kei-mmo/content/THIRD_PARTY_ASSETS.md' || !hash(sources.credits?.sha256) || !Number.isInteger(sources.credits?.bytes) || sources.credits.bytes < 1 || sources.credits.bytes > 262_144 || !Array.isArray(sources.assets) || sources.assets.length > 100) problems.push('invalid_sources')
   for (const source of Array.isArray(sources.assets) ? sources.assets : []) {
+    if (!record(source)) { problems.push('invalid_source'); continue }
     const canonical = url(source?.canonicalUrl); const licenceUrl = url(source?.licence?.referenceUrl)
     const catalog = polishSourceCatalogRecord(source?.id, source?.sourceFile?.sha256)
     if (!exact(source, ['id','canonicalUrl','provider','providerAssetVersion','acquisitionMode','acquiredAt','sourceFile','licence','attribution','rawRedistribution','processedOutputs']) || !id(source.id) || ids.has(source.id) || !canonical || !['kenney','quaternius','poly-haven'].includes(source.provider) || typeof source.providerAssetVersion !== 'string' || source.providerAssetVersion.trim() !== source.providerAssetVersion || source.providerAssetVersion.length < 1 || source.providerAssetVersion.length > 120 || /^(?:latest|current)$/i.test(source.providerAssetVersion) || !['download','api'].includes(source.acquisitionMode) || !utc(source.acquiredAt) || !exact(source.sourceFile, ['path','sha256','bytes','packaged']) || !portablePath(source.sourceFile?.path) || !source.sourceFile.path.startsWith('kei-mmo/content/source-bytes/') || !hash(source.sourceFile?.sha256) || !Number.isInteger(source.sourceFile?.bytes) || source.sourceFile.bytes < 1 || source.sourceFile.bytes > 16_777_216 || source.sourceFile?.packaged !== true || !exact(source.licence, ['id','referenceUrl','filePath','sha256','bytes']) || source.licence?.id !== 'CC0-1.0' || !licenceUrl || !portablePath(source.licence?.filePath) || !source.licence.filePath.startsWith('kei-mmo/content/licenses/') || !hash(source.licence?.sha256) || !Number.isInteger(source.licence?.bytes) || source.licence.bytes < 1 || source.licence.bytes > 262_144 || typeof source.attribution !== 'string' || source.attribution.trim() !== source.attribution || source.attribution.length < 1 || source.attribution.length > 500 || source.rawRedistribution !== 'allowed' || !Array.isArray(source.processedOutputs) || source.processedOutputs.length < 1 || source.processedOutputs.length > 20) problems.push('invalid_source')
@@ -353,7 +362,7 @@ export function validatePolishSourceManifestDocument(value: unknown): string[] {
       paths.add(key)
     }
     for (const output of Array.isArray(source.processedOutputs) ? source.processedOutputs : []) if (!exact(output, ['path','sha256','bytes']) || !portablePath(output.path) || !output.path.startsWith('assets/polish/') || !hash(output.sha256) || !Number.isInteger(output.bytes) || output.bytes < 1 || output.bytes > 12_582_912) problems.push('invalid_output')
-    ids.add(source.id)
+    if (id(source.id)) ids.add(source.id)
   }
   return [...new Set(problems)]
 }
@@ -549,7 +558,7 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     const accessors = gltf.accessors
     for (const accessor of accessors) {
       const accessorOffset = accessor?.byteOffset ?? 0; const componentSize = componentBytes[accessor?.componentType]; const components = typeComponents[accessor?.type]
-      if (!record(accessor) || 'sparse' in accessor || !integer(accessor.bufferView, 0, bufferViews.length - 1) || !componentSize || !components || !integer(accessor.count, 1, 16_777_216) || !integer(accessorOffset, 0, binLength) || accessorOffset % componentSize !== 0 || (accessor.normalized !== undefined && typeof accessor.normalized !== 'boolean')) return ['media_glb_malformed']
+      if (!record(accessor) || 'sparse' in accessor || !integer(accessor.bufferView, 0, bufferViews.length - 1) || !componentSize || !components || !integer(accessor.count, 1, 16_777_216) || !integer(accessorOffset, 0, binLength) || accessorOffset % componentSize !== 0 || (accessor.normalized !== undefined && typeof accessor.normalized !== 'boolean') || (accessor.normalized === true && ![5120,5121,5122,5123].includes(accessor.componentType))) return ['media_glb_malformed']
       const bufferView = bufferViews[accessor.bufferView]; const elementBytes = componentSize * components; const stride = bufferView.byteStride ?? elementBytes
       if (((bufferView.byteOffset ?? 0) + accessorOffset) % componentSize !== 0 || stride < elementBytes || accessorOffset + (accessor.count - 1) * stride + elementBytes > bufferView.byteLength) return ['media_glb_malformed']
     }
