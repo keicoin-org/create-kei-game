@@ -79,7 +79,8 @@ export type DecodeResult =
   | { readonly ok: false; readonly code: RefusalCode }
 
 const AUTHORITY_KEYS = new Set([
-  'position', 'x', 'y', 'z', 'tick', 'players', 'balance', 'inventory', 'playerId', 'state',
+  'position', 'x', 'y', 'z', 'tick', 'players', 'balance', 'inventory', 'currency',
+  'item', 'mint', 'transfer', 'settlement', 'settlementResult', 'playerId', 'state',
 ])
 const REFUSAL_CODES = new Set<RefusalCode>([
   'protocol_mismatch', 'invalid_message', 'authority_violation',

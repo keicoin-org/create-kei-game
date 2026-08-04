@@ -237,7 +237,7 @@ const ASSUMPTIONS: Readonly<Record<string, string>> = Object.freeze({
   network:
     'Session goals were not stated. Planned for one authoritative server per shard at a fixed tick, client prediction with server reconciliation, and interest management by grid cell.',
   economy:
-    'Economy goals were not stated. Planned for a single Kei currency with server-side settlement and the ledger boundary in place, so adding a second currency later is a row rather than a refactor.',
+    'Economy goals were not stated. Planned for one open-transfer Kei currency, one player-custodied item, and exact player-signed atomic trade, with issuer provisioning separate from the game server.',
 })
 
 function assumptionsFor(intent: MmoIntent): readonly string[] {
@@ -254,8 +254,8 @@ function constraintsFor(dimension: EngineDimension): readonly PlanConstraint[] {
   const shared: PlanConstraint[] = [
     {
       id: 'server-authority',
-      statement: 'The server owns movement, combat, loot, and every economic action. A client sends intent and never a result.',
-      because: 'A client that can author one result can author any result, and an MMO economy is the thing people attack first.',
+      statement: 'The server owns movement and gameplay outcomes and accepts no client-authored economic state. Kei consensus owns balances, items, and trades; each wallet signs only its own action.',
+      because: 'A forged socket result must not become world state, while making the game server an economic custodian would defeat Kei’s ownership boundary.',
     },
     {
       id: 'deterministic-simulation',
@@ -289,8 +289,8 @@ function constraintsFor(dimension: EngineDimension): readonly PlanConstraint[] {
     },
     {
       id: 'integer-money',
-      statement: 'Economic amounts are integers in the smallest unit, held as bigint.',
-      because: 'Floating-point money creates and destroys value at the decimal, and an MMO will find it.',
+      statement: 'Economic amounts are integer raw strings at the Kei write boundary and never round-trip through display floats.',
+      because: 'Raw decimal strings preserve exact units across the published SDK and chain even beyond JavaScript’s safe integer range.',
     },
   ]
 
@@ -334,9 +334,9 @@ function acceptanceFor(dimension: EngineDimension): readonly AcceptanceCriterion
       check: 'Stop the server, start it again, and log back in.',
     },
     {
-      id: 'supply-balances',
-      statement: 'Minted minus burned equals the sum of every balance.',
-      check: 'The ledger invariant test, over randomized operations.',
+      id: 'player-custodied-trade',
+      statement: 'One player-owned item trades for player-owned GOLD atomically, and the game server holds neither leg.',
+      check: 'bun run economy:check in a fresh generated project; inspect exact raw pre-refusal and final chain balances.',
     },
     {
       id: 'offline-tests',
@@ -504,7 +504,7 @@ function stepTemplates(dimension: EngineDimension): readonly StepTemplate[] {
     {
       id: 'economy',
       title: 'Kei economy',
-      outcome: 'The ledger boundary exists, trades settle in two phases, and supply can be proved.',
+      outcome: 'Players custody their own currency and items, and exact reserved offers settle both legs atomically on Kei.',
       capabilities: ['economy-kei'],
     },
     {
@@ -529,7 +529,7 @@ function stepTemplates(dimension: EngineDimension): readonly StepTemplate[] {
     {
       id: 'harden-and-ship',
       title: 'Harden and ship',
-      outcome: 'Authority and ledger tests, budgets asserted, a clean build, and a shard that shuts down without losing a transaction.',
+      outcome: 'Authority and mock-chain custody tests, budgets asserted, a clean build, and bounded shard shutdown.',
       capabilities: ['testing', 'deployment'],
     },
   ]

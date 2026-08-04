@@ -98,10 +98,14 @@ describe('the capability catalog', () => {
     expect(capabilityById('content-3d-voice-acting')?.status).toBe('absent')
   })
 
-  test('the economy packet is honest about there being no bundled SDK', () => {
+  test('the economy packet names the published player-custodied API', () => {
     const packet = capabilityById('economy-kei')!
-    expect(packet.tools.join(' ')).toContain('bundles no Kei SDK')
-    expect(packet.methods.map((method) => method.call).join(' ')).toContain('idempotencyKey')
+    expect(packet.tools.join(' ')).toContain('kei-transaction@0.6.0')
+    const calls = packet.methods.map((method) => method.call).join(' ')
+    expect(calls).toContain('Kei.mock()')
+    expect(calls).toContain('market.offer')
+    expect(calls).toContain('market.accept')
+    expect(calls).not.toContain('openEscrow')
   })
 })
 

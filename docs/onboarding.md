@@ -132,24 +132,41 @@ salvage-run/
 ├── package.json
 ├── scripts/build.mjs
 ├── static/index.html
+├── test/economy.test.ts
 ├── tsconfig.json
 └── src/
+    ├── client/connection.ts
+    ├── client/headless.ts
     ├── client/main.ts
+    ├── economy/definitions.ts
+    ├── economy/player-trade.ts
+    ├── economy/provision.ts
     ├── server/dev-server.mjs
     ├── server/main.ts
+    ├── shared/protocol.ts
     └── shared/simulation.ts
 ```
 
 `src/shared/` is imported by both sides, which is the one architectural opinion
 the scaffold holds: the simulation belongs to neither the client nor the server.
-Run `bun install`, `bun run build`, then `PORT=0 bun run dev`; the loopback game
-and static server reports its actual HTTP and WebSocket URLs in one JSON readiness line. The 3D client is a
-minimal project-owned Babylon.js construction scene. The 2D client is a Canvas
+Run `bun install`, `bun run build`, `bun run economy:check`, then
+`PORT=0 bun run dev`; the loopback game and static server reports its actual HTTP
+and WebSocket URLs in one JSON readiness line. The 3D client is a minimal
+project-owned Babylon.js construction scene. The 2D client is a Canvas
 construction frame, not a tile or sprite renderer. Both paths use the same
 project-owned connection module, render server-assigned players, and ship a
-two-client headless movement check. Neither implements restart persistence, Kei
-trade, client prediction/reconciliation, interest management, or presentation
-polish yet, and neither imports the harness at runtime.
+two-client headless movement check.
+
+Both also install the published `kei-transaction@0.6.0` package and own the same
+private `Kei.mock()` proof: separate issuer provisioning mints open-transfer,
+one-way-purchase GOLD and an item directly to player wallets; a seller reserves
+an exact offer to the buyer; an expectation mismatch moves nothing; the correct
+buyer acceptance settles both legs atomically. Open transfer permits that player
+trade; one-way is the separate issuer-desk promise that GOLD may be bought but
+not redeemed. `src/server/**` imports no Kei code and holds no wallet. Neither
+path implements restart persistence, socket-to-wallet proof of control, client
+prediction/reconciliation, interest management, or presentation polish yet,
+and neither imports the harness at runtime.
 
 Use `--force` only when those files may be overwritten in a nonempty directory.
 Other files are left in place and nothing is deleted.

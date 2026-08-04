@@ -7,6 +7,7 @@
         "@babylonjs/core": "^9.19.0",
         "@types/bun": "^1.3.14",
         "@types/node": "^22.10.0",
+        "kei-transaction": "0.6.0",
         "typescript": "^5.9.0",
         "ws": "^8.18.3",
       },
@@ -15,11 +16,33 @@
   "packages": {
     "@babylonjs/core": ["@babylonjs/core@9.19.0", "", {}, "sha512-8bQfSnXnFVEUolPBl5Y3S1WDmQKpPKfguOQvGdCxjTIHlLku8Crc0DdvlFbmqeGpS/bQ3NzwtApB84GScm9v8w=="],
 
+    "@bananocoin/bananojs": ["@bananocoin/bananojs@2.10.10", "", { "dependencies": { "package": "^1.0.1" } }, "sha512-ST6BvZAP2S5Ppwb2o0VfOsIvSKWN/MM9oUgVhHd+7ONoFxvkO2TY+7nHWxuGDksrV/vbbuq055InIK2adNRV9w=="],
+
+    "@keicoin/claims": ["@keicoin/claims@0.5.0", "", { "dependencies": { "@keicoin/core": "^0.4.0" } }, "sha512-ZzcItjm30nTPwkNHD5Aak3Be5yxVuvSyUiSLeZPmoorPizA2wB/0woHTyTmdpRXX4WwS7wxpP/TCRIeV+aqbXw=="],
+
+    "@keicoin/core": ["@keicoin/core@0.4.0", "", { "dependencies": { "@bananocoin/bananojs": "^2.10.10" } }, "sha512-oIal7kNceWFon6BvMyGisSCeP/O0/7vTaO4E3HF32DGHqvNXGYW5jhrmmVsPoQ1JDtloEY+w5bKLlet1YD6lEg=="],
+
+    "@keicoin/economy": ["@keicoin/economy@0.2.0", "", { "dependencies": { "@keicoin/claims": "^0.5.0", "@keicoin/core": "^0.4.0", "@keicoin/market": "^0.2.0" } }, "sha512-tDGCzlGiJmEQgtSVkx5o3aP7qt0oF2VeovdBpR1F72Slc+VoiWQ/90qc6AeX4b5dray04mMWUYni6U80pIq11g=="],
+
+    "@keicoin/market": ["@keicoin/market@0.2.0", "", { "dependencies": { "@keicoin/core": "^0.4.0" } }, "sha512-2HylQErPL3qNH7RDD5uUi8QQRQzmY36tlLaxsHT8Qes6mHkCniaKSbydxL1/Zr4p/EpXqH1Hoyd099e5W5Euhw=="],
+
+    "@keicoin/player-economy": ["@keicoin/player-economy@0.1.0", "", { "dependencies": { "@keicoin/core": "^0.4.0", "@keicoin/market": "^0.2.0" } }, "sha512-rUdOTM2N1ixXjcNAKJ2loMlhGTka/2y2avuC2h44x57MqEgzgVRrjbuOwSeufiBeRkAuFlZEn7PxcWk8zzw6pg=="],
+
+    "@keicoin/tokens": ["@keicoin/tokens@0.5.1", "", { "dependencies": { "@keicoin/claims": "^0.5.0", "@keicoin/core": "^0.4.0" } }, "sha512-0jM2Sb1xJ3fqDRW1DSSzysFyP34hfp+ea2U50Fq8LDvz8D+Xgmir+SWqL0XjAOGG2XDe5kxSlWAw0kqMkvyFMg=="],
+
+    "@keicoin/wallet": ["@keicoin/wallet@0.4.2", "", { "dependencies": { "@keicoin/claims": "^0.5.0", "@keicoin/core": "^0.4.0", "@keicoin/tokens": "^0.5.1" } }, "sha512-hOvQ8vzqn5SGmeQNpF2J8xTcLFFipuT3ODS2eL6RH+IDAHa2a5g+B/ypsJUouEEaIYkqLPW5LY6n5yyliSRR4A=="],
+
+    "@keicoin/work": ["@keicoin/work@0.4.0", "", { "dependencies": { "@keicoin/core": "^0.4.0" }, "bin": { "kei-work-server": "dist/cli.js" } }, "sha512-/WwN9WUj6nemLnMbLiVvknWIdItU6jOxFyPu2vxMOKxc6dax73v2CvoBD1oF3S0K7fzWFqUqSn+ys+URHj/Khw=="],
+
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
     "@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
 
     "bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
+
+    "kei-transaction": ["kei-transaction@0.6.0", "", { "dependencies": { "@keicoin/claims": "^0.5.0", "@keicoin/core": "^0.4.0", "@keicoin/economy": "^0.2.0", "@keicoin/market": "^0.2.0", "@keicoin/player-economy": "^0.1.0", "@keicoin/tokens": "^0.5.1", "@keicoin/wallet": "^0.4.2", "@keicoin/work": "^0.4.0" } }, "sha512-ejnxawj941IXJFhGFE+v0rPbYGVLdTRpDWNdodfVm/oy265Sbbkr5RtBD987CVdSK0B3+bt5ZaZKsyoAd+VxQQ=="],
+
+    "package": ["package@1.0.1", "", {}, "sha512-g6xZR6CO7okjie83sIRJodgGvaXqymfE5GLhN8N2TmZGShmHc/V23hO/vWbdnuy3D81As3pfovw72gGi42l9qA=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

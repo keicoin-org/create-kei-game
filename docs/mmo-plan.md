@@ -115,14 +115,14 @@ Every plan carries these, and a 2D or 3D plan adds one more:
 
 | ID | Statement |
 |---|---|
-| `server-authority` | The server owns movement, combat, loot, and every economic action |
+| `server-authority` | The server owns gameplay outcomes and accepts no economic state; Kei and each signing wallet own value |
 | `deterministic-simulation` | One pure fixed-step `step()` shared by client and server |
 | `no-credentials-in-project` | No key, seed, endpoint secret, or token in a project file |
 | `workspace-only` | Every file written stays inside the workspace |
 | `bounded-files` | No single write over 64 KiB; split the module |
 | `no-harness-runtime-dependency` | The finished game does not import this harness |
 | `assets-by-reference` | Binary assets come from a manifest, never inlined base64 |
-| `integer-money` | Economic amounts are `bigint` in the smallest unit |
+| `integer-money` | Economic writes use exact raw decimal strings and never round-trip through display floats |
 | `draw-call-budget` (3D) | Draw calls and skinned-mesh counts carry a budget checked in a test |
 | `atlas-and-culling` (2D) | One atlas, and the draw loop culled to the visible rectangle |
 
@@ -152,18 +152,34 @@ and the per-socket token bucket. Prediction/reconciliation, delta compression,
 interest management, persistence and a deployment-specific room owner remain
 separate work; the available packet does not promise them.
 
-### The economy packet is honest about what it is
+### The economy packet is the published player-custodied API
 
-This harness bundles no Kei SDK, and the packet says so in its own tools list.
-What it gives instead are the function signatures the project must define —
-`credit`, `debit`, `transfer`, `openEscrow`/`settleTrade`, `mintItem`,
-`bindItem`, `supplyReport` — each with the invariant behind it: idempotency keys
-because a reconnecting client retries, two-phase trades because a disconnect
-between the halves would otherwise duplicate items, `bigint` because
-floating-point money creates and destroys value at the decimal.
+Blank projects install the exact supported `kei-transaction@0.6.0` release and
+own a runnable `Kei.mock()` proof. A separate provisioner receives an injected
+issuer context, issues GOLD with `transfer: 'open'` and `swap: 'one-way'`,
+creates a Founder's Sword, and mints both assets directly to their player
+custodians. Open transfer is what permits the player-to-player trade; one-way is
+the distinct issuer-desk promise that players may buy GOLD from its issuer but
+cannot redeem it there. The issuer retains neither trade asset after setup, and
+no seed value is emitted outside a clearly labelled public mock-only test
+fixture.
 
-Inventing an SDK that does not exist is the exact failure this catalog is shaped
-to avoid.
+The seller calls `market.offer()` from their own `Kei.start()` context, reserving
+the item-for-GOLD offer to the buyer and passing it directly rather than
+inventing a global order book. The buyer calls `market.accept(offer, { expect })`
+with the exact hash, seller, both asset ids, both integer amounts, and the
+reservation address. A deliberately mismatched expectation is refused before a
+signature and leaves both raw chain balances and the open offer unchanged; the
+accepted path settles both legs in one block.
+
+That is the boundary the packet now describes: consensus owns currency, item
+ownership, the seller's lock, and atomic settlement; each player signs only for
+their own account; issuance belongs to provisioning. There is no local balance
+table, two-phase server escrow, or game-server custody. Generated `src/server/**`
+does not import Kei or read an issuer credential, and the WebSocket protocol
+refuses attempts to author balance, inventory, mint, transfer, or settlement
+state. `bun run economy:check` exercises the same proof in fresh 2D and 3D
+scaffolds.
 
 ## Reading it from code
 
