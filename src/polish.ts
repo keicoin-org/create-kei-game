@@ -579,6 +579,15 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
       const stride = bufferView.byteStride ?? componentSize; const start = binOffset + 8 + (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0)
       return { count: accessor.count, value: (element: number) => { const at = start + element * stride; return accessor.componentType === 5121 ? view.getUint8(at) : accessor.componentType === 5123 ? view.getUint16(at, true) : view.getUint32(at, true) } }
     }
+    const accessorComponent = (index: number, element: number, component: number): number | null => {
+      const accessor = accessors[index]; const bufferView = accessor && bufferViews[accessor.bufferView]; const components = accessor && typeComponents[accessor.type]; const componentSize = accessor && componentBytes[accessor.componentType]
+      if (!accessor || !bufferView || !components || !componentSize || !integer(element, 0, accessor.count - 1) || !integer(component, 0, components - 1)) return null
+      const stride = bufferView.byteStride ?? components * componentSize; const at = binOffset + 8 + (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0) + element * stride + component * componentSize
+      if (accessor.componentType === 5121) return view.getUint8(at)
+      if (accessor.componentType === 5123) return view.getUint16(at, true)
+      if (accessor.componentType === 5126) { const value = view.getFloat32(at, true); return Number.isFinite(value) ? value : null }
+      return null
+    }
     if (kind === 'model') {
       if (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || !gltf.meshes.every((mesh: any) => Array.isArray(mesh?.primitives) && mesh.primitives.length > 0 && mesh.primitives.every((primitive: any) => record(primitive) && record(primitive.attributes) && validAccessor(primitive.attributes.POSITION) && accessors[primitive.attributes.POSITION]?.type === 'VEC3' && accessors[primitive.attributes.POSITION]?.componentType === 5126 && (primitive.indices === undefined || (validAccessor(primitive.indices) && accessors[primitive.indices]?.type === 'SCALAR' && [5121,5123,5125].includes(accessors[primitive.indices]?.componentType) && accessors[primitive.indices]?.normalized !== true))))) return ['media_glb_missing_mesh']
       const reachableMeshes = new Set<number>(); for (const nodeIndex of reachableNodes) { const mesh = gltf.nodes[nodeIndex].mesh; if (integer(mesh, 0, gltf.meshes.length - 1)) reachableMeshes.add(mesh) }
@@ -617,7 +626,21 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
         return output?.type === expectedType && output?.componentType === 5126 && output.count === input.count * multiplier
       }))) return ['media_glb_missing_animation']
       if (!Array.isArray(gltf.skins) || gltf.skins.length < 1 || gltf.skins.some((skin: any) => !record(skin) || !Array.isArray(skin.joints) || skin.joints.length < 2 || new Set(skin.joints).size !== skin.joints.length || skin.joints.some((joint: unknown) => !integer(joint, 0, gltf.nodes.length - 1)))) return ['media_glb_animation_rig_missing']
-      const usedSkins = new Set<number>(); for (const nodeIndex of reachableNodes) { const node = gltf.nodes[nodeIndex]; if (node.skin !== undefined) { if (!integer(node.skin, 0, gltf.skins.length - 1) || !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)) return ['media_glb_animation_rig_missing']; usedSkins.add(node.skin) } }
+      const usedSkins = new Set<number>(); const influencedJoints = new Set<number>(); for (const nodeIndex of reachableNodes) { const node = gltf.nodes[nodeIndex]; if (node.skin !== undefined) {
+        if (!integer(node.skin, 0, gltf.skins.length - 1) || !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)) return ['media_glb_animation_rig_missing']
+        const skin = gltf.skins[node.skin]; const mesh = gltf.meshes[node.mesh]
+        for (const primitive of mesh.primitives) {
+          const positions = primitive.attributes.POSITION; const joints = primitive.attributes.JOINTS_0; const weights = primitive.attributes.WEIGHTS_0
+          if (!validAccessor(positions) || !validAccessor(joints) || !validAccessor(weights)) return ['media_glb_animation_rig_missing']
+          const positionAccessor = accessors[positions]; const jointAccessor = accessors[joints]; const weightAccessor = accessors[weights]
+          if (positionAccessor.type !== 'VEC3' || positionAccessor.componentType !== 5126 || positionAccessor.normalized === true || jointAccessor.type !== 'VEC4' || ![5121,5123].includes(jointAccessor.componentType) || jointAccessor.normalized === true || weightAccessor.type !== 'VEC4' || ![5121,5123,5126].includes(weightAccessor.componentType) || (weightAccessor.componentType === 5126 ? weightAccessor.normalized === true : weightAccessor.normalized !== true) || jointAccessor.count !== positionAccessor.count || weightAccessor.count !== positionAccessor.count) return ['media_glb_animation_rig_missing']
+          for (let vertex = 0; vertex < positionAccessor.count; vertex += 1) { let influence = 0
+            for (let component = 0; component < 4; component += 1) { const joint = accessorComponent(joints, vertex, component); const rawWeight = accessorComponent(weights, vertex, component); if (joint === null || rawWeight === null || !integer(joint, 0, skin.joints.length - 1)) return ['media_glb_animation_rig_missing']; const weight = weightAccessor.componentType === 5121 ? rawWeight / 255 : weightAccessor.componentType === 5123 ? rawWeight / 65_535 : rawWeight; if (weight < 0 || weight > 1) return ['media_glb_animation_rig_missing']; if (weight > 0) influencedJoints.add(skin.joints[joint]); influence += weight }
+            if (influence <= 1e-8) return ['media_glb_animation_rig_missing']
+          }
+        }
+        usedSkins.add(node.skin)
+      } }
       const usedJoints = new Set<number>(); for (const skinIndex of usedSkins) for (const joint of gltf.skins[skinIndex].joints) usedJoints.add(joint)
       if (!usedSkins.size || usedJoints.size < 2) return ['media_glb_animation_rig_missing']
       let observableRigMotion = false
@@ -627,7 +650,7 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
         const components = typeComponents[accessors[sampler.output].type] as number; const multiplier = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1; const first = sampler.interpolation === 'CUBICSPLINE' ? components : 0; const last = (times.length - 1) * components * multiplier + first; let moves = false
         for (let component = 0; component < components; component += 1) if (Math.abs((values[last + component] as number) - (values[first + component] as number)) > 1e-5) moves = true
         samplerMoves.push(moves)
-      } for (const channel of animation.channels) if (usedJoints.has(channel.target.node) && samplerMoves[channel.sampler]) observableRigMotion = true }
+      } for (const channel of animation.channels) if (influencedJoints.has(channel.target.node) && samplerMoves[channel.sampler]) observableRigMotion = true }
       if (!observableRigMotion) return ['media_glb_animation_no_motion']
     }
     return []

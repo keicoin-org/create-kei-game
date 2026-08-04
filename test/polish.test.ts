@@ -21,7 +21,7 @@ import {
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, cyclicSceneGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, indexedQuadGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, paddedTriangleGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uniformFilteredPng, uniformPalettePng, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng } from './media.js'
+import { CC0_TEXT, cyclicSceneGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, indexedQuadGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, paddedTriangleGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -139,6 +139,9 @@ describe('admitted media and licence byte semantics', () => {
     expect(validatePolishMediaBytes('animation', tinyGlb('animation'))).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', dummySkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', unusedSkinJointAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', missingSkinAttributesAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', zeroWeightSkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', uninfluencedJointAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
     expect(validatePolishMediaBytes('animation', unrelatedUsedSkinAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
     expect(validatePolishMediaBytes('animation', duplicateJointSkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('audio', tinyOgg())).toEqual(['media_ogg_placeholder'])

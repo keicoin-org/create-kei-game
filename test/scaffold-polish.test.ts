@@ -14,7 +14,7 @@ import {
   polishProjectFiles,
 } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { catalogLicenceBytes, catalogSourceBytes, cyclicSceneGlb, dummySkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, paddedTriangleGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, unusedFourthPositionGlb } from './media.js'
+import { catalogLicenceBytes, catalogSourceBytes, cyclicSceneGlb, dummySkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, paddedTriangleGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, unusedFourthPositionGlb } from './media.js'
 import { runProcess } from './process.js'
 
 const temporary: string[] = []
@@ -155,6 +155,16 @@ describe('generated project-owned polish checker', () => {
     const result = await check(current.root)
     expect(result.status).toBe(1)
     expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-character', code: 'media_png_malformed' }))
+  })
+
+  test('generated 3d checker refuses a skin attached to primitives without joint influences', async () => {
+    const current = fixture('3d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'hero-motion').processedOutputs[0]
+    const bytes = missingSkinAttributesAnimationGlb(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-motion', code: 'media_glb_animation_rig_missing' }))
   })
 
   test.each([

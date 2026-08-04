@@ -398,23 +398,26 @@ export function cyclicSceneGlb(twoNodes = false): Buffer {
 
 /** Observable joint motion on a skin attached to a scene-referenced mesh node. */
 export function riggedAnimationGlb(): Buffer {
-  const bin = Buffer.alloc(68); bin.writeFloatLE(1, 12); bin.writeFloatLE(1, 28); bin.writeFloatLE(1, 40); bin.writeFloatLE(0, 36); bin.writeFloatLE(1, 40)
+  const bin = Buffer.alloc(128); bin.writeFloatLE(1, 12); bin.writeFloatLE(1, 28); bin.writeFloatLE(1, 40); bin.writeFloatLE(0, 36); bin.writeFloatLE(1, 40)
   ;[0,0,0, 1,0,0].forEach((value, index) => bin.writeFloatLE(value, 44 + index * 4))
+  for (let vertex = 0; vertex < 3; vertex += 1) { bin[68 + vertex * 4] = 0; bin.writeFloatLE(1, 80 + vertex * 16) }
   return packedGlb({
-    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }, { buffer: 0, byteOffset: 36, byteLength: 8 }, { buffer: 0, byteOffset: 44, byteLength: 24 }],
-    accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }, { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' }, { bufferView: 2, componentType: 5126, count: 2, type: 'VEC3' }],
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], nodes: [{ mesh: 0, skin: 0, children: [1, 2] }, {}, {}], skins: [{ joints: [1, 2] }],
+    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }, { buffer: 0, byteOffset: 36, byteLength: 8 }, { buffer: 0, byteOffset: 44, byteLength: 24 }, { buffer: 0, byteOffset: 68, byteLength: 12 }, { buffer: 0, byteOffset: 80, byteLength: 48 }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }, { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' }, { bufferView: 2, componentType: 5126, count: 2, type: 'VEC3' }, { bufferView: 3, componentType: 5121, count: 3, type: 'VEC4' }, { bufferView: 4, componentType: 5126, count: 3, type: 'VEC4' }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, JOINTS_0: 3, WEIGHTS_0: 4 } }] }], nodes: [{ mesh: 0, skin: 0, children: [1, 2] }, {}, {}], skins: [{ joints: [1, 2] }],
     animations: [{ samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }], channels: [{ sampler: 0, target: { node: 1, path: 'translation' } }] }], scenes: [{ nodes: [0] }], scene: 0,
   }, bin)
 }
 
-function jointBindingAnimationGlb(options: { readonly attachSkin: boolean; readonly joints: readonly number[]; readonly target: number }): Buffer {
-  const bin = Buffer.alloc(68); bin.writeFloatLE(1, 12); bin.writeFloatLE(1, 28); bin.writeFloatLE(0, 36); bin.writeFloatLE(1, 40)
+function jointBindingAnimationGlb(options: { readonly attachSkin: boolean; readonly joints: readonly number[]; readonly target: number; readonly skinAttributes?: boolean; readonly zeroWeights?: boolean }): Buffer {
+  const skinAttributes = options.skinAttributes !== false
+  const bin = Buffer.alloc(skinAttributes ? 128 : 68); bin.writeFloatLE(1, 12); bin.writeFloatLE(1, 28); bin.writeFloatLE(0, 36); bin.writeFloatLE(1, 40)
   ;[0,0,0, 1,0,0].forEach((value, index) => bin.writeFloatLE(value, 44 + index * 4))
+  if (skinAttributes) for (let vertex = 0; vertex < 3; vertex += 1) { bin[68 + vertex * 4] = 0; if (!options.zeroWeights) bin.writeFloatLE(1, 80 + vertex * 16) }
   return packedGlb({
-    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }, { buffer: 0, byteOffset: 36, byteLength: 8 }, { buffer: 0, byteOffset: 44, byteLength: 24 }],
-    accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }, { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' }, { bufferView: 2, componentType: 5126, count: 2, type: 'VEC3' }],
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], nodes: [{ mesh: 0, ...(options.attachSkin ? { skin: 0 } : {}), children: [1,2,3] }, {}, {}, {}], skins: [{ joints: [...options.joints] }],
+    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }, { buffer: 0, byteOffset: 36, byteLength: 8 }, { buffer: 0, byteOffset: 44, byteLength: 24 }, ...(skinAttributes ? [{ buffer: 0, byteOffset: 68, byteLength: 12 }, { buffer: 0, byteOffset: 80, byteLength: 48 }] : [])],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }, { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' }, { bufferView: 2, componentType: 5126, count: 2, type: 'VEC3' }, ...(skinAttributes ? [{ bufferView: 3, componentType: 5121, count: 3, type: 'VEC4' }, { bufferView: 4, componentType: 5126, count: 3, type: 'VEC4' }] : [])],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, ...(skinAttributes ? { JOINTS_0: 3, WEIGHTS_0: 4 } : {}) } }] }], nodes: [{ mesh: 0, ...(options.attachSkin ? { skin: 0 } : {}), children: [1,2,3] }, {}, {}, {}], skins: [{ joints: [...options.joints] }],
     animations: [{ samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }], channels: [{ sampler: 0, target: { node: options.target, path: 'translation' } }] }], scenes: [{ nodes: [0] }], scene: 0,
   }, bin)
 }
@@ -432,6 +435,21 @@ export function unrelatedUsedSkinAnimationGlb(): Buffer {
 /** Repeating one node does not create the required two-joint rig. */
 export function duplicateJointSkinAnimationGlb(): Buffer {
   return jointBindingAnimationGlb({ attachSkin: true, joints: [1,1], target: 1 })
+}
+
+/** A skin index on a mesh does not count when its primitives have no influences. */
+export function missingSkinAttributesAnimationGlb(): Buffer {
+  return jointBindingAnimationGlb({ attachSkin: true, joints: [1,2], target: 1, skinAttributes: false })
+}
+
+/** Four zero weights per vertex cannot make an attached skin affect rendered bytes. */
+export function zeroWeightSkinAnimationGlb(): Buffer {
+  return jointBindingAnimationGlb({ attachSkin: true, joints: [1,2], target: 1, zeroWeights: true })
+}
+
+/** Motion on an unweighted joint is not observable skinned-vertex motion. */
+export function uninfluencedJointAnimationGlb(): Buffer {
+  return jointBindingAnimationGlb({ attachSkin: true, joints: [1,2], target: 2 })
 }
 
 /** A container-valid GLB whose mesh points at a nonexistent accessor. */
