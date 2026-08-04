@@ -696,6 +696,62 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     ],
   },
   {
+    id: 'polish-2d',
+    domain: 'content',
+    title: 'Recordable 2D first encounter',
+    summary:
+      'A versioned semantic encounter and strict source-admission contract exists, while the admitted atlas, audio, runtime presentation, and capture evidence remain planned.',
+    dimension: '2d',
+    status: 'planned',
+    statusReason:
+      'The contract and project-owned fail-closed check exist, but no licensed 2D art or audio is admitted and no polished presentation route or reviewed capture exists yet.',
+    core: false,
+    signals: ['polish', 'recordable', 'first encounter', 'presentation', 'finished art'],
+    prerequisites: [
+      'A coherent admitted 2D atlas, environment, target, effects, and audio family with retained licence records.',
+      'The server-authored action event slice, so contact feedback presents confirmed facts rather than client timers.',
+      'A reviewed medium-profile capture whose recipe and source hashes match the generated project.',
+    ],
+    tools: ['kei-mmo/polish/recipe.json', 'kei-mmo/content/sources.json', 'node kei-mmo/polish/check.mjs'],
+    methods: [
+      { call: "recipe.actions.find((action) => action.kind === 'strike')", does: 'Resolves timing by semantic action instead of scattering timers through a renderer.' },
+      { call: 'createImageBitmap(admittedAtlas)', does: 'Loads only atlas bytes admitted by the source manifest and hash check.' },
+      { call: 'node kei-mmo/polish/check.mjs', does: 'Fails closed while required licensed assets, presentation, and evidence are pending.' },
+    ],
+    acceptance: [
+      'The 2D polished route uses no primitive marker, synthesized cue, unadmitted file, or harness runtime import.',
+      'A reviewed capture proves the semantic route and declared quality profile before this status changes.',
+    ],
+  },
+  {
+    id: 'polish-3d',
+    domain: 'content',
+    title: 'Recordable 3D first encounter',
+    summary:
+      'A versioned semantic encounter and strict source-admission contract exists, while the admitted rigged character, audio, presentation, and capture evidence remain planned.',
+    dimension: '3d',
+    status: 'planned',
+    statusReason:
+      'The contract and project-owned fail-closed check exist, but no licensed 3D art or audio is admitted and no polished presentation route or reviewed capture exists yet.',
+    core: false,
+    signals: ['polish', 'recordable', 'first encounter', 'presentation', 'finished art'],
+    prerequisites: [
+      'A coherent admitted rigged character, environment, target, effects, and audio family with retained licence records.',
+      'The server-authored action event slice, so contact feedback presents confirmed facts rather than client timers.',
+      'A reviewed medium-profile capture whose recipe and source hashes match the generated project.',
+    ],
+    tools: ['kei-mmo/polish/recipe.json', 'kei-mmo/content/sources.json', 'node kei-mmo/polish/check.mjs'],
+    methods: [
+      { call: "recipe.actions.find((action) => action.kind === 'strike')", does: 'Resolves timing by semantic action instead of scattering timers through a renderer.' },
+      { call: 'LoadAssetContainerAsync(admittedModel, scene)', does: 'Loads only rigged model bytes admitted by the source manifest and hash check.' },
+      { call: 'node kei-mmo/polish/check.mjs', does: 'Fails closed while required licensed assets, presentation, and evidence are pending.' },
+    ],
+    acceptance: [
+      'The 3D polished route uses no box avatar, previs biped, synthesized cue, unadmitted file, or harness runtime import.',
+      'A reviewed capture proves the semantic route and declared quality profile before this status changes.',
+    ],
+  },
+  {
     id: 'content-3d-model-generation',
     domain: 'content',
     title: 'Generated 3D models (external generator)',

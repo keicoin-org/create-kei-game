@@ -546,7 +546,7 @@ function parseSource(value: unknown): AssetSource | null {
 }
 
 /** Relative, forward-slashed, no `..`, no drive letter — or nothing. */
-function safeRelativePath(path: string): boolean {
+export function safeRelativePath(path: string): boolean {
   if (path === '' || path.includes('\0') || path.includes('\\')) return false
   if (path.startsWith('/') || /^[A-Za-z]:/.test(path)) return false
   const segments = path.split('/')

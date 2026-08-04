@@ -171,6 +171,13 @@ describe('scaffolded source', () => {
         'kei-mmo/content/manifest.json',
         'kei-mmo/content/pipelines.json',
         'kei-mmo/content/check.mjs',
+        'kei-mmo/content/polish-manifest.json',
+        'kei-mmo/content/sources.json',
+        'kei-mmo/polish/style.json',
+        'kei-mmo/polish/recipe.json',
+        'kei-mmo/polish/quality.json',
+        'kei-mmo/content/THIRD_PARTY_ASSETS.md',
+        'kei-mmo/polish/check.mjs',
         PLAN_JSON_PATH,
         PLAN_MARKDOWN_PATH,
       ],
@@ -181,6 +188,10 @@ describe('scaffolded source', () => {
     expect(written.planVersion).toBe(2)
     expect(written.intent.name).toBe(SCAFFOLD_PLAN.intent.name)
     expect(fs.writes.get(`/work/my-game/${PLAN_MARKDOWN_PATH}`)).toContain('## Capability packets')
+    const generatedReadme = fs.writes.get('/work/my-game/README.md')!
+    expect(generatedReadme).toContain('canonical source registry is')
+    expect(generatedReadme).toContain('`kei-mmo/content/sources.json`')
+    expect(generatedReadme).not.toContain('source registry live under `kei-mmo/polish/`')
     expect(calls).toEqual([])
   })
 
@@ -200,7 +211,7 @@ describe('scaffolded source', () => {
     )
     expect(result.created).toBe(true)
     expect(forced.fs.entries.get('/work/my-game')).toEqual(['notes.txt'])
-    expect(forced.fs.writes.size).toBe(24)
+    expect(forced.fs.writes.size).toBe(31)
   })
 
   test('refuses to treat a file as a destination, including under force', async () => {

@@ -40,6 +40,7 @@ import {
   WEBSOCKET_RANGE,
 } from './scaffold-network.js'
 import { PLAN_JSON_PATH, PLAN_MARKDOWN_PATH, type ImplementationPlan } from './plan.js'
+import { POLISH_CHECK_PATH, polishProjectFiles } from './scaffold-polish.js'
 import type { ProjectIdentity, WorkspaceFile } from './source.js'
 
 /**
@@ -96,6 +97,7 @@ export function projectFiles(
 ): readonly WorkspaceFile[] {
   const solid = plan.engine.dimension === '3d'
   const contentFiles = contentProjectFiles(project, plan)
+  const polishFiles = polishProjectFiles(plan)
 
   return Object.freeze([
     { path: 'package.json', contents: manifest(project, solid, contentFiles.length > 0) },
@@ -109,6 +111,7 @@ export function projectFiles(
     ...networkProjectFiles(project.slug),
     ...economyProjectFiles(),
     ...contentFiles,
+    ...polishFiles,
   ])
 }
 
@@ -126,6 +129,7 @@ function manifest(project: ProjectIdentity, solid: boolean, withContent: boolean
       headless: `bun run ${OUTPUT_DIRECTORY}/${HEADLESS_CLIENT_BUNDLE}`,
       'restart-proof': `bun run ${RESTART_PROOF_PATH}`,
       'economy:check': `bun test ${ECONOMY_TEST_PATH}`,
+      'polish:check': `node ${POLISH_CHECK_PATH}`,
       ...(withContent ? { 'content:check': `node ${CONTENT_CHECK_PATH}` } : {}),
     },
     dependencies: {
@@ -251,6 +255,14 @@ The authoritative game server has no Kei import, key, balance, inventory, or
 settlement path. The mock provisioner is a separate test fixture; production
 provisioning accepts an injected issuer context and contains no seed.
 
+The project also owns the version-1 contract for a future recordable first
+encounter. Its recipe, semantic action/effect timelines, quality tiers, and asset
+requirements live under \`kei-mmo/polish/\`; the canonical source registry is
+\`kei-mmo/content/sources.json\`. No production asset is admitted in this
+contract-only slice, and the primitive construction renderer is not wired to
+the recipe. Consequently \`bun run polish:check\`
+deliberately exits nonzero with \`polish_assets_pending\`; this is not criterion 9.
+
 \`src/server/persistence.ts\` stores only
 hashed resume capabilities, position, XP, level, and update time in the versioned
 WAL database at \`.kei-world/world.sqlite\` (override with \`KEI_WORLD_DB\`). It
@@ -281,6 +293,8 @@ your repository, not a contract.
 | \`${DEV_SERVER_PATH}\` | The Bun WebSocket and static development server. |
 | \`${BUILD_SCRIPT_PATH}\` | The build. Bundles the client and copies \`static/\`. |
 | \`${PAGE_PATH}\` | The page and the canvas the client takes over. |
+| \`kei-mmo/polish/\` | Versioned encounter, quality, and presentation-check contracts. The check remains blocked until real licensed assets are admitted. |
+| \`kei-mmo/content/sources.json\` | Canonical source, licence, redistribution, hash, and byte records shared by content admission and polish. |
 
 Planned renderer direction: ${plan.engine.renderer}
 
