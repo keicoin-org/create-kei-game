@@ -139,6 +139,46 @@ export function tinyPng(): Buffer {
   return Buffer.concat([signature, pngChunk('IHDR', ihdr), pngChunk('IDAT', deflateSync(Buffer.concat(rows))), pngChunk('IEND', Buffer.alloc(0))])
 }
 
+/** A 16x16 single-colour PNG whose legal row filters disguise its uniform decoded pixels. */
+export function uniformFilteredPng(): Buffer {
+  const width = 16; const height = 16; const value = 128
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8
+  const rows: Buffer[] = []
+  const paeth = (left: number, up: number, upperLeft: number) => { const estimate = left + up - upperLeft; const leftDistance = Math.abs(estimate - left); const upDistance = Math.abs(estimate - up); const upperLeftDistance = Math.abs(estimate - upperLeft); return leftDistance <= upDistance && leftDistance <= upperLeftDistance ? left : upDistance <= upperLeftDistance ? up : upperLeft }
+  for (let y = 0; y < height; y += 1) {
+    const filter = y % 5; const row = Buffer.alloc(width + 1); row[0] = filter
+    for (let x = 0; x < width; x += 1) {
+      const left = x > 0 ? value : 0; const up = y > 0 ? value : 0; const upperLeft = x > 0 && y > 0 ? value : 0
+      const predictor = filter === 0 ? 0 : filter === 1 ? left : filter === 2 ? up : filter === 3 ? Math.floor((left + up) / 2) : paeth(left, up, upperLeft)
+      row[x + 1] = (value - predictor) & 0xff
+    }
+    rows.push(row)
+  }
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  return Buffer.concat([signature, pngChunk('IHDR', ihdr), pngChunk('IDAT', deflateSync(Buffer.concat(rows))), pngChunk('IEND', Buffer.alloc(0))])
+}
+
+/** Palette indices vary, but every entry resolves to the same visible colour. */
+export function uniformPalettePng(): Buffer {
+  const width = 16; const height = 16
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 3
+  const palette = Buffer.from([40,80,120, 40,80,120, 40,80,120, 40,80,120])
+  const rows: Buffer[] = []
+  for (let y = 0; y < height; y += 1) { const row = Buffer.alloc(width + 1); for (let x = 0; x < width; x += 1) row[x + 1] = (x + y) % 4; rows.push(row) }
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  return Buffer.concat([signature, pngChunk('IHDR', ihdr), pngChunk('PLTE', palette), pngChunk('IDAT', deflateSync(Buffer.concat(rows))), pngChunk('IEND', Buffer.alloc(0))])
+}
+
+/** A 16x16 decoded grayscale gradient that clears the placeholder floor. */
+export function variedPng(): Buffer {
+  const width = 16; const height = 16
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8
+  const rows: Buffer[] = []
+  for (let y = 0; y < height; y += 1) { const row = Buffer.alloc(width + 1); for (let x = 0; x < width; x += 1) row[x + 1] = (x * 17 + y * 11) & 0xff; rows.push(row) }
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  return Buffer.concat([signature, pngChunk('IHDR', ihdr), pngChunk('IDAT', deflateSync(Buffer.concat(rows))), pngChunk('IEND', Buffer.alloc(0))])
+}
+
 /** A CRC-correct PNG whose IDAT bytes are not a decodable zlib stream. */
 export function pngWithInvalidDeflate(): Buffer {
   const valid = tinyPng()
@@ -186,6 +226,61 @@ export function tinyGlb(kind: 'model' | 'animation'): Buffer {
   binHeader.writeUInt32LE(bin.length, 0)
   binHeader.writeUInt32LE(0x004e4942, 4)
   return Buffer.concat([header, jsonHeader, json, binHeader, bin])
+}
+
+function packedGlb(gltf: Record<string, unknown>, bin: Buffer): Buffer {
+  let json = Buffer.from(JSON.stringify(gltf), 'utf8')
+  if (json.length % 4 !== 0) json = Buffer.concat([json, Buffer.alloc(4 - (json.length % 4), 0x20)])
+  const header = Buffer.alloc(12); header.write('glTF', 0, 'ascii'); header.writeUInt32LE(2, 4); header.writeUInt32LE(12 + 8 + json.length + 8 + bin.length, 8)
+  const jsonHeader = Buffer.alloc(8); jsonHeader.writeUInt32LE(json.length, 0); jsonHeader.write('JSON', 4, 'ascii')
+  const binHeader = Buffer.alloc(8); binHeader.writeUInt32LE(bin.length, 0); binHeader.writeUInt32LE(0x004e4942, 4)
+  return Buffer.concat([header, jsonHeader, json, binHeader, bin])
+}
+
+/** Four finite points hidden in an unreferenced mesh behind an empty active scene. */
+export function unreferencedPointGlb(): Buffer {
+  const bin = Buffer.alloc(48)
+  ;[0,0,0, 1,0,0, 0,1,0, 1,1,0].forEach((value, index) => bin.writeFloatLE(value, index * 4))
+  return packedGlb({
+    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: bin.length }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 4, type: 'VEC3' }], meshes: [{ primitives: [{ attributes: { POSITION: 0 }, mode: 0 }] }],
+    nodes: [{}], scenes: [{ nodes: [] }], scene: 0,
+  }, bin)
+}
+
+/** Observable motion on node 2 plus a dummy skin whose joints are never used by a scene node. */
+export function dummySkinAnimationGlb(): Buffer {
+  const bin = Buffer.alloc(32); bin.writeFloatLE(0, 0); bin.writeFloatLE(1, 4)
+  ;[0,0,0, 1,0,0].forEach((value, index) => bin.writeFloatLE(value, 8 + index * 4))
+  return packedGlb({
+    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 8 }, { buffer: 0, byteOffset: 8, byteLength: 24 }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 2, type: 'SCALAR' }, { bufferView: 1, componentType: 5126, count: 2, type: 'VEC3' }],
+    nodes: [{}, {}, {}], skins: [{ joints: [0, 1] }], animations: [{ samplers: [{ input: 0, output: 1, interpolation: 'LINEAR' }], channels: [{ sampler: 0, target: { node: 2, path: 'translation' } }] }],
+    scenes: [{ nodes: [] }], scene: 0,
+  }, bin)
+}
+
+/** A scene-referenced triangle strip with four finite, non-degenerate vertices. */
+export function sceneTriangleGlb(): Buffer {
+  const bin = Buffer.alloc(48)
+  ;[0,0,0, 1,0,0, 0,1,0, 1,1,0].forEach((value, index) => bin.writeFloatLE(value, index * 4))
+  return packedGlb({
+    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: bin.length }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 4, type: 'VEC3' }], meshes: [{ primitives: [{ attributes: { POSITION: 0 }, mode: 5 }] }],
+    nodes: [{ mesh: 0 }], scenes: [{ nodes: [0] }], scene: 0,
+  }, bin)
+}
+
+/** Observable joint motion on a skin attached to a scene-referenced mesh node. */
+export function riggedAnimationGlb(): Buffer {
+  const bin = Buffer.alloc(68); bin.writeFloatLE(1, 12); bin.writeFloatLE(1, 28); bin.writeFloatLE(1, 40); bin.writeFloatLE(0, 36); bin.writeFloatLE(1, 40)
+  ;[0,0,0, 1,0,0].forEach((value, index) => bin.writeFloatLE(value, 44 + index * 4))
+  return packedGlb({
+    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }, { buffer: 0, byteOffset: 36, byteLength: 8 }, { buffer: 0, byteOffset: 44, byteLength: 24 }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }, { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' }, { bufferView: 2, componentType: 5126, count: 2, type: 'VEC3' }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], nodes: [{ mesh: 0, skin: 0, children: [1, 2] }, {}, {}], skins: [{ joints: [1, 2] }],
+    animations: [{ samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }], channels: [{ sampler: 0, target: { node: 1, path: 'translation' } }] }], scenes: [{ nodes: [0] }], scene: 0,
+  }, bin)
 }
 
 /** A container-valid GLB whose mesh points at a nonexistent accessor. */

@@ -21,7 +21,7 @@ import {
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, glbWithOutOfRangePosition, oggWithoutAudioPacket, pngWithInvalidDeflate, tinyGlb, tinyOgg, tinyPng } from './media.js'
+import { CC0_TEXT, dummySkinAnimationGlb, glbWithOutOfRangePosition, oggWithoutAudioPacket, pngWithInvalidDeflate, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, variedPng } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -128,9 +128,19 @@ describe('admitted media and licence byte semantics', () => {
   test('rejects structurally valid but production-trivial placeholder media', () => {
     expect(validatePolishMediaBytes('atlas', tinyPng())).toEqual(['media_png_placeholder'])
     expect(validatePolishMediaBytes('image', tinyPng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('image', uniformFilteredPng())).toEqual(['media_png_placeholder'])
+    expect(validatePolishMediaBytes('atlas', uniformPalettePng())).toEqual(['media_png_placeholder'])
     expect(validatePolishMediaBytes('model', tinyGlb('model'))).toEqual(['media_glb_placeholder'])
+    expect(validatePolishMediaBytes('model', unreferencedPointGlb())).toEqual(['media_glb_placeholder'])
     expect(validatePolishMediaBytes('animation', tinyGlb('animation'))).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', dummySkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('audio', tinyOgg())).toEqual(['media_ogg_placeholder'])
+  })
+
+  test('accepts bounded decoded pixels, scene triangles, and joint-bound motion above the placeholder floor', () => {
+    expect(validatePolishMediaBytes('image', variedPng())).toEqual([])
+    expect(validatePolishMediaBytes('model', sceneTriangleGlb())).toEqual([])
+    expect(validatePolishMediaBytes('animation', riggedAnimationGlb())).toEqual([])
   })
 
   test.each([
