@@ -10,8 +10,14 @@ import {
   POLISH_RECIPE_VERSION,
   POLISH_SOURCE_MANIFEST_VERSION,
   expectedCredits,
+  polishReviewProblems,
+  polishSourceCatalogRecord,
   validatePolishAssetManifestDocument,
+  validatePolishLicenceBytes,
+  validatePolishMediaBytes,
   validatePolishRecipeDocument,
+  validatePolishRecipeManifestBinding,
+  validatePolishSourceManifestBinding,
   validatePolishSourceManifestDocument,
   type ActionRecipe,
   type PolishAssetKind,
@@ -109,16 +115,16 @@ function starterRecipe(plan: ImplementationPlan, sourceManifestHash: string, sty
   const capture = Object.freeze({
     profile: 'medium' as const, durationMs: 30_000, scriptedRemoteLabel: 'Scripted remote automation (not a live player)',
     steps: Object.freeze([
-      step(500, 'connect-local', 'local-player', null, null, null, null, null, ['local-player'], 'connection state visible', 'ambience begins after gesture', 'local identity visible'),
-      step(1_500, 'connect-scripted-remote', 'scripted-remote', null, null, null, null, null, ['local-player'], 'distinct remote silhouette', 'remote arrival cue', 'automation label visible'),
-      step(4_000, 'approach', 'local-player', 'training-sentinel', null, null, null, null, ['local-player','scripted-remote'], 'distance telegraph closes', 'footsteps audible', 'interaction prompt visible'),
-      step(8_000, 'interact', 'local-player', 'training-sentinel', 'inspect-sentinel', 'event-interact', 'accepted', true, ['local-player','scripted-remote'], 'interaction contact visible', 'interaction cue audible', 'success state visible'),
-      step(16_000, 'strike', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-strike', 'accepted', true, ['local-player'], 'strike contact visible', 'impact cue audible', 'progression update visible'),
-      step(17_000, 'remote-observe', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-strike', 'accepted', true, ['scripted-remote'], 'remote observes same contact', 'impact cue de-duplicated', 'remote outcome visible'),
+      step(500, 'connect-local', 'local-player', null, null, null, null, null, ['local-player'], 'local connection state visible', 'connection ambience begins', 'local identity connection visible'),
+      step(1_500, 'connect-scripted-remote', 'scripted-remote', null, null, null, null, null, ['local-player'], 'scripted remote silhouette visible', 'automation remote arrival cue', 'scripted automation label visible'),
+      step(4_000, 'approach', 'local-player', 'training-sentinel', null, null, null, null, ['local-player','scripted-remote'], 'distance approach telegraph closes', 'approach footsteps audible', 'approach interaction prompt visible'),
+      step(8_000, 'interact', 'local-player', 'training-sentinel', 'inspect-sentinel', 'event-interact', 'accepted', true, ['local-player','scripted-remote'], 'interaction contact visible', 'interaction cue audible', 'interaction success state visible'),
+      step(16_000, 'strike', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-strike', 'accepted', true, ['local-player'], 'strike contact visible', 'impact cue audible', 'strike progression update visible'),
+      step(17_000, 'remote-observe', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-strike', 'accepted', true, ['scripted-remote'], 'remote observes same contact', 'remote impact cue de-duplicated', 'remote outcome visible'),
       step(20_000, 'refusal', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-refusal', 'refused', false, ['local-player','scripted-remote'], 'refusal cancels anticipation', 'refusal cue audible', 'refusal reason visible'),
       step(22_000, 'cooldown', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-cooldown', 'cooldown', false, ['local-player'], 'cooldown telegraph visible', 'cooldown cue audible', 'cooldown timer visible'),
       step(25_000, 'recovery', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-recovery', 'recovered', false, ['local-player','scripted-remote'], 'recovery pose visible', 'recovery cue audible', 'ready state visible'),
-      step(28_000, 'reset', 'local-player', 'training-sentinel', null, null, null, null, ['local-player','scripted-remote'], 'sentinel reset visible', 'ambience continues', 'loop complete visible'),
+      step(28_000, 'reset', 'local-player', 'training-sentinel', null, null, null, null, ['local-player','scripted-remote'], 'sentinel reset visible', 'reset ambience continues', 'loop reset complete visible'),
     ]),
   })
   const maxVisualBytes = dimension === '2d' ? 4_194_304 : 12_582_912
@@ -127,7 +133,7 @@ function starterRecipe(plan: ImplementationPlan, sourceManifestHash: string, sty
     styleProfileHash, sourceManifestHash,
     actor: Object.freeze({ characterAsset: 'hero-character', rigOrAtlas: 'hero-motion' }),
     target: Object.freeze({ asset: 'training-sentinel', interactionRadiusM: 2.25 }), actions, cues, effects, qualityProfiles,
-    budgets: Object.freeze({ referenceDevice: 'named desktop 1080p reference device (capture required)', maxVisualBytes, maxAudioBytes: 3_145_728, maxAggregateBytes: maxVisualBytes + 3_145_728 + 1_048_576, maxBytesByRole: ROLE_MAX }),
+    budgets: Object.freeze({ referenceDevice: 'named desktop 1080p reference device (capture required)', maxVisualBytes, maxAudioBytes: 3_145_728, maxAggregateBytes: maxVisualBytes + 3_145_728 + 8_388_608, maxBytesByRole: ROLE_MAX }),
     authority, capture,
   })
 }
@@ -159,10 +165,17 @@ import { createHash } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { inflateSync } from 'node:zlib'
 
 const validatePolishRecipeDocument = ${validatePolishRecipeDocument.toString()}
 const validatePolishAssetManifestDocument = ${validatePolishAssetManifestDocument.toString()}
+const polishSourceCatalogRecord = ${polishSourceCatalogRecord.toString()}
 const validatePolishSourceManifestDocument = ${validatePolishSourceManifestDocument.toString()}
+const validatePolishRecipeManifestBinding = ${validatePolishRecipeManifestBinding.toString()}
+const validatePolishSourceManifestBinding = ${validatePolishSourceManifestBinding.toString()}
+const polishReviewProblems = ${polishReviewProblems.toString()}
+const validatePolishMediaBytes = ${validatePolishMediaBytes.toString()}
+const validatePolishLicenceBytes = ${validatePolishLicenceBytes.toString()}
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '../..')
 const rootReal = realpathSync(root)
@@ -223,9 +236,10 @@ if (hash(sourceDoc.raw) !== recipe?.sourceManifestHash) problems.push({ code: 's
 if (hash(styleDoc.raw) !== recipe?.styleProfileHash) problems.push({ code: 'style_profile_hash_mismatch', message: 'recipe style hash is stale' })
 if (qualityDoc.value?.version !== 1 || JSON.stringify(qualityDoc.value?.profiles) !== JSON.stringify(recipe?.qualityProfiles)) problems.push({ code: 'quality_mismatch', message: 'quality.json differs from the authoritative recipe' })
 const required = new Map((manifest?.assets ?? []).map((asset) => [asset.id, asset])); const byId = new Map((sources?.assets ?? []).map((asset) => [asset.id, asset]))
-for (const referenced of [recipe?.actor?.characterAsset, recipe?.actor?.rigOrAtlas, recipe?.target?.asset, ...Object.values(recipe?.cues ?? {}).flat()]) if (!required.has(referenced)) problems.push({ code: 'undeclared_recipe_asset', id: referenced, message: 'recipe asset is absent from content/polish-manifest.json' })
+for (const code of validatePolishRecipeManifestBinding(recipe, manifest)) problems.push({ code, message: 'recipe/manifest semantic role binding rejected' })
+for (const code of validatePolishSourceManifestBinding(manifest, sources)) problems.push({ code, message: 'source/manifest semantic catalog binding rejected' })
 for (const id of byId.keys()) if (!required.has(id)) problems.push({ code: 'unrequired_source', id, message: 'source registry contains bytes outside the polish admission manifest' })
-const verify = (id, entry, maximum) => { try { const bytes = secureRead(entry.path, maximum, entry.bytes); if (hash(bytes) !== entry.sha256) problems.push({ code: 'hash_mismatch', id, message: entry.path }) } catch (error) { problems.push({ code: 'file_invalid', id, message: entry.path + ': ' + (error instanceof Error ? error.message : String(error)) }) } }
+const verify = (id, entry, maximum) => { try { const bytes = secureRead(entry.path, maximum, entry.bytes); if (hash(bytes) !== entry.sha256) { problems.push({ code: 'hash_mismatch', id, message: entry.path }); return null } return bytes } catch (error) { problems.push({ code: 'file_invalid', id, message: entry.path + ': ' + (error instanceof Error ? error.message : String(error)) }); return null } }
 if (sources?.credits) {
   verify('credits', sources.credits, 262_144)
   try {
@@ -235,25 +249,33 @@ if (sources?.credits) {
     if (actual !== lines.join('\\n') + '\\n') problems.push({ code: 'credits_content_mismatch', message: 'generated credits do not exactly describe sources.json' })
   } catch {}
 }
-let visualBytes = 0; let audioBytes = 0; let aggregateBytes = 0; const roleBytes = new Map()
+let visualBytes = 0; let audioBytes = 0; let aggregateBytes = sources?.credits?.bytes ?? 0; const roleBytes = new Map()
 for (const asset of manifest?.assets ?? []) {
   const source = byId.get(asset.id)
   if (!source) { problems.push({ code: 'missing_source', id: asset.id, message: 'required polish asset has no source record' }); continue }
   verify(asset.id, source.sourceFile, 16_777_216)
-  verify(asset.id, { path: source.licence.filePath, sha256: source.licence.sha256, bytes: source.licence.bytes }, 262_144)
-  const extensions = { atlas: ['.png','.webp'], image: ['.png','.webp'], model: ['.glb','.gltf'], animation: ['.glb','.gltf'], audio: ['.ogg','.mp3','.wav'] }[asset.kind] ?? []
+  const licenceBytes = verify(asset.id, { path: source.licence.filePath, sha256: source.licence.sha256, bytes: source.licence.bytes }, 262_144)
+  if (licenceBytes) for (const code of validatePolishLicenceBytes(licenceBytes)) problems.push({ code, id: asset.id, message: source.licence.filePath })
+  aggregateBytes += source.sourceFile.bytes + source.licence.bytes
+  const extensions = { atlas: ['.png'], image: ['.png'], model: ['.glb'], animation: ['.glb'], audio: ['.ogg'] }[asset.kind] ?? []
   for (const output of source.processedOutputs) {
     if (!extensions.some((extension) => output.path.toLocaleLowerCase('en-US').endsWith(extension))) problems.push({ code: 'asset_kind_mismatch', id: asset.id, message: output.path })
-    verify(asset.id, output, asset.maxBytes)
+    const outputBytes = verify(asset.id, output, asset.maxBytes)
+    if (outputBytes) for (const code of validatePolishMediaBytes(asset.kind, outputBytes)) problems.push({ code, id: asset.id, message: output.path })
     aggregateBytes += output.bytes; roleBytes.set(asset.role, (roleBytes.get(asset.role) ?? 0) + output.bytes)
     if (asset.role === 'audio') audioBytes += output.bytes; else visualBytes += output.bytes
   }
 }
-if (visualBytes > (recipe?.budgets?.maxVisualBytes ?? 0) || audioBytes > (recipe?.budgets?.maxAudioBytes ?? 0) || aggregateBytes > (recipe?.budgets?.maxAggregateBytes ?? 0)) problems.push({ code: 'aggregate_budget_exceeded', message: 'content bytes exceed recipe budgets' })
+if (visualBytes > (recipe?.budgets?.maxVisualBytes ?? 0) || audioBytes > (recipe?.budgets?.maxAudioBytes ?? 0) || aggregateBytes > (recipe?.budgets?.maxAggregateBytes ?? 0)) problems.push({ code: 'aggregate_budget_exceeded', message: 'packaged credits, source, licence, and output bytes exceed recipe budgets' })
 for (const [role, bytes] of roleBytes) if (bytes > (recipe?.budgets?.maxBytesByRole?.[role] ?? 0)) problems.push({ code: 'role_budget_exceeded', id: role, message: String(bytes) })
 if (problems.length) {
   const pending = problems.every((problem) => problem.code === 'missing_source')
   process.stderr.write(JSON.stringify({ ok: false, code: pending ? 'polish_assets_pending' : 'polish_assets_invalid', problems }) + '\\n')
+  process.exit(1)
+}
+const reviewProblems = polishReviewProblems(manifest, sources)
+if (reviewProblems.length) {
+  process.stderr.write(JSON.stringify({ ok: false, code: 'polish_review_required', admitted: required.size, visualBytes, audioBytes, aggregateBytes, problems: reviewProblems }) + '\\n')
   process.exit(1)
 }
 process.stdout.write(JSON.stringify({ ok: true, code: 'polish_ready', admitted: required.size, visualBytes, audioBytes, aggregateBytes }) + '\\n')
