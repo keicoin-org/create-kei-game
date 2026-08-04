@@ -14,20 +14,27 @@
  */
 
 import {
+  CAPABILITY_PACKETS,
   selectCapabilities,
   type CapabilityPacket,
   type SelectedCapability,
 } from './capabilities.js'
+import { audioPaletteFor, propKitFor, CONTENT_WORKFLOWS } from './content.js'
 import {
   intentSignalText,
   unspecifiedGoals,
   type MmoIntent,
 } from './intent.js'
+import { MOTION_CLIPS, PREVIS_BIPED } from './motion.js'
 import {
+  CONTENT_PLAN_VERSION,
   MMO_PLAN_VERSION,
   type AcceptanceCriterion,
+  type ContentPlan,
+  type ContentSelection,
   type EngineChoice,
   type EngineDimension,
+  type GeneratorDeclaration,
   type ImplementationPlan,
   type PlanCapability,
   type PlanConstraint,
@@ -37,6 +44,7 @@ import {
 } from './plan.js'
 import { REFERENCE_PROJECTS, type ReferenceProject } from './references.js'
 import type { SourceSelection } from './source.js'
+import { resolveStyle } from './style.js'
 
 /** Flat-world words. An intent that uses these is not describing a 3D camera. */
 const TWO_D_SIGNALS = [
@@ -354,6 +362,97 @@ function acceptanceFor(dimension: EngineDimension): readonly AcceptanceCriterion
   ].map((criterion) => Object.freeze(criterion)))
 }
 
+/**
+ * The 3D content section: the style read once, the selections it drives with
+ * their costs, the generators declared at their honest statuses, and the
+ * pipeline workflows. Pure, like everything else here — and absent from a 2D
+ * plan entirely rather than present and empty.
+ */
+function contentPlanFor(intent: MmoIntent, present: ReadonlySet<string>): ContentPlan {
+  const style = resolveStyle(intent)
+  const kit = propKitFor(style.setting)
+  const palette = audioPaletteFor(style.setting)
+
+  const selections: ContentSelection[] = [
+    {
+      area: 'props',
+      choice: `${kit.title} (${kit.id})`,
+      capability: 'content-3d-props',
+      reason:
+        style.setting === 'unspecified'
+          ? 'No setting was declared, so the neutral previs kit is chosen — geometry with no genre in it, fantasy included.'
+          : `The brief reads as ${style.setting}, so that kit is chosen; no other genre's dressing leaks in.`,
+      cost: 'Previs fidelity: silhouettes read and scenes stage, but every prop is a handful of primitives, not final art.',
+    },
+    {
+      area: 'materials',
+      choice:
+        style.finish === 'stylized'
+          ? 'three MeshToonMaterial with flat ramps'
+          : 'three MeshStandardMaterial, grounded PBR',
+      capability: 'content-3d-props',
+      reason:
+        style.finish === 'stylized'
+          ? 'The brief asked for a stylized finish, and toon ramps are the boring, readable way to get one.'
+          : 'Nothing asked for a stylized look, so materials stay grounded PBR — the cheapest finish to keep coherent.',
+      cost:
+        style.finish === 'stylized'
+          ? 'Flat ramps discard most lighting nuance, so silhouettes and palettes have to carry the look.'
+          : 'PBR needs real lights in the scene and a little more fill rate; an unlit scene renders black rather than flat.',
+    },
+    {
+      area: 'motion',
+      choice: `${PREVIS_BIPED.id} rig with ${MOTION_CLIPS.length} authored blocking clips`,
+      capability: 'content-3d-motion',
+      reason:
+        'Blocking-grade motion can ship today and says what it is; generated or captured motion enters through the same adapter seam when its capability stops being planned.',
+      cost: `${PREVIS_BIPED.nodes.length} nodes and previs keyframes: staged scenes read, and nothing here claims to be final animation.`,
+    },
+  ]
+
+  if (present.has('content-3d-audio')) {
+    selections.push({
+      area: 'audio',
+      choice: `${palette.title} (${palette.id})`,
+      capability: 'content-3d-audio',
+      reason:
+        style.setting === 'unspecified'
+          ? 'The intent asked for sound, and with no setting declared the neutral palette carries it.'
+          : `The intent asked for sound, and the ${style.setting} palette carries it at previs grade.`,
+      cost: 'Synthesized placeholder voices: audible, placeable, and deliberately not passed off as produced audio.',
+    })
+  }
+  if (present.has('content-3d-cutscenes')) {
+    selections.push({
+      area: 'cutscene',
+      choice: 'the staged pipeline: plan → stage → beats → rehearsal → assembly',
+      capability: 'content-3d-cutscenes',
+      reason:
+        'The intent asked for directed scenes, and the pipeline assembles them deterministically from admitted assets and ready clips.',
+      cost: 'A fixed camera grammar and hard bounds — twelve beats and sixty seconds is the ceiling, by design.',
+    })
+  }
+
+  // The declarations come straight off the capability records, so a status can
+  // never be repeated here more optimistically than it is stated there.
+  const generators: GeneratorDeclaration[] = CAPABILITY_PACKETS
+    .filter((packet) => packet.dimension === '3d' && packet.status !== 'available')
+    .map((packet) => ({
+      id: packet.id.replace(/^content-3d-/, ''),
+      capability: packet.id,
+      status: packet.status as 'planned' | 'absent',
+      reason: packet.statusReason ?? 'No reason was recorded, which is itself a defect.',
+    }))
+
+  return Object.freeze({
+    contentVersion: CONTENT_PLAN_VERSION,
+    style,
+    selections: Object.freeze(selections.map((selection) => Object.freeze(selection))),
+    generators: Object.freeze(generators.map((generator) => Object.freeze(generator))),
+    workflows: CONTENT_WORKFLOWS,
+  })
+}
+
 interface StepTemplate {
   readonly id: string
   readonly title: string
@@ -413,6 +512,13 @@ function stepTemplates(dimension: EngineDimension): readonly StepTemplate[] {
       title: 'Look and feel',
       outcome: 'Animation states, custom materials, and any full-screen chain, each with its cost measured.',
       capabilities: [animate, 'shaders', 'post-processing'],
+    },
+    {
+      id: 'content-3d',
+      title: 'Content pipelines and the first directed scene',
+      outcome:
+        'Props, clips, and cues admitted through the manifest, the motion ready gate holding, and the intro cut-scene assembled and playing through the project-owned player.',
+      capabilities: ['content-3d-props', 'content-3d-motion', 'content-3d-audio', 'content-3d-cutscenes'],
     },
     {
       id: 'interface-and-content',
@@ -482,6 +588,7 @@ export function planMmo(intent: MmoIntent): ImplementationPlan {
   const selection = selectCapabilities(dimension.dimension, intentSignalText(intent))
   const capabilities = Object.freeze(selection.selected.map(planCapability))
   const present = new Set(capabilities.map((capability) => capability.id))
+  const content = dimension.dimension === '3d' ? contentPlanFor(intent, present) : undefined
 
   return Object.freeze({
     planVersion: MMO_PLAN_VERSION,
@@ -494,5 +601,6 @@ export function planMmo(intent: MmoIntent): ImplementationPlan {
     acceptance: acceptanceFor(dimension.dimension),
     steps: stepsFor(dimension.dimension, present),
     assumptions: assumptionsFor(intent),
+    ...(content === undefined ? {} : { content }),
   })
 }

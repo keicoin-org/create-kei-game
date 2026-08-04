@@ -110,7 +110,7 @@ describe('agent request resolution', () => {
 
   test('the plan, its selection, and the brief are derived, never supplied', () => {
     const request = createAgentRequest(complete, {}, '/workspace', { OPENAI_API_KEY: 'present' })
-    expect(request.plan.planVersion).toBe(1)
+    expect(request.plan.planVersion).toBe(2)
     expect(request.plan.intent).toEqual(request.intent)
     expect(request.selection).toEqual({ kind: 'blank' })
     expect(request.brief).toContain('CAPABILITY PACKETS')

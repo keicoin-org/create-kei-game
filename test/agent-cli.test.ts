@@ -92,7 +92,7 @@ describe('real prompt-free agent CLI', () => {
         project: { title: 'Flag MMO', slug: 'flag-mmo' },
         selection: { kind: 'blank' },
         intent: { intentVersion: 1, dimension: '3d', gameplay: GAMEPLAY },
-        plan: { planVersion: 1, reference: { strategy: 'scaffold' } },
+        plan: { planVersion: 2, reference: { strategy: 'scaffold' } },
         provider: { provider: 'openai', apiKeyEnv: 'TEST_MODEL_KEY' },
         model: 'explicit-model',
         launch: false,
@@ -103,7 +103,7 @@ describe('real prompt-free agent CLI', () => {
     expect(result.stdout).not.toContain('Cloning')
     expect(readFileSync(join(directory, 'game', 'package.json'), 'utf8')).toContain('flag-mmo')
     const plan = JSON.parse(readFileSync(join(directory, 'game', 'kei-mmo', 'plan.json'), 'utf8'))
-    expect(plan.planVersion).toBe(1)
+    expect(plan.planVersion).toBe(2)
     expect(plan.capabilities.length).toBeGreaterThan(5)
   })
 
@@ -365,6 +365,11 @@ test('package exposes non-executing library subpaths', () => {
     './references',
     './plan',
     './planner',
+    './style',
+    './content',
+    './content-project',
+    './motion',
+    './cutscene',
     './source',
     './providers',
     './harness',
@@ -389,4 +394,45 @@ test('package exposes non-executing library subpaths', () => {
   expect(probe.status).toBe(0)
   expect(probe.stderr).toBe('')
   expect(probe.stdout).toBe('function,function,function,function,function,function,function')
+})
+
+describe('the 3D content pipeline through the agent door', () => {
+  test('a cinematic 3D brief lands content records with no prompt asked and no secret written', async () => {
+    const directory = workspace()
+    const result = await run(
+      directory,
+      [
+        'Salvage Run', '--agent', '--json', '--3d',
+        '--gameplay', 'Crews salvage derelict stations, with a story intro cinematic.',
+        '--art', 'Grounded, with an ambient hum of machinery.',
+        '--into', 'game',
+        '--provider', 'openai', '--model', 'explicit-model', '--api-key-env', 'TEST_MODEL_KEY',
+        '--no-launch',
+      ],
+      { environment: { TEST_MODEL_KEY: secret } },
+    )
+    // stdin was closed at spawn: a prompt would have died, not waited.
+    expect(result.status).toBe(0)
+    const output = jsonLine(result)
+    expect(output.ok).toBeTrue()
+    expect(output.request.plan.content.style.setting).toBe('science-fiction')
+
+    const generators = output.request.plan.content.generators as Array<{ id: string; status: string }>
+    expect(generators.find(({ id }) => id === 'model-generation')?.status).toBe('planned')
+    expect(generators.find(({ id }) => id === 'voice-acting')?.status).toBe('absent')
+
+    const contentDirectory = join(directory, 'game', 'kei-mmo', 'content')
+    const written = [
+      readFileSync(join(contentDirectory, 'manifest.json'), 'utf8'),
+      readFileSync(join(contentDirectory, 'pipelines.json'), 'utf8'),
+      readFileSync(join(contentDirectory, 'check.mjs'), 'utf8'),
+      readFileSync(join(contentDirectory, 'cutscenes', 'salvage-run-arrival.json'), 'utf8'),
+      readFileSync(join(directory, 'game', 'src', 'shared', 'cutscene.ts'), 'utf8'),
+    ]
+    for (const contents of written) {
+      expect(contents).not.toContain(secret)
+      expect(contents).not.toContain('TEST_MODEL_KEY')
+    }
+    expect(JSON.parse(written[3]!).cutsceneVersion).toBe(1)
+  })
 })

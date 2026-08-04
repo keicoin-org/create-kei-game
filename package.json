@@ -60,6 +60,31 @@
       "bun": "./src/planner.ts",
       "import": "./dist/planner.js"
     },
+    "./style": {
+      "types": "./dist/style.d.ts",
+      "bun": "./src/style.ts",
+      "import": "./dist/style.js"
+    },
+    "./content": {
+      "types": "./dist/content.d.ts",
+      "bun": "./src/content.ts",
+      "import": "./dist/content.js"
+    },
+    "./content-project": {
+      "types": "./dist/content-project.d.ts",
+      "bun": "./src/content-project.ts",
+      "import": "./dist/content-project.js"
+    },
+    "./motion": {
+      "types": "./dist/motion.d.ts",
+      "bun": "./src/motion.ts",
+      "import": "./dist/motion.js"
+    },
+    "./cutscene": {
+      "types": "./dist/cutscene.d.ts",
+      "bun": "./src/cutscene.ts",
+      "import": "./dist/cutscene.js"
+    },
     "./source": {
       "types": "./dist/source.d.ts",
       "bun": "./src/source.ts",

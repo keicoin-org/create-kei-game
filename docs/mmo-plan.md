@@ -65,15 +65,29 @@ its rationale.
 ### Which capability packets apply
 
 Core packets are in every plan of the matching dimension. Optional ones —
-`shaders`, `post-processing`, `audio` — need the intent to have named something
-they cover, and when nothing did, the packet lands in `deferred` with the words
-that would have pulled it in. A 2D plan gets `render-2d` and `animation-2d` and
-defers the 3D pair; a 3D plan gets the reverse.
+`shaders`, `post-processing`, `audio`, `content-3d-cutscenes`,
+`content-3d-audio` — need the intent to have named something they cover, and
+when nothing did, the packet lands in `deferred` with the words that would have
+pulled it in. A 2D plan gets `render-2d` and `animation-2d` and defers the 3D
+pair; a 3D plan gets the reverse, plus the content core (`content-3d-props`,
+`content-3d-motion`).
+
+**Status is the binding rule on top.** Every packet declares `available`
+(implemented and exercised by a test), `planned` (specified, not implemented),
+or `absent` (not offered, with the reason). Only `available` packets can be
+selected. A `planned` or `absent` one is deferred **naming its status** in
+every matching plan — and when the intent explicitly asked for it, the deferral
+quotes the ask and names the status anyway. The external generators
+(`content-3d-model-generation`, `content-3d-motion-capture`,
+`content-3d-sfx-generation`) are `planned`; `content-3d-voice-acting` is
+`absent`. See [Content pipelines](content-pipelines.md).
 
 ## The plan
 
-`create-kei-mmo/plan`. Version 1. Written to the project as `kei-mmo/plan.json`
-and rendered to `kei-mmo/PLAN.md`.
+`create-kei-mmo/plan`. Version 2 — version 2 added the optional `content`
+section for 3D plans; 2D plans carry no content section and are otherwise
+unchanged. Written to the project as `kei-mmo/plan.json` and rendered to
+`kei-mmo/PLAN.md`.
 
 | Field | What it holds |
 |---|---|
@@ -87,6 +101,7 @@ and rendered to `kei-mmo/PLAN.md`.
 | `acceptance` | Criteria, each with a concrete way to check it |
 | `steps` | The build order; each step names the packets it draws on |
 | `assumptions` | What was filled in for goals nobody stated |
+| `content` | 3D only: the style profile, the content selections with their costs, the generator declarations at their honest statuses, and the versioned pipeline workflows — see [Content pipelines](content-pipelines.md) |
 
 The plan reaches the model as a rendered brief inside the system instruction,
 bounded to 28,000 characters. When it does not fit, the per-method explanations

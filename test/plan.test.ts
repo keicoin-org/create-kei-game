@@ -70,7 +70,7 @@ describe('the brief the model receives', () => {
 describe('the plan as files', () => {
   test('the JSON round-trips and keeps every decision', () => {
     const parsed = JSON.parse(planJson(CLONE_PLAN))
-    expect(parsed.planVersion).toBe(1)
+    expect(parsed.planVersion).toBe(2)
     expect(parsed.intent.intentVersion).toBe(1)
     expect(parsed.reference.strategy).toBe('clone')
     expect(parsed.reference.considered).toHaveLength(3)
