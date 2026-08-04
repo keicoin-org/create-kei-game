@@ -268,8 +268,8 @@ describe('the content section', () => {
     const stylized = planFor({ name: 'X', dimension: '3d', gameplay: 'Questing', art: 'Cel-shaded toon look' })
     const material = (plan: typeof grounded) =>
       plan.content!.selections.find((selection) => selection.area === 'materials')!.choice
-    expect(material(grounded)).toContain('MeshStandardMaterial')
-    expect(material(stylized)).toContain('MeshToonMaterial')
+    expect(material(grounded)).toContain('PBRMaterial')
+    expect(material(stylized)).toContain('StandardMaterial')
   })
 
   test('fantasy dressing appears only when the brief asks for fantasy', () => {

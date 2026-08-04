@@ -155,8 +155,12 @@ describe('the whole seam, wired up', () => {
       'kei-mmo/content/manifest.json',
       'kei-mmo/content/pipelines.json',
       'package.json',
+      'tsconfig.json',
+      'static/index.html',
+      'scripts/build.mjs',
       'src/client/main.ts',
       'src/server/main.ts',
+      'src/server/dev-server.mjs',
       'src/shared/simulation.ts',
     ].sort())
     expect(JSON.parse(await readFile(join(prepared.directory, 'package.json'), 'utf8')).name).toBe('my-game')

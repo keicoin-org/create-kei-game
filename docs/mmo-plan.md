@@ -143,10 +143,9 @@ post-processing, networking and session authority, persistence and world
 streaming, Kei economies, UI, audio, content, testing, and deployment.
 
 Two examples of what "concrete" means here. The 3D animation packet names
-`THREE.AnimationClip.findByName(gltf.animations, 'Run')`,
-`current.crossFadeTo(next, 0.2, false)`, `mixer.update(deltaSeconds)`, and
-`SkeletonUtils.clone(gltf.scene)` — and states in its prerequisites *why* the
-last one is not `Object3D.clone()`. The networking packet names the fixed-tick
+`LoadAssetContainerAsync(url, scene)`, looks up a Babylon `AnimationGroup` by
+semantic name, blends groups by weight, and instantiates rigged characters from
+an `AssetContainer` so skeletons are not accidentally shared. The networking packet names the fixed-tick
 accumulator, the input record with its sequence number, the reconciliation loop
 that replays unacknowledged inputs, the interest-management cell key, and the
 per-socket token bucket, plus the Durable Object shape of the same loop.
