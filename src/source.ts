@@ -412,6 +412,22 @@ async function clone(
     fail(`git clone ${url} failed (exit ${result.code}).${said === '' ? '' : `\n\n  ${said}`}`)
   }
 
+  // A clone arrives with `origin` pointing at the reference, and `origin` is a
+  // push target. This directory was handed to somebody as their project, so the
+  // first `git push` in it must not aim at a repository that is not theirs.
+  // Detaching it is not tidying: the reference's history is a fine place to
+  // start from, and a remote nobody chose is not.
+  const detached = await deps.git('git', ['remote', 'remove', 'origin'], {
+    cwd: directory,
+    shell: false,
+  })
+  if (detached.code !== 0) {
+    const said = detached.stderr.trim()
+    fail(
+      `The clone of ${url} worked, but its "origin" remote could not be removed (exit ${String(detached.code)}), so ${directory} still pushes to somebody else's repository. Remove it before you commit: git -C ${directory} remote remove origin.${said === '' ? '' : `\n\n  ${said}`}`,
+    )
+  }
+
   // The reference arrives with the case for cloning it sitting beside it. A
   // clone with no note in it is a directory of somebody else's decisions.
   const written = await writeFiles(directory, planFiles(request.plan), deps)

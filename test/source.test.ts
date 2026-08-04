@@ -249,7 +249,38 @@ describe('cloned reference', () => {
         args: ['clone', '--depth', '1', '--', 'https://github.com/keicoin-org/button.git', '/work/my-game'],
         options: { cwd: '/work', shell: false },
       },
+      // `origin` is a push target, and this directory is now somebody's project.
+      // A first `git push` in it must not aim at the reference's repository.
+      {
+        command: 'git',
+        args: ['remote', 'remove', 'origin'],
+        options: { cwd: '/work/my-game', shell: false },
+      },
     ])
+  })
+
+  test('a remote that will not detach is a failure, not a project that pushes elsewhere', async () => {
+    const { deps, calls } = harness()
+    let first = true
+    const stubborn: SourceDeps = {
+      ...deps,
+      git: async (command, args, options) => {
+        const result = await deps.git(command, args, options)
+        if (first) {
+          first = false
+          return result
+        }
+        return { code: 1, stderr: 'error: No such remote: origin' }
+      },
+    }
+
+    await expect(
+      prepareSource(
+        { project, selection: { kind: 'template', template: 'button' }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
+        stubborn,
+      ),
+    ).rejects.toThrow(/still pushes to somebody else's repository/)
+    expect(calls.at(-1)?.args).toEqual(['remote', 'remove', 'origin'])
   })
 
   test('creates a nested destination parent, not the clone destination', async () => {
