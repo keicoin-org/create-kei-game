@@ -142,12 +142,14 @@ salvage-run/
 
 `src/shared/` is imported by both sides, which is the one architectural opinion
 the scaffold holds: the simulation belongs to neither the client nor the server.
-Run `bun install`, `bun run build`, then `PORT=0 bun run dev`; the local static
-server reports its actual URL in one JSON readiness line. The 3D client is a
+Run `bun install`, `bun run build`, then `PORT=0 bun run dev`; the loopback game
+and static server reports its actual HTTP and WebSocket URLs in one JSON readiness line. The 3D client is a
 minimal project-owned Babylon.js construction scene. The 2D client is a Canvas
-construction frame, not a tile or sprite renderer. Neither path implements
-networking, authority, persistence, Kei trade, or presentation polish yet, and
-neither imports the harness at runtime.
+construction frame, not a tile or sprite renderer. Both paths use the same
+project-owned connection module, render server-assigned players, and ship a
+two-client headless movement check. Neither implements restart persistence, Kei
+trade, client prediction/reconciliation, interest management, or presentation
+polish yet, and neither imports the harness at runtime.
 
 Use `--force` only when those files may be overwritten in a nonempty directory.
 Other files are left in place and nothing is deleted.

@@ -16,7 +16,7 @@ import {
   type SourceDeps,
   type SourceFs,
 } from '../src/source.js'
-import { SCAFFOLD_PLAN } from './fixtures.js'
+import { SCAFFOLD_PLAN, planFor } from './fixtures.js'
 
 class MemoryFs implements SourceFs {
   readonly entries = new Map<string, readonly string[] | null>()
@@ -155,6 +155,9 @@ describe('scaffolded source', () => {
         'scripts/build.mjs',
         'src/shared/simulation.ts',
         'src/client/main.ts',
+        'src/shared/protocol.ts',
+        'src/client/connection.ts',
+        'src/client/headless.ts',
         'src/server/main.ts',
         'src/server/dev-server.mjs',
         // SCAFFOLD_PLAN is 3D, so the content pipeline lands with it. No
@@ -191,7 +194,7 @@ describe('scaffolded source', () => {
     )
     expect(result.created).toBe(true)
     expect(forced.fs.entries.get('/work/my-game')).toEqual(['notes.txt'])
-    expect(forced.fs.writes.size).toBe(15)
+    expect(forced.fs.writes.size).toBe(18)
   })
 
   test('refuses to treat a file as a destination, including under force', async () => {
@@ -211,6 +214,17 @@ describe('scaffolded source', () => {
     // The escape is the point: the raw newline and comment terminator that would
     // have closed the header comment never reach the file.
     expect(client).not.toContain(`\n*/ console.log`)
+  })
+
+  test('renders server snapshots without advancing authoritative state in either browser client', () => {
+    for (const dimension of ['2d', '3d'] as const) {
+      const plan = planFor({ name: `${dimension} authority`, dimension, gameplay: 'Two players meet.' })
+      const client = scaffoldWorkspace({ slug: `authority-${dimension}`, title: dimension }, plan)
+        .find(({ path }) => path === 'src/client/main.ts')!.contents
+      expect(client).not.toMatch(/\bworld\s*=\s*step\(/)
+      expect(client).not.toMatch(/import\s*{[^}]*\bstep\b[^}]*}\s*from/)
+      expect(client).toContain('connection.onSnapshot((world) => client.replaceWorld(world))')
+    }
   })
 })
 

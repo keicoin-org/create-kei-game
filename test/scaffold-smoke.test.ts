@@ -20,6 +20,7 @@ interface FailureDetails {
   readonly message: string
   readonly status?: number | null
   readonly signal?: string | null
+  readonly osCode?: string
   readonly stdout?: string
   readonly stderr?: string
 }
@@ -48,6 +49,10 @@ function run(directory: string, phase: string, args: readonly string[]): string 
       message: result.error?.message ?? `bun exited ${String(result.status)}`,
       status: result.status,
       signal: result.signal,
+      osCode:
+        result.error !== undefined && 'code' in result.error
+          ? String(result.error.code)
+          : undefined,
       stdout: result.stdout,
       stderr: result.stderr,
     })
@@ -74,25 +79,100 @@ function writeProject(dimension: '2d' | '3d'): string {
   return directory
 }
 
-function terminateTree(child: ChildProcessWithoutNullStreams): void {
-  if (child.pid === undefined || child.exitCode !== null) return
+async function waitForExit(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new SmokeFailure({
+      code: 'dev_exit_timed_out',
+      phase: 'teardown',
+      message: 'the dev process tree did not exit within 10 seconds',
+    })), 10_000)
+    child.once('exit', () => { clearTimeout(timeout); resolve() })
+  })
+}
+
+async function terminateTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+    const killed = spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
       encoding: 'utf8',
       timeout: 10_000,
       windowsHide: true,
     })
-    return
-  }
-  try {
-    process.kill(-child.pid, 'SIGTERM')
-  } catch {
+    if (killed.error !== undefined) {
+      throw new SmokeFailure({
+        code: 'taskkill_failed',
+        phase: 'teardown',
+        message: killed.error.message,
+        status: killed.status,
+        signal: killed.signal,
+        stdout: killed.stdout,
+        stderr: killed.stderr,
+      })
+    }
+  } else {
     try {
-      child.kill('SIGTERM')
+      process.kill(-child.pid, 'SIGTERM')
     } catch {
-      // It exited between the exitCode check and the signal.
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        // It exited between the exitCode check and the signal.
+      }
     }
   }
+  await waitForExit(child)
+}
+
+async function expectPortReleased(host: string, port: number): Promise<void> {
+  const deadline = Date.now() + 5_000
+  while (true) {
+    const probe = spawnSync('node', [
+      '-e',
+      "const net=require('node:net');const s=net.createConnection({host:process.argv[1],port:Number(process.argv[2])});s.setTimeout(1000);s.once('connect',()=>{s.destroy();process.exit(2)});s.once('error',()=>process.exit(0));s.once('timeout',()=>{s.destroy();process.exit(0)})",
+      host,
+      String(port),
+    ], { encoding: 'utf8', timeout: 5_000, windowsHide: true })
+    const connected = probe.status === 2
+    if (!connected) return
+    if (Date.now() >= deadline) {
+      throw new SmokeFailure({
+        code: 'dev_port_still_open',
+        phase: 'teardown',
+        message: `${host}:${port} still accepted connections after process-tree termination`,
+      })
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+async function expectCrossOriginRefused(directory: string, socketUrl: string): Promise<void> {
+  const script = [
+    "const WebSocket=require('ws')",
+    "const socket=new WebSocket(process.argv[1],{origin:'http://attacker.invalid'})",
+    "let message=null",
+    "const timeout=setTimeout(()=>{socket.terminate();process.stderr.write('timed out');process.exit(1)},10000)",
+    "socket.once('message',data=>message=JSON.parse(String(data)))",
+    "socket.once('close',code=>{clearTimeout(timeout);process.stdout.write(JSON.stringify({code,message}));process.exit(0)})",
+    "socket.once('error',error=>{clearTimeout(timeout);process.stderr.write(error.message);process.exit(1)})",
+  ].join(';')
+  const probe = spawnSync('node', ['-e', script, socketUrl], {
+    cwd: directory, encoding: 'utf8', timeout: 15_000, windowsHide: true,
+  })
+  if (probe.error !== undefined || probe.status !== 0) {
+    throw new SmokeFailure({
+      code: 'cross_origin_probe_failed',
+      phase: 'websocket',
+      message: probe.error?.message ?? `node exited ${String(probe.status)}`,
+      status: probe.status,
+      signal: probe.signal,
+      stdout: probe.stdout,
+      stderr: probe.stderr,
+    })
+  }
+  const response = JSON.parse(probe.stdout) as { readonly code?: unknown; readonly message?: unknown }
+  expect(response.code).toBe(4003)
+  expect(response.message).toEqual({ v: 1, type: 'refused', code: 'origin_refused' })
 }
 
 async function startAndProbe(directory: string): Promise<void> {
@@ -109,9 +189,16 @@ async function startAndProbe(directory: string): Promise<void> {
   child.stderr.setEncoding('utf8')
   child.stdout.on('data', (chunk: string) => { stdout += chunk })
   child.stderr.on('data', (chunk: string) => { stderr += chunk })
+  let bound: { readonly host: string; readonly port: number } | null = null
 
   try {
-    const ready = await new Promise<{ readonly url: string; readonly host: string; readonly port: number }>((resolve, reject) => {
+    const ready = await new Promise<{
+      readonly url: string
+      readonly socketUrl: string
+      readonly host: string
+      readonly port: number
+      readonly protocol: number
+    }>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new SmokeFailure({
           code: 'dev_ready_timed_out',
@@ -130,18 +217,28 @@ async function startAndProbe(directory: string): Promise<void> {
               event?: unknown
               service?: unknown
               url?: unknown
+              socketUrl?: unknown
               host?: unknown
               port?: unknown
+              protocol?: unknown
             }
             if (
               record.event === 'ready' &&
-              record.service === 'kei-dev-server' &&
+              record.service === 'kei-game-server' &&
               typeof record.url === 'string' &&
+              typeof record.socketUrl === 'string' &&
               typeof record.host === 'string' &&
-              typeof record.port === 'number'
+              typeof record.port === 'number' &&
+              record.protocol === 1
             ) {
               clearTimeout(timeout)
-              resolve({ url: record.url, host: record.host, port: record.port })
+              resolve({
+                url: record.url,
+                socketUrl: record.socketUrl,
+                host: record.host,
+                port: record.port,
+                protocol: record.protocol,
+              })
               return
             }
           } catch {
@@ -167,7 +264,10 @@ async function startAndProbe(directory: string): Promise<void> {
 
     expect(ready.host).toBe('127.0.0.1')
     expect(ready.port).toBeGreaterThan(0)
+    expect(ready.protocol).toBe(1)
     expect(new URL(ready.url).hostname).toBe('127.0.0.1')
+    expect(new URL(ready.socketUrl).hostname).toBe('127.0.0.1')
+    bound = { host: ready.host, port: ready.port }
 
     try {
       const page = await fetch(ready.url, { signal: AbortSignal.timeout(10_000) })
@@ -198,10 +298,57 @@ async function startAndProbe(directory: string): Promise<void> {
         signal: AbortSignal.timeout(10_000),
       })
       expect(await status.json()).toEqual({
-        service: 'kei-dev-server',
+        service: 'kei-game-server',
         root: 'dist',
         entry: 'client/main.js',
+        socketPath: '/game',
+        protocol: 1,
       })
+
+      const wrongProtocol = new URL(ready.socketUrl)
+      wrongProtocol.searchParams.set('protocol', '2')
+      const mismatch = await new Promise<{ readonly message: Record<string, unknown>; readonly closeCode: number }>(
+        (resolve, reject) => {
+          const socket = new WebSocket(wrongProtocol)
+          let message: Record<string, unknown> | null = null
+          const timeout = setTimeout(() => {
+            socket.close()
+            reject(new Error('protocol mismatch socket did not close in time'))
+          }, 10_000)
+          socket.addEventListener('message', (event) => {
+            message = JSON.parse(String(event.data)) as Record<string, unknown>
+          })
+          socket.addEventListener('close', (event) => {
+            clearTimeout(timeout)
+            if (message === null) reject(new Error('protocol mismatch closed without a refusal'))
+            else resolve({ message, closeCode: event.code })
+          })
+          socket.addEventListener('error', () => {
+            clearTimeout(timeout)
+            reject(new Error('protocol mismatch failed before its refusal'))
+          })
+        },
+      )
+      expect(mismatch.message).toEqual({ v: 1, type: 'refused', code: 'protocol_mismatch' })
+      expect(mismatch.closeCode).toBe(4001)
+
+      await expectCrossOriginRefused(directory, ready.socketUrl)
+
+      const encounter = run(directory, 'shared_encounter', ['run', 'headless', '--', ready.socketUrl])
+      const evidence = encounter
+        .split(/\r?\n/)
+        .filter((line) => line.trim().startsWith('{'))
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .find((line) => line.event === 'shared_encounter')
+      expect(evidence).toMatchObject({
+        event: 'shared_encounter',
+        protocol: 1,
+        staleInputRefused: true,
+        authorityViolationRefused: true,
+        rateLimited: true,
+        disconnectObserved: true,
+      })
+      expect(evidence?.players).toBeArrayOfSize(2)
     } catch (error) {
       if (error instanceof SmokeFailure) throw error
       throw new SmokeFailure({
@@ -213,7 +360,8 @@ async function startAndProbe(directory: string): Promise<void> {
       })
     }
   } finally {
-    terminateTree(child)
+    await terminateTree(child)
+    if (bound !== null) await expectPortReleased(bound.host, bound.port)
   }
 }
 
@@ -251,6 +399,7 @@ describe('generated projects install, build, and start without the harness', () 
         dependencies?: Record<string, string>
       }
       expect(manifest.dependencies?.['create-kei-mmo']).toBeUndefined()
+      expect(manifest.dependencies?.ws).toMatch(/^\^8\./)
       if (dimension === '3d') expect(manifest.dependencies?.['@babylonjs/core']).toMatch(/^\^9\./)
       else expect(manifest.dependencies?.['@babylonjs/core']).toBeUndefined()
 
@@ -260,20 +409,22 @@ describe('generated projects install, build, and start without the harness', () 
       run(directory, 'build', ['run', 'build'])
       expect(existsSync(join(directory, 'dist', 'client', 'main.js'))).toBeTrue()
       expect(existsSync(join(directory, 'dist', 'server', 'main.js'))).toBeTrue()
+      expect(existsSync(join(directory, 'dist', 'headless', 'headless.js'))).toBeTrue()
 
       expectPublicHostRefused(directory)
 
-      if (dimension === '3d') {
-        const dependencyTree = run(directory, 'dependency_tree', ['pm', 'ls', '--all'])
-        expect(dependencyTree).not.toContain('create-kei-mmo')
-      }
+      const installedLock = readFileSync(join(directory, 'bun.lock'), 'utf8')
+      expect(installedLock).not.toContain('create-kei-mmo')
 
       const ownedSource = [
         'scripts/build.mjs',
         'src/client/main.ts',
+        'src/client/connection.ts',
+        'src/client/headless.ts',
         'src/server/dev-server.mjs',
         'src/server/main.ts',
         'src/shared/simulation.ts',
+        'src/shared/protocol.ts',
       ].map((file) => readFileSync(join(directory, ...file.split('/')), 'utf8')).join('\n')
       expect(ownedSource).not.toMatch(/(?:from|require\()\s*['"]create-kei-mmo/)
       if (dimension === '3d') {
@@ -287,7 +438,8 @@ describe('generated projects install, build, and start without the harness', () 
         expect(ownedSource).not.toContain('@babylonjs/core')
       }
 
-      await startAndProbe(directory)
-    }, 240_000)
+      const serverRuns = process.platform === 'win32' ? 10 : 1
+      for (let run = 0; run < serverRuns; run += 1) await startAndProbe(directory)
+    }, 360_000)
   }
 })
