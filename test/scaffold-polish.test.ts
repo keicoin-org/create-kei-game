@@ -14,7 +14,7 @@ import {
   polishProjectFiles,
 } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { catalogLicenceBytes, catalogSourceBytes, cyclicSceneGlb, dummySkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, unusedFourthPositionGlb } from './media.js'
+import { ancestorSkeletonAnimationGlb, catalogLicenceBytes, catalogSourceBytes, cyclicSceneGlb, disconnectedJointAnimationGlb, dummySkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, misalignedJointVertexAttributeGlb, misalignedNonSkinVertexAttributeGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, sharedRootSkinAnimationGlb, siblingSkeletonAnimationGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, unusedFourthPositionGlb } from './media.js'
 import { runProcess } from './process.js'
 
 const temporary: string[] = []
@@ -145,6 +145,43 @@ describe('generated project-owned polish checker', () => {
     const result = await check(current.root)
     expect(result.status).toBe(1)
     expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-motion', code: 'media_glb_animation_rig_missing' }))
+  })
+
+  test('generated 3d checker rejects a misaligned non-skin vertex attribute', async () => {
+    const current = fixture('3d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'training-sentinel').processedOutputs[0]
+    const bytes = misalignedNonSkinVertexAttributeGlb(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'training-sentinel', code: 'media_glb_malformed' }))
+  })
+
+  test.each([
+    ['JOINTS_0 at relative byte offset two', misalignedJointVertexAttributeGlb, 'media_glb_malformed'],
+    ['a sibling declared as skeleton', siblingSkeletonAnimationGlb, 'media_glb_animation_rig_missing'],
+    ['joint roots disconnected from the active scene', disconnectedJointAnimationGlb, 'media_glb_animation_rig_missing'],
+  ] as const)('generated 3d checker rejects %s', async (_name, build, expectedCode) => {
+    const current = fixture('3d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'hero-motion').processedOutputs[0]
+    const bytes = build(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ id: 'hero-motion', code: expectedCode }))
+  })
+
+  test.each([
+    ['a shared joint root without an explicit skeleton', sharedRootSkinAnimationGlb],
+    ['a valid ancestor skeleton', ancestorSkeletonAnimationGlb],
+  ] as const)('generated 3d checker accepts %s', async (_name, build) => {
+    const current = fixture('3d', true)
+    const output = current.sources.assets.find((asset: any) => asset.id === 'hero-motion').processedOutputs[0]
+    const bytes = build(); put(current.root, output.path, bytes); output.sha256 = sha256(bytes); output.bytes = bytes.byteLength
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    expect(result.report.problems).not.toContainEqual(expect.objectContaining({ id: 'hero-motion' }))
   })
 
   test('generated 2d checker resolves palette colours before measuring diversity', async () => {

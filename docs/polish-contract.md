@@ -72,18 +72,21 @@ and CRCs, bounded zlib decompression, exact scanline length, reverses filters
 0-4 with bounded row buffers, validates every palette index, and measures
 visible, alpha-normalized resolved pixel colours rather than filtered bytes,
 palette indices, or hidden RGB under full transparency. GLB admission checks
-its only JSON/BIN chunks, buffer-view and accessor byte ranges, requires an
-acyclic single-parent node graph and every declared mesh to be reachable from
-the active scene, and admits only triangle primitives with at least four unique
-referenced positions and no degenerate triangle. Animation admission requires
+its only JSON/BIN chunks, buffer-view and accessor byte ranges, and the glTF
+four-byte relative alignment rule for every primitive vertex attribute. It
+requires an acyclic single-parent node graph and every declared mesh to be
+reachable from the active scene, and admits only triangle primitives with at
+least four unique referenced positions and no degenerate triangle. Animation admission requires
 observable motion on a positively weighted joint from a skin attached to a
 scene-reachable mesh node. Only vertices referenced by valid, nondegenerate
 rendered triangles contribute joint influence; unused accessor padding does
 not. Rendered primitives must carry paired, count-matched, glTF-legal joint and
 weight accessors with bounded joint indices and finite, nonnegative, normalized
 nonzero vertex weights.
-Optional skeleton and inverse-bind-matrix references are validated alongside an
-increasing finite animation timeline.
+Used joints must be active-scene members with a common node ancestor; an
+explicit skeleton must be an ancestor of every joint. Optional skeleton and
+inverse-bind-matrix references are validated alongside an increasing finite
+animation timeline.
 Ogg admission checks page CRCs, stream serial/sequence/flags, packet lacing,
 Opus identification and tags packets, and rejects trivially short single-packet
 audio before a positive-granule EOS. PNG admission rejects tiny or effectively

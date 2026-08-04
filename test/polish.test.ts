@@ -21,7 +21,7 @@ import {
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, cyclicSceneGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, hugeSkinWeightAnimationGlb, indexedQuadGlb, invalidInverseBindMatricesAnimationGlb, misalignedAccessorAnimationGlb, mismatchedSkinAccessorCountAnimationGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, nonFiniteSkinWeightAnimationGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkeletonAnimationGlb, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, outOfRangeSkinJointAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unnormalizedSkinWeightsAnimationGlb, unpairedSkinSetAnimationGlb, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
+import { ancestorSkeletonAnimationGlb, CC0_TEXT, cyclicSceneGlb, disconnectedJointAnimationGlb, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, emptyPaletteTransparencyPng, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, hugeSkinWeightAnimationGlb, indexedQuadGlb, invalidInverseBindMatricesAnimationGlb, misalignedAccessorAnimationGlb, misalignedJointVertexAttributeGlb, misalignedNonSkinVertexAttributeGlb, mismatchedSkinAccessorCountAnimationGlb, missingSkinAttributesAnimationGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, nonFiniteSkinWeightAnimationGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, outOfRangeSkeletonAnimationGlb, outOfRangeSkinIndexAccessorAnimationGlb, outOfRangeSkinIndexAnimationGlb, outOfRangeSkinJointAnimationGlb, oversizedSkinIndexCountAnimationGlb, paddedTriangleGlb, paddingOnlyInfluencedJointAnimationGlb, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, sharedRootSkinAnimationGlb, siblingSkeletonAnimationGlb, tinyGlb, tinyOgg, tinyPng, transparentPalettePng, transparentRgbaPng, uninfluencedJointAnimationGlb, uniformFilteredPng, uniformPalettePng, unnormalizedSkinWeightsAnimationGlb, unpairedSkinSetAnimationGlb, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng, zeroWeightSkinAnimationGlb } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -152,6 +152,22 @@ describe('admitted media and licence byte semantics', () => {
     expect(validatePolishMediaBytes('model', sceneTriangleGlb())).toEqual([])
     expect(validatePolishMediaBytes('model', indexedQuadGlb())).toEqual([])
     expect(validatePolishMediaBytes('animation', riggedAnimationGlb())).toEqual([])
+    expect(validatePolishMediaBytes('animation', sharedRootSkinAnimationGlb())).toEqual([])
+    expect(validatePolishMediaBytes('animation', ancestorSkeletonAnimationGlb())).toEqual([])
+  })
+
+  test.each([
+    ['a non-skin COLOR_0 accessor with a relative byte offset of two', 'model', misalignedNonSkinVertexAttributeGlb],
+    ['a JOINTS_0 accessor at absolute byte 40 but relative byte offset two', 'animation', misalignedJointVertexAttributeGlb],
+  ] as const)('rejects %s', (_name, kind, build) => {
+    expect(validatePolishMediaBytes(kind, build())).toEqual(['media_glb_malformed'])
+  })
+
+  test.each([
+    ['a sibling declared as the skeleton', siblingSkeletonAnimationGlb],
+    ['joint roots disconnected from the active scene', disconnectedJointAnimationGlb],
+  ] as const)('rejects animation skin hierarchy with %s', (_name, build) => {
+    expect(validatePolishMediaBytes('animation', build())).toEqual(['media_glb_animation_rig_missing'])
   })
 
   test('does not admit an animated joint influenced only by indexed accessor padding', () => {

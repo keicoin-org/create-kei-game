@@ -554,7 +554,12 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
       if (((bufferView.byteOffset ?? 0) + accessorOffset) % componentSize !== 0 || stride < elementBytes || accessorOffset + (accessor.count - 1) * stride + elementBytes > bufferView.byteLength) return ['media_glb_malformed']
     }
     const validAccessor = (item: unknown) => integer(item, 0, accessors.length - 1)
-    const vertexAccessorAligned = (index: number) => { const accessor = accessors[index]; const bufferView = bufferViews[accessor.bufferView]; return ((bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0)) % 4 === 0 }
+    const vertexAccessorAligned = (index: number) => {
+      const accessor = accessors[index]; const bufferView = accessor && bufferViews[accessor.bufferView]; const componentSize = accessor && componentBytes[accessor.componentType]
+      if (!accessor || !bufferView || !componentSize) return false
+      const accessorOffset = accessor.byteOffset ?? 0; const viewOffset = bufferView.byteOffset ?? 0
+      return accessorOffset % 4 === 0 && accessorOffset % componentSize === 0 && (viewOffset + accessorOffset) % componentSize === 0 && (bufferView.byteStride === undefined || bufferView.byteStride % 4 === 0)
+    }
     const accessorFloats = (index: number): number[] | null => {
       const accessor = accessors[index]; if (!accessor || accessor.componentType !== 5126) return null
       const bufferView = bufferViews[accessor.bufferView]; const components = typeComponents[accessor.type]; if (!bufferView || !components) return null
@@ -568,6 +573,11 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
       return accessor.componentType === 5121 ? view.getUint8(at) : accessor.componentType === 5123 ? view.getUint16(at, true) : view.getFloat32(at, true)
     }
     if (gltf.meshes !== undefined && (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || gltf.meshes.some((mesh: any) => !record(mesh) || !Array.isArray(mesh.primitives) || mesh.primitives.length < 1 || mesh.primitives.some((primitive: any) => !record(primitive) || !record(primitive.attributes) || Object.values(primitive.attributes).some((accessor) => !validAccessor(accessor)) || (primitive.indices !== undefined && !validAccessor(primitive.indices)) || (primitive.mode !== undefined && !integer(primitive.mode, 0, 6)))))) return ['media_glb_malformed']
+    if (gltf.meshes !== undefined) for (const mesh of gltf.meshes) for (const primitive of mesh.primitives) {
+      if (primitive.targets !== undefined && (!Array.isArray(primitive.targets) || primitive.targets.some((target: unknown) => !record(target) || Object.values(target).some((accessor) => !validAccessor(accessor))))) return ['media_glb_malformed']
+      const vertexAccessors = [...Object.values(primitive.attributes), ...(primitive.targets ?? []).flatMap((target: Record<string, unknown>) => Object.values(target))]
+      if (vertexAccessors.some((accessor) => !vertexAccessorAligned(accessor as number))) return ['media_glb_malformed']
+    }
     if (!Array.isArray(gltf.nodes) || gltf.nodes.length < 1 || gltf.nodes.length > 65_536 || gltf.nodes.some((node: any) => !record(node) || (node.mesh !== undefined && !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)) || (node.children !== undefined && (!Array.isArray(node.children) || node.children.some((child: unknown) => !integer(child, 0, gltf.nodes.length - 1)))))) return ['media_glb_malformed']
     if (!Array.isArray(gltf.scenes) || gltf.scenes.length < 1 || gltf.scenes.length > 65_536 || !integer(gltf.scene, 0, gltf.scenes.length - 1) || gltf.scenes.some((scene: any) => !record(scene) || !Array.isArray(scene.nodes) || scene.nodes.length > gltf.nodes.length || scene.nodes.some((node: unknown) => !integer(node, 0, gltf.nodes.length - 1)))) return ['media_glb_malformed']
     const parentCounts = new Uint8Array(gltf.nodes.length)
@@ -577,6 +587,17 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     const remainingParents = parentCounts.slice(); let graphNodes = 0
     for (let cursor = 0; cursor < graphQueue.length; cursor += 1) { const node = graphQueue[cursor] as number; graphNodes += 1; for (const child of gltf.nodes[node].children ?? []) { remainingParents[child] = (remainingParents[child] as number) - 1; if (remainingParents[child] === 0) graphQueue.push(child) } }
     if (graphNodes !== gltf.nodes.length) return ['media_glb_malformed']
+    const ancestryStarts = new Uint32Array(gltf.nodes.length); const ancestryEnds = new Uint32Array(gltf.nodes.length); const graphRoots = new Int32Array(gltf.nodes.length); graphRoots.fill(-1); let ancestryClock = 0
+    for (let root = 0; root < gltf.nodes.length; root += 1) if (parentCounts[root] === 0) {
+      const ancestryStack = [root]
+      while (ancestryStack.length) {
+        const entry = ancestryStack.pop() as number
+        if (entry < 0) { ancestryEnds[~entry] = ancestryClock; continue }
+        ancestryStarts[entry] = ancestryClock; ancestryClock += 1; graphRoots[entry] = root; ancestryStack.push(~entry)
+        const children = gltf.nodes[entry].children ?? []; for (let child = children.length - 1; child >= 0; child -= 1) ancestryStack.push(children[child] as number)
+      }
+    }
+    const nodeAncestorOf = (ancestor: number, node: number) => graphRoots[ancestor] === graphRoots[node] && (ancestryStarts[ancestor] as number) <= (ancestryStarts[node] as number) && (ancestryEnds[node] as number) <= (ancestryEnds[ancestor] as number)
     const reachableNodes = new Set<number>(); const pendingNodes = [...gltf.scenes[gltf.scene].nodes]
     while (pendingNodes.length) { const node = pendingNodes.pop() as number; if (reachableNodes.has(node)) continue; reachableNodes.add(node); for (const child of gltf.nodes[node].children ?? []) pendingNodes.push(child) }
     const indexAccessor = (index: number): { count: number; value: (element: number) => number } | null => {
@@ -636,10 +657,16 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
         return output?.type === expectedType && output?.componentType === 5126 && output.count === input.count * multiplier
       }))) return ['media_glb_missing_animation']
       if (!Array.isArray(gltf.skins) || gltf.skins.length < 1 || gltf.skins.some((skin: any) => !record(skin) || !Array.isArray(skin.joints) || skin.joints.length < 2 || new Set(skin.joints).size !== skin.joints.length || skin.joints.some((joint: unknown) => !integer(joint, 0, gltf.nodes.length - 1)) || (skin.skeleton !== undefined && !integer(skin.skeleton, 0, gltf.nodes.length - 1)) || (skin.inverseBindMatrices !== undefined && (!validAccessor(skin.inverseBindMatrices) || accessors[skin.inverseBindMatrices].type !== 'MAT4' || accessors[skin.inverseBindMatrices].componentType !== 5126 || accessors[skin.inverseBindMatrices].normalized === true || accessors[skin.inverseBindMatrices].count !== skin.joints.length)))) return ['media_glb_animation_rig_missing']
-      const usedSkins = new Set<number>(); const influencedJoints = new Set<number>(); const validatedSkinMeshes = new Set<string>(); const checkedInverseAccessors = new Set<number>(); let decodedSkinComponents = 0
+      const usedSkins = new Set<number>(); const influencedJoints = new Set<number>(); const validatedSkinMeshes = new Set<string>(); const validatedSkinHierarchies = new Set<number>(); const checkedInverseAccessors = new Set<number>(); let decodedSkinComponents = 0
       for (const nodeIndex of reachableNodes) { const node = gltf.nodes[nodeIndex]; if (node.skin !== undefined) {
         if (!integer(node.skin, 0, gltf.skins.length - 1) || !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)) return ['media_glb_animation_rig_missing']
         const skin = gltf.skins[node.skin]
+        if (!validatedSkinHierarchies.has(node.skin)) {
+          const root = graphRoots[skin.joints[0]] as number
+          if (root < 0 || skin.joints.some((joint: number) => !reachableNodes.has(joint) || graphRoots[joint] !== root)) return ['media_glb_animation_rig_missing']
+          if (skin.skeleton !== undefined && (!reachableNodes.has(skin.skeleton) || graphRoots[skin.skeleton] !== root || skin.joints.some((joint: number) => !nodeAncestorOf(skin.skeleton, joint)))) return ['media_glb_animation_rig_missing']
+          validatedSkinHierarchies.add(node.skin)
+        }
         if (skin.inverseBindMatrices !== undefined && !checkedInverseAccessors.has(skin.inverseBindMatrices)) { decodedSkinComponents += accessors[skin.inverseBindMatrices].count * 16; if (decodedSkinComponents > 16_777_216 || !accessorFloats(skin.inverseBindMatrices)) return ['media_glb_malformed']; checkedInverseAccessors.add(skin.inverseBindMatrices) }
         const skinMesh = `${node.skin}:${node.mesh}`; if (!validatedSkinMeshes.has(skinMesh)) {
         for (const primitive of gltf.meshes[node.mesh].primitives) {
