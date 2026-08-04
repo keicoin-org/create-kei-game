@@ -11,13 +11,22 @@
  * those files belongs to the project. None of them imports this harness, and
  * deleting the harness from the machine changes nothing about them.
  *
- * What is deliberately *not* here: networking, server authority, persistence,
- * the Kei ledger, and anything that could be called finished art. Those are the
- * plan's steps, and a scaffold that pre-wrote them would be guessing at the
- * design the plan exists to state.
+ * The server now owns one deliberately small protocol boundary: hello, welcome,
+ * and an initial snapshot. Replication, movement, persistence, the Kei ledger,
+ * and anything that could be called finished art remain plan steps.
  */
 
 import { contentProjectFiles, CONTENT_CHECK_PATH } from './content-project.js'
+import {
+  CONNECTION_PATH,
+  connectionProjectFiles,
+  GAME_PROTOCOL_VERSION,
+  GAME_SOCKET_PATH,
+  HEADLESS_CLIENT_BUNDLE,
+  HEADLESS_CLIENT_PATH,
+  WEBSOCKET_PACKAGE,
+  WEBSOCKET_RANGE,
+} from './scaffold-connect.js'
 import { PLAN_JSON_PATH, PLAN_MARKDOWN_PATH, type ImplementationPlan } from './plan.js'
 import type { ProjectIdentity, WorkspaceFile } from './source.js'
 
@@ -46,6 +55,14 @@ export const CLIENT_BUNDLE = 'client/main.js'
 export const DEV_READY_EVENT = 'ready'
 export const DEV_SERVICE = 'kei-dev-server'
 export const DEFAULT_DEV_PORT = 5173
+
+export {
+  CONNECTION_PATH,
+  GAME_PROTOCOL_VERSION,
+  GAME_SOCKET_PATH,
+  HEADLESS_CLIENT_BUNDLE,
+  HEADLESS_CLIENT_PATH,
+} from './scaffold-connect.js'
 
 function escapeHtml(value: string): string {
   return value
@@ -76,6 +93,7 @@ export function projectFiles(
     { path: BUILD_SCRIPT_PATH, contents: buildScript() },
     { path: SIMULATION_PATH, contents: simulation() },
     { path: CLIENT_PATH, contents: solid ? client3d(project) : client2d(project) },
+    ...connectionProjectFiles(),
     { path: SERVER_PATH, contents: server() },
     { path: DEV_SERVER_PATH, contents: devServer() },
     ...contentFiles,
@@ -93,9 +111,13 @@ function manifest(project: ProjectIdentity, solid: boolean, withContent: boolean
     scripts: {
       build: `bun run ${BUILD_SCRIPT_PATH}`,
       dev: `bun run ${DEV_SERVER_PATH}`,
+      headless: `bun run ${OUTPUT_DIRECTORY}/${HEADLESS_CLIENT_BUNDLE}`,
       ...(withContent ? { 'content:check': `node ${CONTENT_CHECK_PATH}` } : {}),
     },
-    ...(solid ? { dependencies: { [RENDERER_PACKAGE]: RENDERER_RANGE } } : {}),
+    dependencies: {
+      [WEBSOCKET_PACKAGE]: WEBSOCKET_RANGE,
+      ...(solid ? { [RENDERER_PACKAGE]: RENDERER_RANGE } : {}),
+    },
   }
   return `${JSON.stringify(value, null, 2)}\n`
 }
@@ -153,17 +175,27 @@ bun install
 bun run dev
 \`\`\`
 
-\`bun run dev\` builds the client and serves \`${OUTPUT_DIRECTORY}/\` on
+\`bun run dev\` builds the client, accepts a game connection, and serves
+\`${OUTPUT_DIRECTORY}/\` on
 http://127.0.0.1:${DEFAULT_DEV_PORT}. It prints one JSON line when it is listening —
 
 \`\`\`json
-{"event":"${DEV_READY_EVENT}","service":"${DEV_SERVICE}","url":"http://127.0.0.1:${DEFAULT_DEV_PORT}/","port":${DEFAULT_DEV_PORT}}
+{"event":"${DEV_READY_EVENT}","service":"${DEV_SERVICE}","url":"http://127.0.0.1:${DEFAULT_DEV_PORT}/","socketUrl":"ws://127.0.0.1:${DEFAULT_DEV_PORT}${GAME_SOCKET_PATH}?protocol=${GAME_PROTOCOL_VERSION}","protocol":${GAME_PROTOCOL_VERSION},"port":${DEFAULT_DEV_PORT}}
 \`\`\`
 
 — so a script can wait for the server instead of sleeping and hoping. Set
 \`PORT=0\` to take whatever port is free and read the real one back off that line.
 The server accepts only numeric loopback hosts: \`127.0.0.1\` (the default) or
 \`::1\`. An inherited \`HOST\` cannot accidentally publish this development server.
+
+Exercise the browser's connection path without rendering a frame:
+
+\`\`\`sh
+bun run headless -- ws://127.0.0.1:${DEFAULT_DEV_PORT}${GAME_SOCKET_PATH}
+\`\`\`
+
+The command succeeds only after receiving a server-authored initial snapshot and
+completing the WebSocket close handshake.
 
 \`bun run build\` produces the same bundle without serving it, and prints one JSON
 line of its own.
@@ -176,9 +208,9 @@ ${draws}
 client already runs it on an accumulator, so the frame rate and the simulation
 rate are separate from the first commit.
 
-Nothing here is networked. \`${SERVER_PATH}\` owns a tick and a world and listens
-on no socket; there is no session, no replication, no persistence, and no
-economy. Those are plan steps, not omissions the scaffold is hiding.
+\`${SERVER_PATH}\` authors the initial world and \`${DEV_SERVER_PATH}\` exposes it
+through a versioned, loopback-only WebSocket. This proves one client connection,
+not replicated movement, persistence, forged-input rejection, or an economy.
 
 ## The plan
 
@@ -195,10 +227,10 @@ your repository, not a contract.
 
 | Path | What lives here |
 |---|---|
-| \`src/shared/\` | The simulation, and the wire schema. Imported by both sides. |
-| \`src/client/\` | Rendering, input, and prediction. Owns no authority. |
-| \`src/server/\` | A local fixed-tick construction seam. No socket, authority, persistence, or settlement yet. |
-| \`${DEV_SERVER_PATH}\` | The static dev server. Plain \`node:http\`, no dependency. |
+| \`src/shared/\` | The simulation and exact v1 hello/welcome schema. Imported by both sides. |
+| \`src/client/\` | Rendering plus one browser/headless connection path. Owns no authority. |
+| \`src/server/\` | Initial snapshot authority and a fixed-tick construction seam. No replication, persistence, or settlement yet. |
+| \`${DEV_SERVER_PATH}\` | The loopback WebSocket and static development server. |
 | \`${BUILD_SCRIPT_PATH}\` | The build. Bundles the client and copies \`static/\`. |
 | \`${PAGE_PATH}\` | The page and the canvas the client takes over. |
 
@@ -292,6 +324,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 export const OUT_DIR = join(ROOT, '${OUTPUT_DIRECTORY}')
 export const ENTRY = join(ROOT, '${CLIENT_PATH}')
+export const HEADLESS_ENTRY = join(ROOT, '${HEADLESS_CLIENT_PATH}')
 
 /**
  * A failure with a code on it. Every exit path in this project reports one, so
@@ -341,6 +374,18 @@ export async function build({ minify = true } = {}) {
     throw new BuildFailure('server_bundle_failed', server.logs.map((log) => String(log)).join('\\n'))
   }
 
+  const headless = await Bun.build({
+    entrypoints: [HEADLESS_ENTRY],
+    outdir: join(OUT_DIR, 'headless'),
+    target: 'bun',
+    format: 'esm',
+    minify,
+    sourcemap: 'linked',
+  })
+  if (!headless.success) {
+    throw new BuildFailure('headless_bundle_failed', headless.logs.map((log) => String(log)).join('\\n'))
+  }
+
   // static/ last: it owns index.html, and the page is what ties the bundle to a
   // canvas. Copying it over the bundle directory keeps the output one tree.
   await cp(join(ROOT, 'static'), OUT_DIR, { recursive: true })
@@ -351,10 +396,21 @@ export async function build({ minify = true } = {}) {
     throw new BuildFailure('bundle_missing', \`the bundler reported success but \${bundle} is missing or empty\`)
   }
 
+  const headlessBundle = join(OUT_DIR, '${HEADLESS_CLIENT_BUNDLE}')
+  const headlessInfo = await stat(headlessBundle).catch(() => null)
+  if (headlessInfo === null || headlessInfo.size === 0) {
+    throw new BuildFailure(
+      'headless_bundle_missing',
+      \`the bundler reported success but \${headlessBundle} is missing or empty\`,
+    )
+  }
+
   return {
     outDir: '${OUTPUT_DIRECTORY}',
     entry: '${CLIENT_BUNDLE}',
     bytes: info.size,
+    headlessEntry: '${HEADLESS_CLIENT_BUNDLE}',
+    headlessBytes: headlessInfo.size,
     ms: Date.now() - started,
   }
 }
@@ -382,7 +438,8 @@ if (invokedDirectly) {
 function devServer(): string {
   return `#!/usr/bin/env bun
 /**
- * The dev server: build once, then serve ${OUTPUT_DIRECTORY}/ over plain node:http.
+ * The dev server: build once, then serve ${OUTPUT_DIRECTORY}/ and the game
+ * WebSocket on the same loopback-only node:http listener.
  *
  * It prints exactly one machine-readable line when it is listening —
  *
@@ -396,14 +453,19 @@ function devServer(): string {
  * default and is a development server: no caching, no compression, no TLS, and
  * nothing here is meant to face the internet.
  *
- * This file is yours. It imports the project's own build and nothing else.
+ * This file is yours. Its runtime imports are all declared in package.json or
+ * emitted beside it in this generated project.
  */
 import { createServer } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { isIP } from 'node:net'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
+import { WebSocketServer } from '${WEBSOCKET_PACKAGE}'
 
 import { build, OUT_DIR } from '../../scripts/build.mjs'
+import { authoritativeSnapshot } from './main.ts'
+import { GAME_PATH, helloCode, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, refused } from '../shared/protocol.ts'
 
 const HOST = process.env.HOST ?? '127.0.0.1'
 const PORT = Number.parseInt(process.env.PORT ?? '${DEFAULT_DEV_PORT}', 10)
@@ -461,7 +523,16 @@ const server = createServer((request, response) => {
 
   if (url.pathname === '/__dev/status') {
     response.writeHead(200, { 'content-type': TYPES['.json'] })
-    response.end(JSON.stringify({ service: '${DEV_SERVICE}', root: '${OUTPUT_DIRECTORY}', entry: '${CLIENT_BUNDLE}' }))
+    response.end(JSON.stringify({
+      service: '${DEV_SERVICE}', root: '${OUTPUT_DIRECTORY}', entry: '${CLIENT_BUNDLE}',
+      socketPath: GAME_PATH, protocol: PROTOCOL_VERSION,
+    }))
+    return
+  }
+
+  if (url.pathname === GAME_PATH) {
+    response.writeHead(426, { 'content-type': TYPES['.json'] })
+    response.end(JSON.stringify({ event: 'error', code: 'websocket_required', protocol: PROTOCOL_VERSION }))
     return
   }
 
@@ -488,10 +559,55 @@ const server = createServer((request, response) => {
     })
 })
 
+const sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES })
+server.on('upgrade', (request, socket, head) => {
+  const url = new URL(request.url ?? '/', 'http://' + (request.headers.host ?? HOST))
+  if (url.pathname !== GAME_PATH) {
+    socket.destroy()
+    return
+  }
+  sockets.handleUpgrade(request, socket, head, (websocket) => sockets.emit('connection', websocket, request))
+})
+
+sockets.on('connection', (socket, request) => {
+  const url = new URL(request.url ?? '/', 'http://' + (request.headers.host ?? HOST))
+  if (url.searchParams.get('protocol') !== String(PROTOCOL_VERSION)) {
+    socket.send(JSON.stringify(refused('protocol_mismatch')))
+    socket.close(4001, 'protocol_mismatch')
+    return
+  }
+  let welcomed = false
+  // A rejected oversized or malformed frame is a client failure, not a process failure.
+  socket.on('error', () => {})
+  socket.on('message', (bytes) => {
+    if (welcomed) {
+      socket.send(JSON.stringify(refused('session_order')))
+      socket.close(4002, 'session_order')
+      return
+    }
+    const raw = String(bytes)
+    const code = Buffer.byteLength(raw) > MAX_MESSAGE_BYTES ? 'invalid_message' : helloCode(raw)
+    if (code !== null) {
+      socket.send(JSON.stringify(refused(code)))
+      socket.close(code === 'protocol_mismatch' ? 4001 : 4002, code)
+      return
+    }
+    welcomed = true
+    const playerId = randomUUID()
+    socket.send(JSON.stringify({
+      v: PROTOCOL_VERSION,
+      type: 'welcome',
+      playerId,
+      snapshot: authoritativeSnapshot(playerId),
+    }))
+  })
+})
+
 server.on('error', (error) => fail('listen_failed', String(error && error.message ? error.message : error)))
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
+    sockets.close()
     server.close(() => process.exit(0))
     // A held-open keep-alive socket must not outlive the signal.
     server.closeAllConnections?.()
@@ -517,6 +633,8 @@ server.listen(PORT, HOST, () => {
       event: '${DEV_READY_EVENT}',
       service: '${DEV_SERVICE}',
       url,
+      socketUrl: 'ws://' + authority + ':' + port + GAME_PATH + '?protocol=' + PROTOCOL_VERSION,
+      protocol: PROTOCOL_VERSION,
       host: HOST,
       port,
       root: '${OUTPUT_DIRECTORY}',
@@ -614,11 +732,11 @@ function client3d(project: ProjectIdentity): string {
  * The render loop never mutates simulation state and the simulation never reads
  * a frame time — that separation is the whole point of doing it this early.
  *
- * What is not here: no asset is loaded, no clip plays, nothing is networked,
- * and the box is a box. The plan's "First frame" and "A player you can move"
- * steps are where this stops being scaffolding.
+ * What is not here: no asset is loaded, no clip plays, no state is replicated,
+ * and the box is a box. The browser does execute the same one-snapshot game
+ * connection as the headless client; movement remains a later plan step.
  *
- * This file is yours. It imports Babylon and the project's own simulation.
+ * This file is yours. It imports Babylon and project-owned client/shared code.
  */
 
 import { Engine } from '@babylonjs/core/Engines/engine.js'
@@ -632,6 +750,7 @@ import { CreateGround } from '@babylonjs/core/Meshes/Builders/groundBuilder.js'
 import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder.js'
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial.js'
 
+import { connectGame } from './connection.js'
 import { emptyWorld, LOCAL_PLAYER, STEP_MS, step, type WorldState } from '../shared/simulation.js'
 
 export const TITLE = ${JSON.stringify(project.title)}
@@ -721,14 +840,20 @@ const canvas = document.getElementById('game')
 const status = document.getElementById('status')
 
 if (canvas instanceof HTMLCanvasElement) {
+  let connected = false
   let shown = -1
   start(canvas, (world) => {
     // The dirty check, from the first line of HUD code: writing textContent
     // every frame is layout work every frame.
     if (status === null || world.tick === shown) return
     shown = world.tick
-    status.textContent = 'tick ' + world.tick
+    status.textContent = (connected ? 'connected · ' : 'offline · ') + 'tick ' + world.tick
   })
+  void connectGame(window.location.href).then((connection) => {
+    connected = true
+    if (status !== null) status.textContent = 'connected · authoritative tick ' + connection.snapshot.tick
+    window.addEventListener('beforeunload', () => { void connection.close() }, { once: true })
+  }).catch(() => { if (status !== null) status.textContent = 'game server unavailable' })
 } else if (status !== null) {
   status.textContent = 'no <canvas id="game"> on the page'
 }
@@ -750,9 +875,10 @@ function client2d(project: ProjectIdentity): string {
  * frame, and a clamped delta so a backgrounded tab does not fast-forward the
  * world on return.
  *
- * This file is yours, and it imports nothing but the project's own simulation.
+ * This file is yours, and its imports are project-owned client/shared code.
  */
 
+import { connectGame } from './connection.js'
 import { emptyWorld, LOCAL_PLAYER, STEP_MS, step, type WorldState } from '../shared/simulation.js'
 
 export const TITLE = ${JSON.stringify(project.title)}
@@ -867,12 +993,18 @@ const canvas = document.getElementById('game')
 const status = document.getElementById('status')
 
 if (canvas instanceof HTMLCanvasElement) {
+  let connected = false
   let shown = -1
   start(canvas, (world) => {
     if (status === null || world.tick === shown) return
     shown = world.tick
-    status.textContent = 'tick ' + world.tick
+    status.textContent = (connected ? 'connected · ' : 'offline · ') + 'tick ' + world.tick
   })
+  void connectGame(window.location.href).then((connection) => {
+    connected = true
+    if (status !== null) status.textContent = 'connected · authoritative tick ' + connection.snapshot.tick
+    window.addEventListener('beforeunload', () => { void connection.close() }, { once: true })
+  }).catch(() => { if (status !== null) status.textContent = 'game server unavailable' })
 } else if (status !== null) {
   status.textContent = 'no <canvas id="game"> on the page'
 }
@@ -881,17 +1013,22 @@ if (canvas instanceof HTMLCanvasElement) {
 
 function server(): string {
   return `/**
- * Shard entry. Owns the tick, and — once the plan's networking step lands — the
- * truth and every economic action.
+ * Shard entry. Authors the initial snapshot and owns the fixed-step seam that
+ * later network-authority work extends.
  *
- * It listens on nothing. There is no socket, no session, no validation, and no
- * persistence in this file yet, and it does not pretend otherwise: what it has
- * is the accumulator loop that the authoritative server is built out of.
+ * The loopback transport and exact hello validation live in dev-server.mjs.
+ * There is no replicated movement, persistence, or economic action yet; the
+ * accumulator below remains the seam those later steps build on.
  *
  * This file is yours.
  */
 
 import { emptyWorld, STEP_MS, step, type PlayerInput, type WorldState } from '../shared/simulation.js'
+
+/** The server assigns the identity and authors the first snapshot. */
+export function authoritativeSnapshot(playerId: string): WorldState {
+  return { tick: 0, players: { [playerId]: { x: 0, y: 0, z: 0 } } }
+}
 
 export interface Shard {
   readonly state: WorldState

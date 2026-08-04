@@ -155,6 +155,9 @@ describe('scaffolded source', () => {
         'scripts/build.mjs',
         'src/shared/simulation.ts',
         'src/client/main.ts',
+        'src/shared/protocol.ts',
+        'src/client/connection.ts',
+        'src/client/headless.ts',
         'src/server/main.ts',
         'src/server/dev-server.mjs',
         // SCAFFOLD_PLAN is 3D, so the content pipeline lands with it. No
@@ -191,7 +194,7 @@ describe('scaffolded source', () => {
     )
     expect(result.created).toBe(true)
     expect(forced.fs.entries.get('/work/my-game')).toEqual(['notes.txt'])
-    expect(forced.fs.writes.size).toBe(15)
+    expect(forced.fs.writes.size).toBe(18)
   })
 
   test('refuses to treat a file as a destination, including under force', async () => {

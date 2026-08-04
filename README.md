@@ -182,9 +182,12 @@ salvage-run/
 ├── static/index.html              # canvas and construction-grade HUD
 ├── tsconfig.json
 └── src/
-    ├── client/main.ts
-    ├── server/dev-server.mjs      # local static server, JSON readiness
-    ├── server/main.ts             # fixed-tick seam; no networking yet
+    ├── client/main.ts             # renders and opens the game connection
+    ├── client/connection.ts       # shared browser/headless connection path
+    ├── client/headless.ts         # one-client black-box probe
+    ├── server/dev-server.mjs      # loopback WebSocket + static server
+    ├── server/main.ts             # authors the initial world snapshot
+    ├── shared/protocol.ts         # exact versioned hello/welcome schema
     ├── shared/simulation.ts
     └── shared/cutscene.ts        # the player, with the cut-scenes; imports nothing
 ```
@@ -192,9 +195,12 @@ salvage-run/
 For a scaffold, `bun install`, `bun run build`, and `PORT=0 bun run dev` work
 without edits. A 3D scaffold owns a minimal Babylon.js scene; a 2D scaffold
 owns a Canvas construction frame and explicitly does not claim a tile or sprite
-renderer. The dev server is local static HTTP only. Networking, server
-authority, persistence, Kei trade, and presentation remain plan steps. Deleting
-this harness does not affect the generated project's dependencies or runtime.
+renderer. The loopback dev server accepts one versioned game connection, and
+`bun run headless -- <socket-url>` receives a server-authored initial snapshot
+through the browser's connection path before cleanly disconnecting. That is
+criterion 3 only: replicated movement, persistence, forged-input rejection, Kei
+trade, and presentation remain plan steps. Deleting this harness does not affect
+the generated project's dependencies or runtime.
 
 When the planner clones a reference project instead, the clone arrives with
 those same two plan files written into it, including the reason it was chosen

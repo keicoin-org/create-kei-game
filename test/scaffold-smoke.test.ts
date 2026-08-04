@@ -111,7 +111,13 @@ async function startAndProbe(directory: string): Promise<void> {
   child.stderr.on('data', (chunk: string) => { stderr += chunk })
 
   try {
-    const ready = await new Promise<{ readonly url: string; readonly host: string; readonly port: number }>((resolve, reject) => {
+    const ready = await new Promise<{
+      readonly url: string
+      readonly socketUrl: string
+      readonly host: string
+      readonly port: number
+      readonly protocol: number
+    }>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new SmokeFailure({
           code: 'dev_ready_timed_out',
@@ -130,18 +136,28 @@ async function startAndProbe(directory: string): Promise<void> {
               event?: unknown
               service?: unknown
               url?: unknown
+              socketUrl?: unknown
               host?: unknown
               port?: unknown
+              protocol?: unknown
             }
             if (
               record.event === 'ready' &&
               record.service === 'kei-dev-server' &&
               typeof record.url === 'string' &&
+              typeof record.socketUrl === 'string' &&
               typeof record.host === 'string' &&
-              typeof record.port === 'number'
+              typeof record.port === 'number' &&
+              record.protocol === 1
             ) {
               clearTimeout(timeout)
-              resolve({ url: record.url, host: record.host, port: record.port })
+              resolve({
+                url: record.url,
+                socketUrl: record.socketUrl,
+                host: record.host,
+                port: record.port,
+                protocol: record.protocol,
+              })
               return
             }
           } catch {
@@ -167,7 +183,9 @@ async function startAndProbe(directory: string): Promise<void> {
 
     expect(ready.host).toBe('127.0.0.1')
     expect(ready.port).toBeGreaterThan(0)
+    expect(ready.protocol).toBe(1)
     expect(new URL(ready.url).hostname).toBe('127.0.0.1')
+    expect(new URL(ready.socketUrl).hostname).toBe('127.0.0.1')
 
     try {
       const page = await fetch(ready.url, { signal: AbortSignal.timeout(10_000) })
@@ -201,7 +219,76 @@ async function startAndProbe(directory: string): Promise<void> {
         service: 'kei-dev-server',
         root: 'dist',
         entry: 'client/main.js',
+        socketPath: '/game',
+        protocol: 1,
       })
+
+      const wrongProtocol = new URL(ready.socketUrl)
+      wrongProtocol.searchParams.set('protocol', '2')
+      const mismatch = await new Promise<{ readonly message: Record<string, unknown>; readonly closeCode: number }>(
+        (resolve, reject) => {
+          const socket = new WebSocket(wrongProtocol)
+          let message: Record<string, unknown> | null = null
+          const timeout = setTimeout(() => {
+            socket.close()
+            reject(new Error('protocol mismatch socket did not close in time'))
+          }, 10_000)
+          socket.addEventListener('message', (event) => {
+            message = JSON.parse(String(event.data)) as Record<string, unknown>
+          })
+          socket.addEventListener('close', (event) => {
+            clearTimeout(timeout)
+            if (message === null) reject(new Error('protocol mismatch closed without a refusal'))
+            else resolve({ message, closeCode: event.code })
+          })
+          socket.addEventListener('error', () => {
+            clearTimeout(timeout)
+            reject(new Error('protocol mismatch failed before its refusal'))
+          })
+        },
+      )
+      expect(mismatch.message).toEqual({ v: 1, type: 'refused', code: 'protocol_mismatch' })
+      expect(mismatch.closeCode).toBe(4001)
+
+      const invalidHello = await new Promise<{ readonly message: Record<string, unknown>; readonly closeCode: number }>(
+        (resolve, reject) => {
+          const socket = new WebSocket(ready.socketUrl)
+          let message: Record<string, unknown> | null = null
+          const timeout = setTimeout(() => {
+            socket.close()
+            reject(new Error('invalid hello socket did not close in time'))
+          }, 10_000)
+          socket.addEventListener('open', () => socket.send(JSON.stringify({ v: 1, type: 'hello', extra: true })))
+          socket.addEventListener('message', (event) => {
+            message = JSON.parse(String(event.data)) as Record<string, unknown>
+          })
+          socket.addEventListener('close', (event) => {
+            clearTimeout(timeout)
+            if (message === null) reject(new Error('invalid hello closed without a refusal'))
+            else resolve({ message, closeCode: event.code })
+          })
+          socket.addEventListener('error', () => {
+            clearTimeout(timeout)
+            reject(new Error('invalid hello failed before its refusal'))
+          })
+        },
+      )
+      expect(invalidHello.message).toEqual({ v: 1, type: 'refused', code: 'invalid_message' })
+      expect(invalidHello.closeCode).toBe(4002)
+
+      const headless = run(directory, 'headless_connect', ['run', 'headless', '--', ready.socketUrl])
+      const evidence = headless
+        .split(/\r?\n/)
+        .filter((line) => line.trim().startsWith('{'))
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .find((line) => line.event === 'headless_connected')
+      expect(evidence).toMatchObject({
+        event: 'headless_connected',
+        protocol: 1,
+        tick: 0,
+        cleanDisconnect: true,
+      })
+      expect(evidence?.playerId).toBeString()
     } catch (error) {
       if (error instanceof SmokeFailure) throw error
       throw new SmokeFailure({
@@ -251,6 +338,7 @@ describe('generated projects install, build, and start without the harness', () 
         dependencies?: Record<string, string>
       }
       expect(manifest.dependencies?.['create-kei-mmo']).toBeUndefined()
+      expect(manifest.dependencies?.ws).toMatch(/^\^8\./)
       if (dimension === '3d') expect(manifest.dependencies?.['@babylonjs/core']).toMatch(/^\^9\./)
       else expect(manifest.dependencies?.['@babylonjs/core']).toBeUndefined()
 
@@ -260,6 +348,7 @@ describe('generated projects install, build, and start without the harness', () 
       run(directory, 'build', ['run', 'build'])
       expect(existsSync(join(directory, 'dist', 'client', 'main.js'))).toBeTrue()
       expect(existsSync(join(directory, 'dist', 'server', 'main.js'))).toBeTrue()
+      expect(existsSync(join(directory, 'dist', 'headless', 'headless.js'))).toBeTrue()
 
       expectPublicHostRefused(directory)
 
@@ -270,10 +359,13 @@ describe('generated projects install, build, and start without the harness', () 
 
       const ownedSource = [
         'scripts/build.mjs',
+        'src/client/connection.ts',
+        'src/client/headless.ts',
         'src/client/main.ts',
         'src/server/dev-server.mjs',
         'src/server/main.ts',
         'src/shared/simulation.ts',
+        'src/shared/protocol.ts',
       ].map((file) => readFileSync(join(directory, ...file.split('/')), 'utf8')).join('\n')
       expect(ownedSource).not.toMatch(/(?:from|require\()\s*['"]create-kei-mmo/)
       if (dimension === '3d') {
