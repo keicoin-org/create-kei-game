@@ -180,11 +180,15 @@ salvage-run/
 ├── package.json
 ├── scripts/build.mjs              # project-owned Bun build, JSON result/error
 ├── static/index.html              # canvas and construction-grade HUD
+├── test/economy.test.ts           # private mock-chain custody + trade proof
 ├── tsconfig.json
 └── src/
     ├── client/main.ts             # renders every authoritative player
     ├── client/connection.ts       # one browser/headless protocol path
     ├── client/headless.ts         # two-client shared-encounter smoke
+    ├── economy/definitions.ts     # exact currency and item declarations
+    ├── economy/provision.ts       # separate injected issuer provisioning
+    ├── economy/player-trade.ts    # seller offer + buyer exact acceptance
     ├── server/dev-server.mjs      # loopback WebSocket + static server
     ├── server/main.ts             # authoritative fixed-tick shard
     ├── shared/protocol.ts         # exact versioned messages and refusals
@@ -192,19 +196,23 @@ salvage-run/
     └── shared/cutscene.ts        # the player, with the cut-scenes; imports nothing
 ```
 
-For a scaffold, `bun install`, `bun run build`, and `PORT=0 bun run dev` work
-without edits. A 3D scaffold owns a minimal Babylon.js scene; a 2D scaffold
+For a scaffold, `bun install`, `bun run build`, `bun run economy:check`, and
+`PORT=0 bun run dev` work without edits. A 3D scaffold owns a minimal Babylon.js
+scene; a 2D scaffold
 owns a Canvas construction frame and explicitly does not claim a tile or sprite
 renderer. Both own a loopback-only game server and the same versioned connection
 path for browser and headless clients. `bun run headless -- <socket-url>` opens
 two server-assigned players, moves each once, proves each observes the other,
 and proves stale and authority-forging messages do not mutate the world.
 
-That closes the generated-project shape of SPEC §11.3 criteria 3 and 4: a real
-client connects, and two clients see each other move. It does **not** close
-persistence/forged-state survival across restart (5), Kei trade (6), harness
-deletion as an end-to-end product gate (8), or presentation polish (9). Deleting
-this harness does not affect the generated project's dependencies or runtime.
+That closes the generated-project shape of SPEC §11.3 criteria 3, 4, and 6: a
+real client connects, two clients see each other move, and a private mock chain
+proves a player-custodied currency, item, mismatch refusal, and atomic trade.
+The game server has no Kei account or economic message path. It does **not**
+close persistence/forged-state survival across restart (5), socket-to-wallet
+proof of control, harness deletion as an end-to-end product gate (8), or
+presentation polish (9). Deleting this harness does not affect the generated
+project's dependencies or runtime.
 
 When the planner clones a reference project instead, the clone arrives with
 those same two plan files written into it, including the reason it was chosen

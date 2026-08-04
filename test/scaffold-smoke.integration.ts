@@ -402,6 +402,7 @@ describe('generated projects install, build, and start without the harness', () 
       }
       expect(manifest.dependencies?.['create-kei-mmo']).toBeUndefined()
       expect(manifest.dependencies?.ws).toMatch(/^\^8\./)
+      expect(manifest.dependencies?.['kei-transaction']).toBe('0.6.0')
       if (dimension === '3d') expect(manifest.dependencies?.['@babylonjs/core']).toMatch(/^\^9\./)
       else expect(manifest.dependencies?.['@babylonjs/core']).toBeUndefined()
 
@@ -409,6 +410,7 @@ describe('generated projects install, build, and start without the harness', () 
       // this generated-project check cannot silently depend on registry access.
       await run(directory, 'install', ['install', '--offline'])
       await run(directory, 'build', ['run', 'build'])
+      await run(directory, 'economy', ['run', 'economy:check'])
       expect(existsSync(join(directory, 'dist', 'client', 'main.js'))).toBeTrue()
       expect(existsSync(join(directory, 'dist', 'server', 'main.js'))).toBeTrue()
       expect(existsSync(join(directory, 'dist', 'headless', 'headless.js'))).toBeTrue()
@@ -423,10 +425,14 @@ describe('generated projects install, build, and start without the harness', () 
         'src/client/main.ts',
         'src/client/connection.ts',
         'src/client/headless.ts',
+        'src/economy/definitions.ts',
+        'src/economy/player-trade.ts',
+        'src/economy/provision.ts',
         'src/server/dev-server.mjs',
         'src/server/main.ts',
         'src/shared/simulation.ts',
         'src/shared/protocol.ts',
+        'test/economy.test.ts',
       ].map((file) => readFileSync(join(directory, ...file.split('/')), 'utf8')).join('\n')
       expect(ownedSource).not.toMatch(/(?:from|require\()\s*['"]create-kei-mmo/)
       if (dimension === '3d') {

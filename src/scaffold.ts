@@ -12,12 +12,19 @@
  * them imports this harness, and
  * deleting the harness from the machine changes nothing about them.
  *
- * What is deliberately *not* here: persistence, the Kei ledger, client
- * prediction/reconciliation, interest management, and finished art. Those are
- * still separate plan steps rather than claims inferred from one shared room.
+ * What is deliberately *not* here: persistence, client
+ * prediction/reconciliation, interest management, and finished art. The Kei
+ * slice is a mock-chain proof owned by the generated project; it does not bind
+ * a socket identity to a wallet or make the game server a custodian.
  */
 
 import { contentProjectFiles, CONTENT_CHECK_PATH } from './content-project.js'
+import {
+  ECONOMY_TEST_PATH,
+  economyProjectFiles,
+  KEI_PACKAGE,
+  KEI_RANGE,
+} from './scaffold-economy.js'
 import {
   CONNECTION_PATH,
   DEV_SERVER_PATH,
@@ -98,6 +105,7 @@ export function projectFiles(
     { path: SIMULATION_PATH, contents: simulation() },
     { path: CLIENT_PATH, contents: solid ? client3d(project) : client2d(project) },
     ...networkProjectFiles(),
+    ...economyProjectFiles(),
     ...contentFiles,
   ])
 }
@@ -114,10 +122,12 @@ function manifest(project: ProjectIdentity, solid: boolean, withContent: boolean
       build: `bun run ${BUILD_SCRIPT_PATH}`,
       dev: `bun run ${DEV_SERVER_PATH}`,
       headless: `bun run ${OUTPUT_DIRECTORY}/${HEADLESS_CLIENT_BUNDLE}`,
+      'economy:check': `bun test ${ECONOMY_TEST_PATH}`,
       ...(withContent ? { 'content:check': `node ${CONTENT_CHECK_PATH}` } : {}),
     },
     dependencies: {
       [WEBSOCKET_PACKAGE]: WEBSOCKET_RANGE,
+      [KEI_PACKAGE]: KEI_RANGE,
       ...(solid ? { [RENDERER_PACKAGE]: RENDERER_RANGE } : {}),
     },
   }
@@ -213,9 +223,20 @@ rate are separate from the first commit.
 \`${SERVER_PATH}\` owns the tick and world. \`${DEV_SERVER_PATH}\` exposes it over a
 versioned loopback WebSocket; browsers render every server-assigned player, and
 the generated headless scenario proves two clients observe each other's movement.
-Stale input and attempts to author position are refused without changing the
-world. There is no restart persistence, Kei economy, prediction/reconciliation,
-or interest management yet. Those remain separate plan steps.
+Stale input and attempts to author position or economic state are refused
+without changing the world.
+
+The project also owns a player-custodied Kei proof. Run \`bun run economy:check\`:
+it creates one private \`Kei.mock()\` chain, provisions open-transfer GOLD and a
+Founder's Sword directly to two player wallets, refuses mismatched displayed
+terms before signing, then atomically settles a reserved item-for-GOLD offer.
+The authoritative game server has no Kei import, key, balance, inventory, or
+settlement path. The mock provisioner is a separate test fixture; production
+provisioning accepts an injected issuer context and contains no seed.
+
+There is no restart persistence, socket-to-wallet proof of control,
+prediction/reconciliation, or interest management yet. Those remain separate
+plan steps.
 
 ## The plan
 
@@ -234,7 +255,9 @@ your repository, not a contract.
 |---|---|
 | \`src/shared/\` | The simulation and versioned snapshot protocol. Imported by both sides. |
 | \`src/client/\` | Rendering plus one shared browser/headless connection path. Owns no authority. |
-| \`src/server/\` | The authoritative fixed tick and loopback game/static server. No persistence or settlement yet. |
+| \`src/server/\` | The authoritative fixed tick and loopback game/static server. No persistence, Kei import, or custody. |
+| \`src/economy/\` | Currency/item declarations, separate issuer provisioning, and player-signed atomic trade helpers. |
+| \`${ECONOMY_TEST_PATH}\` | The private mock-chain custody, mismatch, and settlement proof. |
 | \`${DEV_SERVER_PATH}\` | The Bun WebSocket and static development server. |
 | \`${BUILD_SCRIPT_PATH}\` | The build. Bundles the client and copies \`static/\`. |
 | \`${PAGE_PATH}\` | The page and the canvas the client takes over. |

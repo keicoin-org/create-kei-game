@@ -11,10 +11,10 @@
  * executed.
  *
  * Everything named below is either a real, stable API of the named dependency,
- * or — where no library owns the problem, which is the case for a Kei economy —
- * a function signature this harness requires the project to define itself. The
- * second kind is marked as such in the packet's tools, because inventing an SDK
- * that does not exist is the exact failure this file is shaped to avoid.
+ * or — where no library owns the problem — a function signature this harness
+ * requires the project to define itself. The second kind is marked as such in
+ * the packet's tools, because inventing an SDK that does not exist is the exact
+ * failure this file is shaped to avoid.
  */
 
 export const CAPABILITY_DOMAINS = [
@@ -357,38 +357,36 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     domain: 'economy',
     title: 'Kei currencies, items, and settlement',
     summary:
-      'A server-only ledger boundary with idempotent entries, two-phase trades, and supply that can be proved rather than hoped for.',
+      'Player-custodied currency and items settled atomically by Kei consensus, with issuer provisioning separate from the authoritative game server.',
     dimension: 'any',
     status: 'available',
     core: true,
     signals: [],
     prerequisites: [
-      'A Kei network endpoint and any credential referenced by environment-variable name. The harness never writes a key into the project, and neither may the game.',
-      'Every economic action settled server-side. A client may request a trade; it may never author a balance.',
-      'An idempotency key per action, because a client that reconnects mid-trade will retry it.',
-      'Integer amounts in the smallest unit — bigint, never a float. Floating-point money is a duplication bug waiting for a decimal.',
+      'The published kei-transaction@0.6.0 package, installed by the generated project rather than imported from this harness or a sibling checkout.',
+      'One issuer context for a separate provisioning job and one Kei.start() context per player; a key signs only for its own account.',
+      'Integer raw strings for asset movement and safe integer literals for the current accept({ expect }) amount fields; no displayed float is signed back.',
+      'Direct offer delivery or an application-owned bounded directory, because Kei has no global order book or listing index.',
     ],
     tools: [
-      'a server-only src/economy/ledger.ts boundary module you define — this harness bundles no Kei SDK and will not pretend to',
-      'the Kei endpoint your deployment targets, reached only from the server',
-      'the persistence layer, for the ledger table and its unique index on the idempotency key',
+      'kei-transaction@0.6.0 — Kei.mock(), Kei.start(), Kei.server(), token, items, and market APIs',
+      'the generated src/economy modules, owned by the project and separate from src/server',
+      'the chain itself for balances, ownership, offer locks, and atomic settlement; no local ledger table',
     ],
     methods: [
-      { call: "defineCurrency(id: string, options: { decimals: number; policy: 'fixed' | 'faucet' | 'sink-balanced' }): CurrencyDefinition", does: 'Declares a currency and, with it, whether new units can ever exist.' },
-      { call: 'credit(accountId: string, currency: string, amount: bigint, reason: string, idempotencyKey: string): Promise<LedgerEntry>', does: 'The only way a balance goes up. The reason string is what an economy audit reads.' },
-      { call: 'debit(accountId: string, currency: string, amount: bigint, reason: string, idempotencyKey: string): Promise<LedgerEntry>', does: 'The only way a balance goes down; refuses rather than going negative.' },
-      { call: 'transfer(from: string, to: string, currency: string, amount: bigint, idempotencyKey: string): Promise<LedgerEntry[]>', does: 'One transaction containing both halves, or neither.' },
-      { call: 'openEscrow(offer: TradeOffer): Promise<TradeId> / settleTrade(tradeId: TradeId): Promise<void>', does: 'Two-phase trade: goods leave inventories at open and land at settle, so a disconnect between them duplicates nothing.' },
-      { call: 'mintItem(definitionId: string, ownerId: string, provenance: Provenance): Promise<ItemId>', does: 'Creates an item instance with the record of why it exists.' },
-      { call: 'bindItem(itemId: ItemId, ownerId: string): Promise<void>', does: 'Soulbinding, which is the sink that keeps a drop from becoming currency.' },
-      { call: 'supplyReport(currency: string): Promise<{ minted: bigint; burned: bigint; held: bigint }>', does: 'The invariant check: minted minus burned must equal the sum of balances.' },
-      { call: 'faucetRate(windowMs: number) / sinkRate(windowMs: number)', does: 'Makes inflation observable while the game is running, instead of after players notice.' },
+      { call: 'const node = await Kei.mock()', does: 'Creates the private in-process chain the generated economy proof uses without a network or secret.' },
+      { call: 'const issuer = await Kei.server({ seed, node })', does: 'Opens the issuer only in a separate provisioning context; the generated game server never imports Kei.' },
+      { call: "issuer.token.issue({ name: 'Gold', symbol: 'GOLD', decimals: 0, transfer: 'open', swap: 'off' })", does: 'Issues a consensus-owned currency whose open transfer policy permits direct player-to-player trade.' },
+      { call: "issuer.items.create({ name: \"Founder's Sword\", transfer: 'open' }) / issuer.items.mint(sword.id, seller.address)", does: 'Creates the item and mints it directly to its player custodian, never through the game server.' },
+      { call: "seller.market.offer({ give: { asset: sword.id, amount: '1' }, want: { asset: gold.id, amount: '25' }, to: buyer.address })", does: 'The seller signs one reserved offer and passes it directly to the buyer; there is no global order book.' },
+      { call: 'buyer.market.accept(offer, { expect: { hash, seller, give, want, to } })', does: 'Checks every displayed term immediately before the buyer signs the one atomic settlement block.' },
+      { call: 'node.holderBalance(asset, address) / node.swapOffer(offer.hash)', does: 'Reads raw chain state in the mock proof so custody and both settlement legs are exact strings, not display arithmetic.' },
     ],
     acceptance: [
-      'Replaying the same idempotency key twice moves value exactly once.',
-      'After thousands of randomized trades, minted minus burned equals the sum of all balances.',
-      'A client message cannot mint, credit, or transfer without a server-side rule allowing it.',
-      'No credential or endpoint secret appears in any file the project commits.',
+      'A fresh 2D or 3D generated project runs the same Kei.mock() issue, mint, mismatch-refusal, and atomic trade proof.',
+      'The issuer retains neither trade asset after setup, the seller locks only their item, and both final legs settle directly between players.',
+      'A mismatched expectation fails before signing and leaves the raw balances and open offer unchanged.',
+      'No generated src/server file imports kei-transaction, reads a seed, holds a balance or inventory, or accepts economic state over WebSocket.',
     ],
   },
   {
@@ -495,7 +493,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     domain: 'testing',
     title: 'Deterministic simulation and boundary tests',
     summary:
-      'A seeded, fixed-step simulation that produces the same tick hash every run, plus socket and ledger tests that need no network.',
+      'A seeded, fixed-step simulation that produces the same tick hash every run, plus socket boundaries and a private Kei.mock() custody proof.',
     dimension: 'any',
     status: 'available',
     core: true,
@@ -511,7 +509,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
       { call: 'expect(hashState(runTicks(seed, 600))).toBe(GOLDEN_HASH)', does: 'The replay test: 600 ticks from a seed must land on one hash.' },
       { call: 'const [client, server] = socketPair()', does: 'Exercises encode/decode and reconciliation with no network at all.' },
       { call: 'expect(() => applyInput(session, forged)).not.toThrow(); expect(state.players[id].x).toBe(before)', does: 'The authority test: a forged input is ignored, not fatal.' },
-      { call: 'expect(report.minted - report.burned).toBe(sumBalances(accounts))', does: 'The ledger invariant, run over randomized operations.' },
+      { call: "expect(await node.holderBalance(gold.id, seller.address)).toBe('25')", does: 'The exact chain-owned settlement check; the paired item owner and offer state are asserted in the same mock proof.' },
       { call: 'expect(renderer.info.render.calls).toBeLessThanOrEqual(DRAW_CALL_BUDGET)', does: 'Keeps a performance budget from quietly regressing.' },
     ],
     acceptance: [

@@ -84,6 +84,8 @@ describe('generated game protocol v1', () => {
       { v: 1, type: 'teleport', position: { x: 999, y: 0, z: 0 } },
       { v: 1, type: 'input', seq: 1, moveX: 0, moveY: 0, buttons: 0, playerId: 'somebody-else' },
       { v: 1, type: 'state', players: {} },
+      { v: 1, type: 'input', seq: 2, moveX: 0, moveY: 0, buttons: 0, balance: '999' },
+      { v: 1, type: 'settlement', settlementResult: { accepted: true } },
     ]) {
       expect(protocol.decodeClientMessage(JSON.stringify(forged))).toEqual({
         ok: false,
