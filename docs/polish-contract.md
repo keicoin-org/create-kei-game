@@ -75,8 +75,11 @@ admission checks its only JSON/BIN chunks, buffer-view and accessor byte ranges,
 requires every declared mesh to be reachable from the active scene, and admits
 only triangle primitives with at least four unique referenced positions and no
 degenerate triangle. Animation admission requires observable motion on a joint
-from a skin attached to a scene-reachable mesh node, alongside an increasing
-finite timeline.
+from a skin attached to a scene-reachable mesh node whose rendered primitives
+carry paired, count-matched, glTF-legal joint and weight accessors with bounded
+joint indices and finite, nonnegative, normalized nonzero vertex weights.
+Optional skeleton and inverse-bind-matrix references are validated alongside an
+increasing finite animation timeline.
 Ogg admission checks page CRCs, stream serial/sequence/flags, packet lacing,
 Opus identification and tags packets, and rejects trivially short single-packet
 audio before a positive-granule EOS. PNG admission rejects tiny or effectively
