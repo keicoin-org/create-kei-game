@@ -20,5 +20,7 @@ jobs:
           bun-version: 1.3.0
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      # Generated-project smoke tests spawn installs, builds, and dev servers.
+      # Keep one explicit process budget on Windows and Ubuntu; no retries.
       - run: bun run test
       - run: bun run build
