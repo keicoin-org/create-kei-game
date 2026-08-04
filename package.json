@@ -1,43 +1,150 @@
 {
-  "name": "create-kei-game",
-  "version": "0.2.0",
-  "description": "Scaffold a browser game with a real currency and real items. Writes files and exits.",
+  "name": "create-kei-mmo",
+  "version": "0.3.0",
+  "description": "The Kei MMORPG harness: intent in, a planned 2D or 3D MMO out, over a bounded creation-engine protocol.",
   "license": "MIT",
   "author": "Sano",
-  "homepage": "https://keicoin.org#harness",
+  "homepage": "https://github.com/keicoin-org/create-kei-game",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/keicoin-org/kei-transaction.git",
-    "directory": "packages/create-kei-game"
+    "url": "git+https://github.com/keicoin-org/create-kei-game.git"
   },
   "bugs": {
-    "url": "https://github.com/keicoin-org/kei-transaction/issues"
+    "url": "https://github.com/keicoin-org/create-kei-game/issues"
   },
   "keywords": [
     "kei",
     "create",
-    "scaffold",
-    "starter",
-    "game",
+    "harness",
+    "mmo",
+    "mmorpg",
     "gamedev",
-    "babylonjs",
-    "browser-game"
+    "game-development",
+    "cli"
   ],
   "type": "module",
   "bin": {
-    "create-kei-game": "./dist/index.js"
+    "create-kei-mmo": "./dist/index.js",
+    "create-kei-mmo-engine": "./dist/runtime-main.js",
+    "create-kei-game": "./dist/index.js",
+    "create-kei-game-engine": "./dist/runtime-main.js"
   },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "bun": "./src/index.ts",
       "import": "./dist/index.js"
+    },
+    "./intent": {
+      "types": "./dist/intent.d.ts",
+      "bun": "./src/intent.ts",
+      "import": "./dist/intent.js"
+    },
+    "./capabilities": {
+      "types": "./dist/capabilities.d.ts",
+      "bun": "./src/capabilities.ts",
+      "import": "./dist/capabilities.js"
+    },
+    "./references": {
+      "types": "./dist/references.d.ts",
+      "bun": "./src/references.ts",
+      "import": "./dist/references.js"
+    },
+    "./plan": {
+      "types": "./dist/plan.d.ts",
+      "bun": "./src/plan.ts",
+      "import": "./dist/plan.js"
+    },
+    "./planner": {
+      "types": "./dist/planner.d.ts",
+      "bun": "./src/planner.ts",
+      "import": "./dist/planner.js"
+    },
+    "./style": {
+      "types": "./dist/style.d.ts",
+      "bun": "./src/style.ts",
+      "import": "./dist/style.js"
+    },
+    "./content": {
+      "types": "./dist/content.d.ts",
+      "bun": "./src/content.ts",
+      "import": "./dist/content.js"
+    },
+    "./content-project": {
+      "types": "./dist/content-project.d.ts",
+      "bun": "./src/content-project.ts",
+      "import": "./dist/content-project.js"
+    },
+    "./polish": {
+      "types": "./dist/polish.d.ts",
+      "bun": "./src/polish.ts",
+      "import": "./dist/polish.js"
+    },
+    "./effects": {
+      "types": "./dist/effects.d.ts",
+      "bun": "./src/effects.ts",
+      "import": "./dist/effects.js"
+    },
+    "./motion": {
+      "types": "./dist/motion.d.ts",
+      "bun": "./src/motion.ts",
+      "import": "./dist/motion.js"
+    },
+    "./cutscene": {
+      "types": "./dist/cutscene.d.ts",
+      "bun": "./src/cutscene.ts",
+      "import": "./dist/cutscene.js"
+    },
+    "./source": {
+      "types": "./dist/source.d.ts",
+      "bun": "./src/source.ts",
+      "import": "./dist/source.js"
+    },
+    "./providers": {
+      "types": "./dist/providers.d.ts",
+      "bun": "./src/providers.ts",
+      "import": "./dist/providers.js"
+    },
+    "./harness": {
+      "types": "./dist/harness.d.ts",
+      "bun": "./src/harness.ts",
+      "import": "./dist/harness.js"
+    },
+    "./agent": {
+      "types": "./dist/agent.d.ts",
+      "bun": "./src/agent.ts",
+      "import": "./dist/agent.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "bun": "./src/runtime.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./runtime-protocol": {
+      "types": "./dist/runtime-protocol.d.ts",
+      "bun": "./src/runtime-protocol.ts",
+      "import": "./dist/runtime-protocol.js"
+    },
+    "./provider-transport": {
+      "types": "./dist/provider-transport.d.ts",
+      "bun": "./src/provider-transport.ts",
+      "import": "./dist/provider-transport.js"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "bun": "./src/tools.ts",
+      "import": "./dist/tools.js"
+    },
+    "./creation-runtime": {
+      "types": "./dist/creation-runtime.d.ts",
+      "bun": "./src/creation-runtime.ts",
+      "import": "./dist/creation-runtime.js"
     }
   },
   "files": [
     "dist",
     "src",
-    "templates"
+    "docs"
   ],
   "sideEffects": false,
   "engines": {
@@ -46,8 +153,20 @@
   "publishConfig": {
     "access": "public"
   },
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "typecheck": "tsc --build && tsc -p tsconfig.tests.json",
+    "test": "bun test --max-concurrency=1",
+    "test:generated": "bun test ./test/scaffold-smoke.integration.ts --max-concurrency=1",
+    "check": "bun run typecheck && bun run test && bun run test:generated"
+  },
   "devDependencies": {
-    "@keicoin/core": "^0.3.0",
-    "kei-transaction": "^0.3.0"
+    "@babylonjs/core": "^9.19.0",
+    "@types/bun": "^1.3.14",
+    "@types/node": "^22.10.0",
+    "kei-transaction": "0.6.0",
+    "typescript": "^5.9.0",
+    "ws": "^8.18.3"
   }
 }
