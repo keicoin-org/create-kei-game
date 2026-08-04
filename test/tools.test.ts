@@ -300,6 +300,20 @@ describe('write_file', () => {
     expect(fs.files.get('/workspace/game/.git/config')).toBe('[core]')
   })
 
+  test('refuses them at any depth, not only at the workspace root', async () => {
+    const fs = populated()
+    // A nested repository is ordinary in a monorepo or a cloned template, and a
+    // hook written into one runs on the developer's machine at their next commit.
+    for (const path of [
+      'packages/engine/.git/hooks/pre-commit',
+      'packages/engine/node_modules/left-pad/index.js',
+      'apps/web/dist/main.js',
+    ]) {
+      expect(await harness(fs).write({ path, content: 'x' })).toMatchObject({ ok: false })
+      expect(fs.files.has(`/workspace/game/${path}`)).toBeFalse()
+    }
+  })
+
   test('refuses content over the write cap and a non-string content', async () => {
     const tools = harness(populated())
     expect(await tools.write({ path: 'big.ts', content: 'x'.repeat(MAX_WRITE_BYTES + 1) })).toMatchObject({ ok: false })

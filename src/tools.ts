@@ -291,9 +291,13 @@ export function createWorkspaceTools(options: WorkspaceToolOptions): WorkspaceTo
       const resolved = await target(argumentsValue, 'path')
       if (isRefusal(resolved)) return resolved
 
-      const first = resolved.relative.split('/')[0]
-      if (first !== undefined && SKIPPED_DIRECTORIES.has(first)) {
-        return refused(`"${first}/" is managed outside the project source and cannot be written.`)
+      // At every depth, not only the first segment. `list_files` already skips
+      // these wherever it meets them, and the `.env` refusal below matches on
+      // basename, so checking one segment here was the odd one out — a nested
+      // `.git/hooks/pre-commit` is code that runs on the developer's next commit.
+      const managed = resolved.relative.split('/').find((segment) => SKIPPED_DIRECTORIES.has(segment))
+      if (managed !== undefined) {
+        return refused(`"${managed}/" is managed outside the project source and cannot be written.`)
       }
       // SPEC §11.3: nothing the developer will one day commit may carry a
       // credential, and `.env` is the file a model reaches for to put one in.
