@@ -33,9 +33,12 @@ Capture semantics are bound, not merely named. Every non-null
 strike, remote-observe, refusal, cooldown, recovery steps must reference a
 declared action whose kind matches both the step kind and the resolved
 authority event kind, with the outcome each step kind demands. The authority
-timeline must contain both interact and strike events. Per-step visual,
-audio, and HUD descriptions must be distinct multi-word statements that name
-the step's own semantics; single-character or copied placeholders fail.
+timeline must contain both interact and strike events, and remote-observe must
+repeat the accepted strike step's event, action, actor, target, outcome, and
+contact bindings. Per-step visual, audio, and HUD descriptions must each be a
+distinct multi-word statement that independently names the step's own
+semantics; concentrating meaning in one channel while the other two are
+placeholders fails.
 
 The recipe is also bound to the admission manifest by semantic role: the
 actor's character and rig/atlas, the target, and every cue id must carry the
@@ -46,11 +49,15 @@ dropping the environment/effect families fails closed.
 
 ## Source and filesystem admission
 
-Provider ids are bound to canonical hosts and acquisition modes. V1 admits
-only packaged CC0 sources whose raw redistribution is allowed. Source bytes,
-retained licence bytes, processed outputs, and generated credits all carry
-exact sizes and SHA-256 values. Credits are regenerated deterministically from
-the canonical source registry and checked byte-for-byte.
+Provider ids are bound to a finite offline admission catalog, not merely to a
+host-shaped URL. V1's reviewed records pin the canonical Kenney asset page,
+published package version, direct package URL and archive entry, retained
+source size/hash, provider `License.txt` size/hash, attribution, and
+acquisition mode for Tiny Dungeon 1.0 and RPG Audio 1.0. A provider-shaped but
+invented asset/version, a different retained source hash, or keyword licence
+text fails even when every manifest field agrees with the assertion. Credits
+are regenerated deterministically from the admitted source registry and
+checked byte-for-byte.
 
 Portable paths reject absolute paths, traversal, Windows ADS and device names,
 trailing dot/space, controls, non-NFC names, and case/Unicode compatibility
@@ -60,27 +67,27 @@ through an open descriptor, and checks identity, size, timestamp, and realpath
 again after the read.
 
 Admitted runtime bytes must be the media they claim to be. Processed outputs
-are limited to PNG, GLB, and Ogg audio, and the checker structurally validates
-each admitted file with bounded parsers and no heavyweight decoders: PNG
-signature, IHDR sanity, chunk CRC-32, and non-empty image data; GLB container
-header, chunk layout, and a glTF 2.0 JSON skeleton with real meshes (or
-animations for rig requirements); Ogg page structure, page CRCs, an
-Opus/Vorbis identification header, a terminating page, and non-zero duration.
-Retained licence bytes must be readable UTF-8 CC0 1.0 dedication text, not an
-arbitrary hashed blob, canonical provider URLs must use the provider's pinned
-asset-path shape, and attribution must name the provider and licence. This
-gate is offline and structural: it cannot prove a provider asset/version still
-exists upstream, and does not claim to.
+are limited to PNG, GLB, and Ogg Opus audio. PNG admission checks chunk order
+and CRCs, bounded zlib decompression, exact scanline length, and filter bytes.
+GLB admission checks its only JSON/BIN chunks, buffer-view and accessor byte
+ranges, mesh references, scene/node references, and animation sampler/channel
+references. Ogg admission checks page CRCs, stream serial/sequence/flags,
+packet lacing, Opus identification and tags packets, and at least one
+structurally valid audio packet before a positive-granule EOS. Retained
+licence bytes must exactly match a provider-retained, catalogued CC0 file. This
+gate is offline: it verifies pinned evidence already in the project but does
+not re-fetch a provider or prove that processed outputs were faithfully
+derived from the admitted source bytes.
 
 The generated checker embeds the exact authoritative recipe, requirement,
 source, role-binding, media, and licence validator functions used by the
 harness. Parser-equivalence and mutation tests cover forged schemas, junction
 escapes, provider/licence/credits/hash mismatches, Windows aliases, and
-oversized bytes for both dimensions, and a combined regression replays the
-full demonstrated forgery: text bytes labelled PNG/GLB/OGG, fake licence
-text, swapped actor/target roles, absent environment/effect families,
-strike-only authority, nonexistent capture event ids, and single-character
-feedback must never reach `polish_ready`.
+oversized bytes for both dimensions. Generated-boundary regressions also
+replay CRC-correct invalid PNG deflate, an out-of-range GLB `POSITION`
+accessor, an EOS Ogg stream with duration metadata but no audio packet,
+invented catalog assertions, two placeholder feedback channels, and a remote
+observation rebound to the interaction event; none may reach `polish_ready`.
 
 ## Expected state
 

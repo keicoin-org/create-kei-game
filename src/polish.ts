@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto'
+import { inflateSync } from 'node:zlib'
+
 import type { EffectRecipe, QualityProfile, QualityTier, SemanticCue, SemanticEvent } from './effects.js'
 
 export const POLISH_RECIPE_VERSION = 1 as const
@@ -116,6 +119,51 @@ export interface PolishAdmissionProbe { readonly size: number; readonly sha256: 
 export interface PolishAdmissionProblem { readonly code: string; readonly id?: string; readonly message: string }
 export interface PolishAdmissionReport { readonly ok: boolean; readonly code: 'polish_ready' | typeof POLISH_PENDING_CODE | 'polish_assets_invalid'; readonly problems: readonly PolishAdmissionProblem[] }
 
+export interface PolishSourceCatalogRecord {
+  readonly provider: 'kenney'
+  readonly canonicalUrl: string
+  readonly providerAssetVersion: string
+  readonly acquisitionMode: 'download'
+  readonly sourceArchiveUrl: string
+  readonly sourceArchiveEntry: string
+  readonly sourceSha256: string
+  readonly sourceBytes: number
+  readonly licenceReferenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/'
+  readonly licenceSha256: string
+  readonly licenceBytes: number
+  readonly attribution: string
+}
+
+/**
+ * Offline V1 admission catalog. A source claim is accepted only when its
+ * provider identity and retained source/licence bytes match one of these
+ * reviewed records; arbitrary provider-shaped URLs are not evidence.
+ *
+ * This function is self-contained because its exact body is copied into the
+ * generated project checker.
+ */
+export function polishSourceCatalogRecord(value: unknown): PolishSourceCatalogRecord | null {
+  if (typeof value !== 'string') return null
+  const visualIds = ['hero-character','hero-motion','training-sentinel','encounter-environment','encounter-effects']
+  const audioIds = ['ambience','footstep-a','footstep-b','interaction','swing','impact','refusal','success','cooldown','recovery']
+  const audio = audioIds.includes(value)
+  if (!audio && !visualIds.includes(value)) return null
+  return {
+    provider: 'kenney',
+    canonicalUrl: audio ? 'https://kenney.nl/assets/rpg-audio' : 'https://kenney.nl/assets/tiny-dungeon',
+    providerAssetVersion: '1.0',
+    acquisitionMode: 'download',
+    sourceArchiveUrl: audio ? 'https://kenney.nl/media/pages/assets/rpg-audio/8e99002d76-1677590336/kenney_rpg-audio.zip' : 'https://kenney.nl/media/pages/assets/tiny-dungeon/f8422efb44-1674742415/kenney_tiny-dungeon.zip',
+    sourceArchiveEntry: audio ? 'Audio/bookOpen.ogg' : 'Tiles/tile_0000.png',
+    sourceSha256: audio ? '953390534377222bee89ac8cd9e60a58fdc037c71a4d7c18c43cd647c7f34ba8' : 'ebf91e6638d484dc6bdaec5f30e91589252125146b70c2911f11fac7ebe17090',
+    sourceBytes: audio ? 8_273 : 99,
+    licenceReferenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/',
+    licenceSha256: audio ? '5735dfd72cb64cbbceda4ebc00c380c41ca680edb82ff153aa7c9ab97614c539' : '9f574a2f1f636a3db8a0665ba90212f34e2b5e61ecb533d77c05237766374111',
+    licenceBytes: audio ? 478 : 570,
+    attribution: audio ? 'Kenney RPG Audio 1.0, CC0' : 'Kenney Tiny Dungeon 1.0, CC0',
+  }
+}
+
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const SHA256 = /^[a-f0-9]{64}$/
 const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i
@@ -214,16 +262,21 @@ export function validatePolishRecipeDocument(value: unknown): string[] {
   const feedback = (item: unknown): item is string => typeof item === 'string' && item.trim() === item && item.length >= 12 && item.length <= 160 && !/[\0-\x1f\x7f]/.test(item) && /^\S+(?: \S+)+$/.test(item)
   const stepSemantics: Record<string, RegExp> = { 'connect-local': /connect|identity/i, 'connect-scripted-remote': /scripted|automation/i, approach: /approach|distance|footstep/i, interact: /interact/i, strike: /strike|impact/i, 'remote-observe': /remote/i, refusal: /refus/i, cooldown: /cooldown/i, recovery: /recover|ready/i, reset: /reset|loop/i }
   const outcomeByStepKind: Record<string, string> = { interact: 'accepted', strike: 'accepted', 'remote-observe': 'accepted', refusal: 'refused', cooldown: 'cooldown', recovery: 'recovered' }
-  const stepKinds: string[] = []; let previousMs = -1
+  const stepKinds: string[] = []; let previousMs = -1; let strikeCapture: any = null
   for (const step of Array.isArray(recipe.capture?.steps) ? recipe.capture.steps : []) {
     if (!exact(step, ['atMs','kind','actorId','targetId','actionId','expectedEventId','expectedOutcome','expectedContact','observerIds','visual','audio','hud']) || !integer(step.atMs, 0, recipe.durationMs - 1) || step.atMs <= previousMs || !['connect-local','connect-scripted-remote','approach','interact','strike','remote-observe','refusal','cooldown','recovery','reset'].includes(step.kind) || !id(step.actorId) || (step.targetId !== null && !id(step.targetId)) || (step.actionId !== null && (!id(step.actionId) || !actionIds.has(step.actionId))) || (step.expectedEventId !== null && !id(step.expectedEventId)) || (step.expectedOutcome !== null && !['accepted','refused','cooldown','recovered'].includes(step.expectedOutcome)) || (step.expectedContact !== null && typeof step.expectedContact !== 'boolean') || !Array.isArray(step.observerIds) || step.observerIds.some((entry: unknown) => !id(entry)) || new Set(step.observerIds).size !== step.observerIds.length || !feedback(step.visual) || !feedback(step.audio) || !feedback(step.hud)) problems.push('invalid_capture_step')
-    if (step.visual === step.audio || step.visual === step.hud || step.audio === step.hud || (stepSemantics[step.kind] && !stepSemantics[step.kind]!.test([step.visual, step.audio, step.hud].join(' ')))) problems.push('weak_capture_feedback')
+    const semantic = stepSemantics[step.kind]
+    if (step.visual === step.audio || step.visual === step.hud || step.audio === step.hud || (semantic && ![step.visual, step.audio, step.hud].every((channel) => typeof channel === 'string' && semantic.test(channel)))) problems.push('weak_capture_feedback')
     const authority = step.expectedEventId === null ? undefined : eventById.get(step.expectedEventId)
     if (step.expectedEventId !== null && !authority) problems.push('unknown_capture_event')
     if ((step.expectedEventId === null) !== (step.expectedOutcome === null) || (step.expectedEventId === null) !== (step.expectedContact === null) || (authority && (authority.outcome !== step.expectedOutcome || authority.contact !== step.expectedContact || authority.actorId !== step.actorId || authority.targetId !== step.targetId))) problems.push('capture_authority_mismatch')
     const action = step.actionId === null ? undefined : actionById.get(step.actionId)
     if (step.kind in outcomeByStepKind && (!action || !authority || authority.kind !== action.kind || step.expectedOutcome !== outcomeByStepKind[step.kind] || (['interact','strike'].includes(step.kind) && action.kind !== step.kind))) problems.push('capture_binding_mismatch')
-    if (step.kind === 'remote-observe' && (!authority || !step.observerIds.includes('scripted-remote'))) problems.push('missing_remote_observation')
+    if (step.kind === 'strike') strikeCapture = step
+    if (step.kind === 'remote-observe') {
+      if (!authority || authority.kind !== 'strike' || !step.observerIds.includes('scripted-remote')) problems.push('missing_remote_observation')
+      if (!strikeCapture || step.expectedEventId !== strikeCapture.expectedEventId || step.actionId !== strikeCapture.actionId || step.actorId !== strikeCapture.actorId || step.targetId !== strikeCapture.targetId || step.expectedOutcome !== strikeCapture.expectedOutcome || step.expectedContact !== strikeCapture.expectedContact) problems.push('remote_observation_mismatch')
+    }
     previousMs = step.atMs; stepKinds.push(step.kind)
   }
   const requiredSteps = ['connect-local','connect-scripted-remote','approach','interact','strike','remote-observe','refusal','cooldown','recovery','reset']
@@ -267,10 +320,12 @@ export function validatePolishSourceManifestDocument(value: unknown): string[] {
   if (sources.version !== 1 || !exact(sources.credits, ['path','sha256','bytes']) || sources.credits?.path !== 'kei-mmo/content/THIRD_PARTY_ASSETS.md' || !hash(sources.credits?.sha256) || !Number.isInteger(sources.credits?.bytes) || sources.credits.bytes < 1 || sources.credits.bytes > 262_144 || !Array.isArray(sources.assets) || sources.assets.length > 100) problems.push('invalid_sources')
   for (const source of Array.isArray(sources.assets) ? sources.assets : []) {
     const canonical = url(source?.canonicalUrl); const licenceUrl = url(source?.licence?.referenceUrl)
+    const catalog = polishSourceCatalogRecord(source?.id)
     if (!exact(source, ['id','canonicalUrl','provider','providerAssetVersion','acquisitionMode','acquiredAt','sourceFile','licence','attribution','rawRedistribution','processedOutputs']) || !id(source.id) || ids.has(source.id) || !canonical || !['kenney','quaternius','poly-haven'].includes(source.provider) || typeof source.providerAssetVersion !== 'string' || source.providerAssetVersion.trim() !== source.providerAssetVersion || source.providerAssetVersion.length < 1 || source.providerAssetVersion.length > 120 || /^(?:latest|current)$/i.test(source.providerAssetVersion) || !['download','api'].includes(source.acquisitionMode) || !utc(source.acquiredAt) || !exact(source.sourceFile, ['path','sha256','bytes','packaged']) || !portablePath(source.sourceFile?.path) || !source.sourceFile.path.startsWith('kei-mmo/content/source-bytes/') || !hash(source.sourceFile?.sha256) || !Number.isInteger(source.sourceFile?.bytes) || source.sourceFile.bytes < 1 || source.sourceFile.bytes > 16_777_216 || source.sourceFile?.packaged !== true || !exact(source.licence, ['id','referenceUrl','filePath','sha256','bytes']) || source.licence?.id !== 'CC0-1.0' || !licenceUrl || !portablePath(source.licence?.filePath) || !source.licence.filePath.startsWith('kei-mmo/content/licenses/') || !hash(source.licence?.sha256) || !Number.isInteger(source.licence?.bytes) || source.licence.bytes < 1 || source.licence.bytes > 262_144 || typeof source.attribution !== 'string' || source.attribution.trim() !== source.attribution || source.attribution.length < 1 || source.attribution.length > 500 || source.rawRedistribution !== 'allowed' || !Array.isArray(source.processedOutputs) || source.processedOutputs.length < 1 || source.processedOutputs.length > 20) problems.push('invalid_source')
     if (canonical && ((source.provider === 'kenney' && (canonical.hostname !== 'kenney.nl' || !/^\/assets\/[a-z0-9][a-z0-9-]*$/.test(canonical.pathname) || source.acquisitionMode !== 'download')) || (source.provider === 'quaternius' && (canonical.hostname !== 'quaternius.com' || canonical.pathname.length < 2 || source.acquisitionMode !== 'download')) || (source.provider === 'poly-haven' && (canonical.hostname !== 'polyhaven.com' || !/^\/a\/[a-z0-9_-]+$/.test(canonical.pathname) || source.acquisitionMode !== 'api')))) problems.push('provider_policy_mismatch')
     if (licenceUrl && !['creativecommons.org','kenney.nl','quaternius.com','polyhaven.com'].includes(licenceUrl.hostname)) problems.push('licence_host_mismatch')
     if (typeof source.attribution === 'string' && (!/CC0/.test(source.attribution) || (source.provider === 'kenney' && !/kenney/i.test(source.attribution)) || (source.provider === 'quaternius' && !/quaternius/i.test(source.attribution)) || (source.provider === 'poly-haven' && !/poly[ -]?haven/i.test(source.attribution)))) problems.push('attribution_provider_mismatch')
+    if (!catalog || source.provider !== catalog.provider || source.canonicalUrl !== catalog.canonicalUrl || source.providerAssetVersion !== catalog.providerAssetVersion || source.acquisitionMode !== catalog.acquisitionMode || source.sourceFile?.sha256 !== catalog.sourceSha256 || source.sourceFile?.bytes !== catalog.sourceBytes || source.licence?.referenceUrl !== catalog.licenceReferenceUrl || source.licence?.sha256 !== catalog.licenceSha256 || source.licence?.bytes !== catalog.licenceBytes || source.attribution !== catalog.attribution) problems.push('source_catalog_mismatch')
     for (const file of [source.sourceFile, { path: source.licence?.filePath }, ...(Array.isArray(source.processedOutputs) ? source.processedOutputs : [])]) {
       if (!portablePath(file?.path)) continue
       const key = pathKey(file.path)
@@ -309,10 +364,11 @@ export function validatePolishRecipeManifestBinding(recipe: unknown, manifest: u
 
 /**
  * Bounded structural admission for runtime media bytes, also embedded in the
- * generated checker. It walks PNG chunks with CRC-32, GLB chunk headers with
- * the JSON asset/mesh/animation skeleton, and Ogg pages with page CRCs and an
- * Opus/Vorbis identification header. It never decodes pixels, geometry, or
- * samples, and every loop is bounded by the already-budgeted byte length.
+ * generated checker. It performs bounded PNG decompression and scanline
+ * checks, validates GLB references against declared buffers/accessors, and
+ * reconstructs Ogg packets through a real Opus audio packet. Every loop and
+ * allocation is bounded by the already-budgeted input and explicit output
+ * ceilings.
  */
 export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Array): string[] {
   if (!(bytes instanceof Uint8Array) || bytes.length < 32 || bytes.length > 16_777_216) return ['media_bytes_unreadable']
@@ -323,23 +379,46 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     const table = new Int32Array(256)
     for (let n = 0; n < 256; n += 1) { let c = n; for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; table[n] = c }
     const crc32 = (start: number, end: number) => { let c = 0xffffffff; for (let index = start; index < end; index += 1) c = (table[(c ^ (bytes[index] as number)) & 0xff] as number) ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0 }
-    let offset = 8; let sawHeader = false; let sawEnd = false; let dataBytes = 0; let chunks = 0
+    let offset = 8; let sawHeader = false; let sawPalette = false; let sawData = false; let dataEnded = false; let sawEnd = false; let chunks = 0
+    let width = 0; let height = 0; let bitDepth = 0; let colorType = -1; const compressed: Uint8Array[] = []; let compressedBytes = 0
     while (offset + 12 <= bytes.length && chunks < 4_096 && !sawEnd) {
       const length = view.getUint32(offset)
       if (length > 0x7fffffff || offset + 12 + length > bytes.length) return ['media_png_malformed']
       const type = ascii(offset + 4, 4)
+      if (!/^[A-Za-z]{4}$/.test(type) || (type !== 'IDAT' && sawData)) dataEnded = sawData
       if (!sawHeader) {
         if (type !== 'IHDR' || length !== 13) return ['media_png_malformed']
-        const width = view.getUint32(offset + 8); const height = view.getUint32(offset + 12)
-        if (width < 8 || width > 8_192 || height < 8 || height > 8_192 || ![1, 2, 4, 8, 16].includes(bytes[offset + 16] as number) || ![0, 2, 3, 4, 6].includes(bytes[offset + 17] as number) || bytes[offset + 18] !== 0 || bytes[offset + 19] !== 0 || (bytes[offset + 20] !== 0 && bytes[offset + 20] !== 1)) return ['media_png_malformed']
+        width = view.getUint32(offset + 8); height = view.getUint32(offset + 12); bitDepth = bytes[offset + 16] as number; colorType = bytes[offset + 17] as number
+        const legalDepths: Record<number, readonly number[]> = { 0: [1,2,4,8,16], 2: [8,16], 3: [1,2,4,8], 4: [8,16], 6: [8,16] }
+        if (width < 8 || width > 8_192 || height < 8 || height > 8_192 || !legalDepths[colorType]?.includes(bitDepth) || bytes[offset + 18] !== 0 || bytes[offset + 19] !== 0 || bytes[offset + 20] !== 0) return ['media_png_malformed']
         sawHeader = true
       }
       if (crc32(offset + 4, offset + 8 + length) !== view.getUint32(offset + 8 + length)) return ['media_png_malformed']
-      if (type === 'IDAT') dataBytes += length
-      if (type === 'IEND') sawEnd = length === 0
+      if (type === 'IHDR' && chunks !== 0) return ['media_png_malformed']
+      if (type === 'PLTE') {
+        if (sawPalette || sawData || length < 3 || length > 768 || length % 3 !== 0 || colorType === 0 || colorType === 4 || (colorType === 3 && length / 3 > 2 ** bitDepth)) return ['media_png_malformed']
+        sawPalette = true
+      } else if (type === 'IDAT') {
+        if (dataEnded || (colorType === 3 && !sawPalette)) return ['media_png_malformed']
+        sawData = true; compressedBytes += length
+        if (compressedBytes > bytes.length) return ['media_png_malformed']
+        compressed.push(bytes.subarray(offset + 8, offset + 8 + length))
+      } else if (type === 'IEND') {
+        if (length !== 0 || !sawData) return ['media_png_malformed']
+        sawEnd = true
+      } else if ((type.charCodeAt(0) & 0x20) === 0 && type !== 'IHDR' && type !== 'PLTE') return ['media_png_malformed']
       offset += 12 + length; chunks += 1
     }
-    return sawHeader && sawEnd && dataBytes >= 8 && offset === bytes.length ? [] : ['media_png_malformed']
+    if (!sawHeader || !sawEnd || compressedBytes < 8 || offset !== bytes.length) return ['media_png_malformed']
+    const channels: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }
+    const rowBytes = Math.ceil(width * (channels[colorType] as number) * bitDepth / 8)
+    const inflatedBytes = height * (rowBytes + 1)
+    if (!Number.isSafeInteger(inflatedBytes) || inflatedBytes < 1 || inflatedBytes > 67_108_864) return ['media_png_malformed']
+    let pixels: Uint8Array
+    try { pixels = inflateSync(Buffer.concat(compressed.map((part) => Buffer.from(part))), { maxOutputLength: inflatedBytes + 1 }) } catch { return ['media_png_malformed'] }
+    if (pixels.length !== inflatedBytes) return ['media_png_malformed']
+    for (let row = 0; row < height; row += 1) if ((pixels[row * (rowBytes + 1)] as number) > 4) return ['media_png_malformed']
+    return []
   }
   if (kind === 'model' || kind === 'animation') {
     if (ascii(0, 4) !== 'glTF' || view.getUint32(4, true) !== 2 || view.getUint32(8, true) !== bytes.length) return ['media_glb_malformed']
@@ -349,22 +428,82 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     try { gltf = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(20, 20 + jsonLength))) } catch { return ['media_glb_malformed'] }
     if (typeof gltf !== 'object' || gltf === null || Array.isArray(gltf) || gltf.asset?.version !== '2.0') return ['media_glb_malformed']
     const binOffset = 20 + jsonLength
-    if (binOffset < bytes.length) {
-      if (binOffset + 8 > bytes.length) return ['media_glb_malformed']
-      const binLength = view.getUint32(binOffset, true)
-      if (ascii(binOffset + 4, 3) !== 'BIN' || bytes[binOffset + 7] !== 0 || binOffset + 8 + binLength !== bytes.length) return ['media_glb_malformed']
+    if (binOffset + 8 > bytes.length) return ['media_glb_malformed']
+    const binLength = view.getUint32(binOffset, true)
+    if (ascii(binOffset + 4, 3) !== 'BIN' || bytes[binOffset + 7] !== 0 || binOffset + 8 + binLength !== bytes.length) return ['media_glb_malformed']
+    const integer = (item: unknown, min: number, max: number) => Number.isInteger(item) && (item as number) >= min && (item as number) <= max
+    const record = (item: unknown): item is Record<string, any> => typeof item === 'object' && item !== null && !Array.isArray(item)
+    if (!Array.isArray(gltf.buffers) || gltf.buffers.length !== 1 || !record(gltf.buffers[0]) || 'uri' in gltf.buffers[0] || !integer(gltf.buffers[0].byteLength, 1, binLength) || binLength - gltf.buffers[0].byteLength > 3 || !Array.isArray(gltf.bufferViews) || gltf.bufferViews.length < 1 || gltf.bufferViews.length > 65_536 || !Array.isArray(gltf.accessors) || gltf.accessors.length < 1 || gltf.accessors.length > 65_536) return ['media_glb_malformed']
+    const bufferViews = gltf.bufferViews
+    for (const item of bufferViews) {
+      const start = item?.byteOffset ?? 0
+      if (!record(item) || item.buffer !== 0 || !integer(start, 0, binLength) || !integer(item.byteLength, 1, binLength) || start + item.byteLength > gltf.buffers[0].byteLength || (item.byteStride !== undefined && (!integer(item.byteStride, 4, 252) || item.byteStride % 4 !== 0))) return ['media_glb_malformed']
     }
-    if (!Array.isArray(gltf.accessors) || gltf.accessors.length < 1 || !Array.isArray(gltf.buffers) || gltf.buffers.length < 1) return ['media_glb_malformed']
-    if (kind === 'model' && (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || !gltf.meshes.every((mesh: any) => Array.isArray(mesh?.primitives) && mesh.primitives.length > 0 && mesh.primitives.every((primitive: any) => Number.isInteger(primitive?.attributes?.POSITION))))) return ['media_glb_missing_mesh']
-    if (kind === 'animation' && (!Array.isArray(gltf.animations) || gltf.animations.length < 1 || !gltf.animations.every((animation: any) => Array.isArray(animation?.channels) && animation.channels.length > 0 && Array.isArray(animation?.samplers) && animation.samplers.length > 0))) return ['media_glb_missing_animation']
+    const componentBytes: Record<number, number> = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 }
+    const typeComponents: Record<string, number> = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 }
+    const accessors = gltf.accessors
+    for (const accessor of accessors) {
+      const accessorOffset = accessor?.byteOffset ?? 0; const componentSize = componentBytes[accessor?.componentType]; const components = typeComponents[accessor?.type]
+      if (!record(accessor) || 'sparse' in accessor || !integer(accessor.bufferView, 0, bufferViews.length - 1) || !componentSize || !components || !integer(accessor.count, 1, 16_777_216) || !integer(accessorOffset, 0, binLength) || accessorOffset % componentSize !== 0 || (accessor.normalized !== undefined && typeof accessor.normalized !== 'boolean')) return ['media_glb_malformed']
+      const bufferView = bufferViews[accessor.bufferView]; const elementBytes = componentSize * components; const stride = bufferView.byteStride ?? elementBytes
+      if (stride < elementBytes || accessorOffset + (accessor.count - 1) * stride + elementBytes > bufferView.byteLength) return ['media_glb_malformed']
+    }
+    const validAccessor = (item: unknown) => integer(item, 0, accessors.length - 1)
+    if (gltf.meshes !== undefined && (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || gltf.meshes.some((mesh: any) => !record(mesh) || !Array.isArray(mesh.primitives) || mesh.primitives.length < 1 || mesh.primitives.some((primitive: any) => !record(primitive) || !record(primitive.attributes) || Object.values(primitive.attributes).some((accessor) => !validAccessor(accessor)) || (primitive.indices !== undefined && !validAccessor(primitive.indices)))))) return ['media_glb_malformed']
+    if (!Array.isArray(gltf.nodes) || gltf.nodes.length < 1 || gltf.nodes.length > 65_536 || gltf.nodes.some((node: any) => !record(node) || (node.mesh !== undefined && !integer(node.mesh, 0, (gltf.meshes?.length ?? 0) - 1)))) return ['media_glb_malformed']
+    if (!Array.isArray(gltf.scenes) || gltf.scenes.length < 1 || !integer(gltf.scene, 0, gltf.scenes.length - 1) || gltf.scenes.some((scene: any) => !record(scene) || !Array.isArray(scene.nodes) || scene.nodes.some((node: unknown) => !integer(node, 0, gltf.nodes.length - 1)))) return ['media_glb_malformed']
+    if (kind === 'model') {
+      if (!Array.isArray(gltf.meshes) || gltf.meshes.length < 1 || !gltf.meshes.every((mesh: any) => Array.isArray(mesh?.primitives) && mesh.primitives.length > 0 && mesh.primitives.every((primitive: any) => record(primitive) && record(primitive.attributes) && validAccessor(primitive.attributes.POSITION) && accessors[primitive.attributes.POSITION]?.type === 'VEC3' && accessors[primitive.attributes.POSITION]?.componentType === 5126 && (primitive.indices === undefined || (validAccessor(primitive.indices) && accessors[primitive.indices]?.type === 'SCALAR' && [5121,5123,5125].includes(accessors[primitive.indices]?.componentType)))))) return ['media_glb_missing_mesh']
+    }
+    if (kind === 'animation') {
+      if (!Array.isArray(gltf.animations) || gltf.animations.length < 1 || !gltf.animations.every((animation: any) => Array.isArray(animation?.channels) && animation.channels.length > 0 && Array.isArray(animation?.samplers) && animation.samplers.length > 0 && animation.samplers.every((sampler: any) => record(sampler) && validAccessor(sampler.input) && validAccessor(sampler.output) && ['LINEAR','STEP','CUBICSPLINE'].includes(sampler.interpolation ?? 'LINEAR') && accessors[sampler.input]?.type === 'SCALAR' && accessors[sampler.input]?.componentType === 5126) && animation.channels.every((channel: any) => {
+        if (!record(channel) || !integer(channel.sampler, 0, animation.samplers.length - 1) || !record(channel.target) || !integer(channel.target.node, 0, gltf.nodes.length - 1) || !['translation','rotation','scale'].includes(channel.target.path)) return false
+        const sampler = animation.samplers[channel.sampler]; const input = accessors[sampler.input]; const output = accessors[sampler.output]; const expectedType = channel.target.path === 'rotation' ? 'VEC4' : 'VEC3'; const multiplier = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1
+        return output?.type === expectedType && output?.componentType === 5126 && output.count === input.count * multiplier
+      }))) return ['media_glb_missing_animation']
+    }
     return []
   }
   const table = new Uint32Array(256)
   for (let n = 0; n < 256; n += 1) { let r = (n << 24) >>> 0; for (let k = 0; k < 8; k += 1) r = r & 0x80000000 ? ((r << 1) ^ 0x04c11db7) >>> 0 : (r << 1) >>> 0; table[n] = r }
-  let offset = 0; let pages = 0; let singleStream = false; let terminated = false; let identified = false; let serial: number | null = null; let granuleLow = 0; let granuleHigh = 0
+  const packetAscii = (packet: Uint8Array, offset: number, length: number) => { let out = ''; for (let index = 0; index < length; index += 1) out += String.fromCharCode(packet[offset + index] ?? 0); return out }
+  const validTags = (packet: Uint8Array) => {
+    if (packet.length < 16 || packetAscii(packet, 0, 8) !== 'OpusTags') return false
+    const packetView = new DataView(packet.buffer, packet.byteOffset, packet.byteLength); const vendorLength = packetView.getUint32(8, true); let cursor = 12 + vendorLength
+    if (cursor + 4 > packet.length) return false
+    const comments = packetView.getUint32(cursor, true); cursor += 4
+    if (comments > 65_536) return false
+    for (let index = 0; index < comments; index += 1) { if (cursor + 4 > packet.length) return false; const length = packetView.getUint32(cursor, true); cursor += 4; if (cursor + length > packet.length) return false; cursor += length }
+    return cursor === packet.length
+  }
+  const validAudioPacket = (packet: Uint8Array) => {
+    if (packet.length < 2 || packetAscii(packet, 0, Math.min(packet.length, 8)) === 'OpusHead' || packetAscii(packet, 0, Math.min(packet.length, 8)) === 'OpusTags') return false
+    const code = (packet[0] as number) & 3
+    if (code === 0) return true
+    if (code === 1) return packet.length >= 3 && (packet.length - 1) % 2 === 0
+    if (code === 2) {
+      if (packet.length < 4) return false
+      const first = packet[1] as number; const size = first < 252 ? first : packet.length > 2 ? first + 4 * (packet[2] as number) : packet.length
+      const header = first < 252 ? 2 : 3
+      return size > 0 && packet.length - header - size > 0
+    }
+    const countByte = packet[1] as number; const frames = countByte & 0x3f
+    if (frames < 1 || frames > 48) return false
+    let cursor = 2; let padding = 0
+    if (countByte & 0x40) { let next = 255; while (next === 255 && cursor < packet.length) { next = packet[cursor++] as number; padding += next === 255 ? 254 : next } }
+    const end = packet.length - padding
+    if (cursor >= end) return false
+    if (!(countByte & 0x80)) return (end - cursor) % frames === 0 && (end - cursor) / frames > 0
+    let used = 0
+    for (let frame = 0; frame < frames - 1; frame += 1) { if (cursor >= end) return false; const first = packet[cursor++] as number; let size = first; if (first >= 252) { if (cursor >= end) return false; size = first + 4 * (packet[cursor++] as number) } if (size < 1) return false; used += size }
+    return end - cursor - used > 0
+  }
+  let offset = 0; let pages = 0; let terminated = false; let serial: number | null = null; let expectedSequence = 0; let finalGranule = 0n
+  let packetParts: Uint8Array[] = []; let packetBytes = 0; let packetIndex = 0; let identified = false; let tagged = false; let audioPackets = 0
   while (offset < bytes.length && pages < 65_536) {
     if (offset + 27 > bytes.length || ascii(offset, 4) !== 'OggS' || bytes[offset + 4] !== 0) return ['media_ogg_malformed']
     const flags = bytes[offset + 5] as number
+    if ((flags & ~0x07) !== 0 || (pages === 0) !== Boolean(flags & 0x02) || (pages > 0 && (flags & 0x02) !== 0) || Boolean(flags & 0x01) !== (packetBytes > 0) || terminated) return ['media_ogg_malformed']
     const segments = bytes[offset + 26] as number
     if (offset + 27 + segments > bytes.length) return ['media_ogg_malformed']
     let bodyLength = 0
@@ -377,23 +516,33 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
     const pageSerial = view.getUint32(offset + 14, true)
     if (serial === null) serial = pageSerial
     else if (pageSerial !== serial) return ['media_ogg_malformed']
-    if (pages === 0) {
-      if ((flags & 0x02) === 0) return ['media_ogg_malformed']
-      const base = offset + 27 + segments
-      const head = ascii(base, Math.min(bodyLength, 16))
-      if (head.startsWith('OpusHead')) {
-        if (bodyLength < 19 || bytes[base + 8] !== 1 || (bytes[base + 9] as number) < 1 || (bytes[base + 9] as number) > 8 || view.getUint32(base + 12, true) < 8_000) return ['media_ogg_not_audio']
-      } else if (head.startsWith('\x01vorbis')) {
-        if (bodyLength < 30 || view.getUint32(base + 7, true) !== 0 || (bytes[base + 11] as number) < 1 || view.getUint32(base + 12, true) < 8_000) return ['media_ogg_not_audio']
-      } else return ['media_ogg_not_audio']
-      identified = true
+    if (view.getUint32(offset + 18, true) !== expectedSequence) return ['media_ogg_malformed']
+    const granule = view.getBigUint64(offset + 6, true)
+    if (granule !== 0xffffffffffffffffn) { if (granule < finalGranule) return ['media_ogg_malformed']; finalGranule = granule }
+    let bodyOffset = offset + 27 + segments
+    for (let index = 0; index < segments; index += 1) {
+      const length = bytes[offset + 27 + index] as number
+      packetParts.push(bytes.subarray(bodyOffset, bodyOffset + length)); packetBytes += length; bodyOffset += length
+      if (packetBytes > 1_048_576) return ['media_ogg_malformed']
+      if (length < 255) {
+        const packet = Buffer.concat(packetParts.map((part) => Buffer.from(part)), packetBytes)
+        if (packetIndex === 0) {
+          if (packet.length < 19 || packetAscii(packet, 0, 8) !== 'OpusHead' || packet[8] !== 1 || (packet[9] as number) < 1 || (packet[9] as number) > 8 || new DataView(packet.buffer, packet.byteOffset, packet.byteLength).getUint32(12, true) < 8_000 || (packet[18] === 0 ? packet.length !== 19 || (packet[9] as number) > 2 : packet.length !== 21 + (packet[9] as number))) return ['media_ogg_not_audio']
+          identified = true
+        } else if (packetIndex === 1) {
+          if (!validTags(packet)) return ['media_ogg_not_audio']
+          tagged = true
+        } else {
+          if (!validAudioPacket(packet)) return ['media_ogg_not_audio']
+          audioPackets += 1
+        }
+        packetParts = []; packetBytes = 0; packetIndex += 1
+      }
     }
-    granuleLow = view.getUint32(offset + 6, true); granuleHigh = view.getUint32(offset + 10, true)
-    if (flags & 0x02) singleStream = pages === 0
     if (flags & 0x04) terminated = pageEnd === bytes.length
-    offset = pageEnd; pages += 1
+    offset = pageEnd; pages += 1; expectedSequence += 1
   }
-  return identified && singleStream && terminated && pages >= 3 && offset === bytes.length && (granuleHigh > 0 || granuleLow > 0) && !(granuleHigh === 0xffffffff && granuleLow === 0xffffffff) ? [] : ['media_ogg_malformed']
+  return identified && tagged && audioPackets > 0 && packetBytes === 0 && terminated && pages >= 3 && offset === bytes.length && finalGranule > 0n ? [] : ['media_ogg_malformed']
 }
 
 /**
@@ -402,10 +551,10 @@ export function validatePolishMediaBytes(kind: PolishAssetKind, bytes: Uint8Arra
  * language, not merely a self-consistent hash over arbitrary bytes.
  */
 export function validatePolishLicenceBytes(bytes: Uint8Array): string[] {
-  if (!(bytes instanceof Uint8Array) || bytes.length < 120 || bytes.length > 262_144) return ['licence_text_mismatch']
+  if (!(bytes instanceof Uint8Array) || !['9f574a2f1f636a3db8a0665ba90212f34e2b5e61ecb533d77c05237766374111','5735dfd72cb64cbbceda4ebc00c380c41ca680edb82ff153aa7c9ab97614c539'].includes(createHash('sha256').update(bytes).digest('hex'))) return ['licence_text_mismatch']
   let text = ''
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { return ['licence_text_mismatch'] }
-  if (/[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text) || !/CC0/.test(text) || !/1\.0/.test(text) || !/public domain|no copyright|creative commons/i.test(text)) return ['licence_text_mismatch']
+  if (bytes.length < 400 || bytes.length > 1_024 || /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text) || !/Creative Commons (?:Zero, )?CC0/.test(text) || !text.includes('creativecommons.org/publicdomain/zero/1.0/') || !/Kenney/i.test(text)) return ['licence_text_mismatch']
   return []
 }
 

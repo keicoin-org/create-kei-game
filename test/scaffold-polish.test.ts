@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { expectedCredits, parsePolishRecipe, type PolishSourceManifestV1 } from '../src/polish.js'
+import { expectedCredits, parsePolishRecipe, polishSourceCatalogRecord, type PolishSourceManifestV1 } from '../src/polish.js'
 import {
   POLISH_ASSET_MANIFEST_PATH,
   POLISH_ATTRIBUTION_PATH,
@@ -14,7 +14,7 @@ import {
   polishProjectFiles,
 } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, tinyGlb, tinyOgg, tinyPng } from './media.js'
+import { catalogLicenceBytes, catalogSourceBytes, glbWithOutOfRangePosition, oggWithoutAudioPacket, pngWithInvalidDeflate, tinyGlb, tinyOgg, tinyPng } from './media.js'
 import { runProcess } from './process.js'
 
 const temporary: string[] = []
@@ -35,7 +35,9 @@ function fixture(dimension: '2d' | '3d', ready: boolean) {
   if (!ready) return { root, manifest, recipe, sources: JSON.parse(files.find(({ path }) => path === POLISH_SOURCE_MANIFEST_PATH)!.contents) }
 
   const assets = manifest.assets.map((requirement: any) => {
-    const raw = Buffer.from(`raw:${requirement.id}`); const licence = Buffer.from(CC0_TEXT)
+    const raw = catalogSourceBytes(requirement.id); const licence = catalogLicenceBytes(requirement.id)
+    const catalog = polishSourceCatalogRecord(requirement.id)
+    if (!catalog) throw new Error(`missing fixture source catalog record: ${requirement.id}`)
     const output = requirement.kind === 'audio' ? tinyOgg() : requirement.kind === 'model' ? tinyGlb('model') : requirement.kind === 'animation' ? tinyGlb('animation') : tinyPng()
     const extension = requirement.kind === 'audio' ? 'ogg' : requirement.kind === 'model' || requirement.kind === 'animation' ? 'glb' : 'png'
     const sourcePath = `kei-mmo/content/source-bytes/${requirement.id}.bin`
@@ -43,10 +45,10 @@ function fixture(dimension: '2d' | '3d', ready: boolean) {
     const outputPath = `assets/polish/${requirement.id}.${extension}`
     put(root, sourcePath, raw); put(root, licencePath, licence); put(root, outputPath, output)
     return {
-      id: requirement.id, canonicalUrl: `https://kenney.nl/assets/${requirement.id}`, provider: 'kenney', providerAssetVersion: '2026-08-04', acquisitionMode: 'download', acquiredAt: '2026-08-04T12:00:00.000Z',
+      id: requirement.id, canonicalUrl: catalog.canonicalUrl, provider: catalog.provider, providerAssetVersion: catalog.providerAssetVersion, acquisitionMode: catalog.acquisitionMode, acquiredAt: '2026-08-04T12:00:00.000Z',
       sourceFile: { path: sourcePath, sha256: sha256(raw), bytes: raw.byteLength, packaged: true },
-      licence: { id: 'CC0-1.0', referenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', filePath: licencePath, sha256: sha256(licence), bytes: licence.byteLength },
-      attribution: `Kenney ${requirement.id}, CC0`, rawRedistribution: 'allowed', processedOutputs: [{ path: outputPath, sha256: sha256(output), bytes: output.byteLength }],
+      licence: { id: 'CC0-1.0', referenceUrl: catalog.licenceReferenceUrl, filePath: licencePath, sha256: sha256(licence), bytes: licence.byteLength },
+      attribution: catalog.attribution, rawRedistribution: 'allowed', processedOutputs: [{ path: outputPath, sha256: sha256(output), bytes: output.byteLength }],
     }
   })
   const provisional = { version: 1, credits: { path: POLISH_ATTRIBUTION_PATH, sha256: 'a'.repeat(64), bytes: 1 }, assets }
@@ -86,19 +88,21 @@ describe('generated project-owned polish checker', () => {
   }
 
   test.each([
-    ['unknown event', (recipe: any) => { recipe.actions[0].events.push('execute') }],
-    ['silent effect', (recipe: any) => { recipe.effects.contact.cue = null }],
-    ['missing remote observer', (recipe: any) => { recipe.capture.steps[5].observerIds = [] }],
-    ['nonmonotonic authority', (recipe: any) => { recipe.authority.events[1].tick = recipe.authority.events[0].tick }],
-    ['nonmonotonic quality', (recipe: any) => { recipe.qualityProfiles.low.maxParticles = 500 }],
-  ])('copies the authoritative parser and rejects %s after harness deletion', async (_name, mutate) => {
+    ['unknown event', (recipe: any) => { recipe.actions[0].events.push('execute') }, 'invalid_action'],
+    ['silent effect', (recipe: any) => { recipe.effects.contact.cue = null }, 'invalid_effect_contact'],
+    ['missing remote observer', (recipe: any) => { recipe.capture.steps[5].observerIds = [] }, 'missing_remote_observation'],
+    ['nonmonotonic authority', (recipe: any) => { recipe.authority.events[1].tick = recipe.authority.events[0].tick }, 'invalid_authority_event'],
+    ['nonmonotonic quality', (recipe: any) => { recipe.qualityProfiles.low.maxParticles = 500 }, 'non_monotonic_quality'],
+    ['per-channel placeholders', (recipe: any) => { recipe.capture.steps[4].visual = 'generic visual placeholder'; recipe.capture.steps[4].audio = 'generic audio placeholder' }, 'weak_capture_feedback'],
+    ['remote rebound to interaction', (recipe: any) => { recipe.capture.steps[5].actionId = 'inspect-sentinel'; recipe.capture.steps[5].expectedEventId = 'event-interact' }, 'remote_observation_mismatch'],
+  ])('copies the authoritative parser and rejects %s after harness deletion', async (_name, mutate, expectedCode) => {
     const current = fixture('2d', true); mutate(current.recipe)
     expect(parsePolishRecipe(current.recipe)).toBeNull()
     put(current.root, POLISH_RECIPE_PATH, json(current.recipe))
     const result = await check(current.root)
     expect(result.status).toBe(1)
     expect(result.report.code).toBe('polish_assets_invalid')
-    expect(result.report.problems.some((problem: any) => String(problem.code).startsWith('invalid_') || problem.code === 'non_monotonic_quality' || problem.code === 'missing_remote_observation')).toBeTrue()
+    expect(result.report.problems).toContainEqual(expect.objectContaining({ code: expectedCode }))
   })
 
   test.each([
@@ -107,6 +111,7 @@ describe('generated project-owned polish checker', () => {
     ['credits bytes', (current: any) => { put(current.root, POLISH_ATTRIBUTION_PATH, '# forged credits\n') }],
     ['processed hash', (current: any) => { put(current.root, current.sources.assets[0].processedOutputs[0].path, 'tampered output') }],
     ['Windows alias', (current: any) => { current.sources.assets[0].processedOutputs[0].path = 'assets/polish/CON.png' }],
+    ['invented catalog provenance', (current: any) => { current.sources.assets[0].canonicalUrl = 'https://kenney.nl/assets/invented-hero-that-does-not-exist'; current.sources.assets[0].providerAssetVersion = 'invented-v999'; current.sources.assets[0].attribution = 'Kenney invented asset, CC0-1.0' }],
   ])('fails closed on mutated %s', async (_name, mutate) => {
     const current = fixture('2d', true); mutate(current); writeSources(current.root, current.sources, current.recipe)
     const result = await check(current.root)
@@ -158,6 +163,25 @@ describe('generated project-owned polish checker', () => {
     expect(result.report.code).toBe('polish_assets_invalid')
     const codes = new Set(result.report.problems.map((problem: any) => problem.code))
     for (const code of ['media_png_malformed', 'media_ogg_malformed', 'licence_text_mismatch', 'role_binding_mismatch', 'missing_role_environment', 'missing_role_effect', 'unknown_capture_event', 'weak_capture_feedback', 'missing_authority_kind_interact', 'capture_binding_mismatch']) expect(codes).toContain(code)
+  })
+
+  test('rejects internally malformed PNG, GLB, and Ogg bytes with matching declared hashes', async () => {
+    const current = fixture('3d', true)
+    const kindById = new Map(current.manifest.assets.map((asset: any) => [asset.id, asset.kind]))
+    for (const record of current.sources.assets) {
+      const kind = kindById.get(record.id)
+      const malformed = kind === 'audio' ? oggWithoutAudioPacket() : kind === 'model' ? glbWithOutOfRangePosition('model') : kind === 'animation' ? glbWithOutOfRangePosition('animation') : pngWithInvalidDeflate()
+      const output = record.processedOutputs[0]
+      put(current.root, output.path, malformed)
+      output.sha256 = sha256(malformed); output.bytes = malformed.byteLength
+    }
+    writeSources(current.root, current.sources, current.recipe)
+    const result = await check(current.root)
+    expect(result.status).toBe(1)
+    const codes = new Set(result.report.problems.map((problem: any) => problem.code))
+    expect(codes).toContain('media_png_malformed')
+    expect(codes).toContain('media_glb_malformed')
+    expect(codes).toContain('media_ogg_malformed')
   })
 
   test('counts packaged raw source, licence, and credits bytes against the aggregate budget', async () => {

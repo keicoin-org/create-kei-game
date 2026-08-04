@@ -8,17 +8,19 @@ import {
   parsePolishAssetManifest,
   parsePolishRecipe,
   parsePolishSourceManifest,
+  polishSourceCatalogRecord,
   portablePolishPathKey,
   safePolishPath,
   validatePolishLicenceBytes,
   validatePolishMediaBytes,
   validatePolishRecipeDocument,
   validatePolishRecipeManifestBinding,
+  validatePolishSourceManifestDocument,
   type PolishSourceManifestV1,
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, tinyGlb, tinyOgg, tinyPng } from './media.js'
+import { CC0_TEXT, glbWithOutOfRangePosition, oggWithoutAudioPacket, pngWithInvalidDeflate, tinyGlb, tinyOgg, tinyPng } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -31,14 +33,16 @@ function generated(dimension: '2d' | '3d' = '2d') {
 }
 
 function source(id = 'hero-character', overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  const raw = `raw:${id}`; const licence = `CC0:${id}`; const output = `asset:${id}`
+  const catalog = polishSourceCatalogRecord(id)
+  if (!catalog) throw new Error(`unknown fixture catalog id: ${id}`)
+  const output = `asset:${id}`
   return {
     id,
-    canonicalUrl: `https://kenney.nl/assets/${id}`,
-    provider: 'kenney', providerAssetVersion: '2026-01-15', acquisitionMode: 'download', acquiredAt: '2026-08-04T12:00:00.000Z',
-    sourceFile: { path: `kei-mmo/content/source-bytes/${id}.bin`, sha256: hash(raw), bytes: Buffer.byteLength(raw), packaged: true },
-    licence: { id: 'CC0-1.0', referenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', filePath: `kei-mmo/content/licenses/${id}.txt`, sha256: hash(licence), bytes: Buffer.byteLength(licence) },
-    attribution: `Kenney ${id}, CC0`, rawRedistribution: 'allowed',
+    canonicalUrl: catalog.canonicalUrl,
+    provider: catalog.provider, providerAssetVersion: catalog.providerAssetVersion, acquisitionMode: catalog.acquisitionMode, acquiredAt: '2026-08-04T12:00:00.000Z',
+    sourceFile: { path: `kei-mmo/content/source-bytes/${id}.bin`, sha256: catalog.sourceSha256, bytes: catalog.sourceBytes, packaged: true },
+    licence: { id: 'CC0-1.0', referenceUrl: catalog.licenceReferenceUrl, filePath: `kei-mmo/content/licenses/${id}.txt`, sha256: catalog.licenceSha256, bytes: catalog.licenceBytes },
+    attribution: catalog.attribution, rawRedistribution: 'allowed',
     processedOutputs: [{ path: `assets/polish/${id}.png`, sha256: hash(output), bytes: Buffer.byteLength(output) }],
     ...overrides,
   }
@@ -79,6 +83,23 @@ describe('PolishRecipeV1 authority and presentation contract', () => {
     expect(parsePolishRecipe(recipe)).toBeNull()
   })
 
+  test('requires every feedback channel to carry the capture-step semantic', () => {
+    const recipe = structuredClone(generated().recipe)
+    const strike = recipe.capture.steps.find((step: any) => step.kind === 'strike')
+    strike.visual = 'generic visual placeholder'
+    strike.audio = 'generic audio placeholder'
+    strike.hud = 'strike outcome remains visible'
+    expect(validatePolishRecipeDocument(recipe)).toContain('weak_capture_feedback')
+  })
+
+  test('binds remote observation to the same accepted strike event', () => {
+    const recipe = structuredClone(generated().recipe)
+    const remote = recipe.capture.steps.find((step: any) => step.kind === 'remote-observe')
+    remote.actionId = 'inspect-sentinel'
+    remote.expectedEventId = 'event-interact'
+    expect(validatePolishRecipeDocument(recipe)).toContain('remote_observation_mismatch')
+  })
+
   test.each([
     ['missing environment role', (manifest: any) => { manifest.assets = manifest.assets.filter((asset: any) => asset.role !== 'environment') }],
     ['missing effect role', (manifest: any) => { manifest.assets = manifest.assets.filter((asset: any) => asset.role !== 'effect') }],
@@ -116,9 +137,12 @@ describe('admitted media and licence byte semantics', () => {
     ['text bytes labelled as GLB', 'model', () => Buffer.from('runtime:training-sentinel runtime:training-sentinel'), 'media_glb_malformed'],
     ['text bytes labelled as OGG', 'audio', () => Buffer.from('runtime:ambience runtime:ambience runtime:ambience'), 'media_ogg_malformed'],
     ['PNG with a corrupted chunk CRC', 'atlas', () => { const bytes = tinyPng(); bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff; return bytes }, 'media_png_malformed'],
+    ['PNG with CRC-correct invalid compressed scanlines', 'image', () => pngWithInvalidDeflate(), 'media_png_malformed'],
     ['truncated GLB container', 'model', () => tinyGlb('model').subarray(0, 40), 'media_glb_malformed'],
+    ['GLB with an out-of-range POSITION accessor', 'model', () => glbWithOutOfRangePosition(), 'media_glb_malformed'],
     ['GLB without an animation for the rig requirement', 'animation', () => tinyGlb('model'), 'media_glb_missing_animation'],
     ['Ogg stream without its terminating page', 'audio', () => { const bytes = tinyOgg(); return bytes.subarray(0, bytes.length - 31) }, 'media_ogg_malformed'],
+    ['Ogg stream with duration metadata but no audio packet', 'audio', () => oggWithoutAudioPacket(), 'media_ogg_malformed'],
   ] as const)('refuses %s', (_name, kind, build, code) => {
     expect(validatePolishMediaBytes(kind, build())).toEqual([code])
   })
@@ -126,6 +150,7 @@ describe('admitted media and licence byte semantics', () => {
   test('requires retained licence bytes to carry the CC0 dedication text', () => {
     expect(validatePolishLicenceBytes(Buffer.from(CC0_TEXT))).toEqual([])
     expect(validatePolishLicenceBytes(Buffer.from('not the CC0 legal text'))).toEqual(['licence_text_mismatch'])
+    expect(validatePolishLicenceBytes(Buffer.from('CC0 1.0 Creative Commons public domain. '.repeat(4)))).toEqual(['licence_text_mismatch'])
     expect(validatePolishLicenceBytes(Buffer.alloc(200, 0x90))).toEqual(['licence_text_mismatch'])
   })
 })
@@ -149,8 +174,16 @@ describe('portable path and provenance contract', () => {
     ['Windows ADS', { processedOutputs: [{ path: 'assets/hero.png:zone', sha256: 'a'.repeat(64), bytes: 10 }] }],
     ['unpinned Kenney asset path', { canonicalUrl: 'https://kenney.nl/' }],
     ['attribution naming neither provider nor licence', { attribution: 'somebody else entirely' }],
+    ['invented provider asset and matching invented assertions', { canonicalUrl: 'https://kenney.nl/assets/invented-hero-that-does-not-exist', providerAssetVersion: 'invented-v999', attribution: 'Kenney invented asset, CC0-1.0' }],
   ])('refuses %s', (_name, override) => {
     expect(parsePolishSourceManifest(sources([{ ...source(), ...override }]).value)).toBeNull()
+  })
+
+  test('binds provenance fields and retained byte hashes to the reviewed catalog record', () => {
+    const registry = sources([source()]).value as any
+    expect(validatePolishSourceManifestDocument(registry)).toEqual([])
+    registry.assets[0].sourceFile.sha256 = 'b'.repeat(64)
+    expect(validatePolishSourceManifestDocument(registry)).toContain('source_catalog_mismatch')
   })
 
   test('refuses cross-record case and Unicode path collisions', () => {

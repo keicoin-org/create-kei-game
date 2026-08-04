@@ -10,6 +10,7 @@ import {
   POLISH_RECIPE_VERSION,
   POLISH_SOURCE_MANIFEST_VERSION,
   expectedCredits,
+  polishSourceCatalogRecord,
   validatePolishAssetManifestDocument,
   validatePolishLicenceBytes,
   validatePolishMediaBytes,
@@ -112,16 +113,16 @@ function starterRecipe(plan: ImplementationPlan, sourceManifestHash: string, sty
   const capture = Object.freeze({
     profile: 'medium' as const, durationMs: 30_000, scriptedRemoteLabel: 'Scripted remote automation (not a live player)',
     steps: Object.freeze([
-      step(500, 'connect-local', 'local-player', null, null, null, null, null, ['local-player'], 'connection state visible', 'ambience begins after gesture', 'local identity visible'),
-      step(1_500, 'connect-scripted-remote', 'scripted-remote', null, null, null, null, null, ['local-player'], 'distinct remote silhouette', 'remote arrival cue', 'automation label visible'),
-      step(4_000, 'approach', 'local-player', 'training-sentinel', null, null, null, null, ['local-player','scripted-remote'], 'distance telegraph closes', 'footsteps audible', 'interaction prompt visible'),
-      step(8_000, 'interact', 'local-player', 'training-sentinel', 'inspect-sentinel', 'event-interact', 'accepted', true, ['local-player','scripted-remote'], 'interaction contact visible', 'interaction cue audible', 'success state visible'),
-      step(16_000, 'strike', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-strike', 'accepted', true, ['local-player'], 'strike contact visible', 'impact cue audible', 'progression update visible'),
-      step(17_000, 'remote-observe', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-strike', 'accepted', true, ['scripted-remote'], 'remote observes same contact', 'impact cue de-duplicated', 'remote outcome visible'),
+      step(500, 'connect-local', 'local-player', null, null, null, null, null, ['local-player'], 'local connection state visible', 'connection ambience begins', 'local identity connection visible'),
+      step(1_500, 'connect-scripted-remote', 'scripted-remote', null, null, null, null, null, ['local-player'], 'scripted remote silhouette visible', 'automation remote arrival cue', 'scripted automation label visible'),
+      step(4_000, 'approach', 'local-player', 'training-sentinel', null, null, null, null, ['local-player','scripted-remote'], 'distance approach telegraph closes', 'approach footsteps audible', 'approach interaction prompt visible'),
+      step(8_000, 'interact', 'local-player', 'training-sentinel', 'inspect-sentinel', 'event-interact', 'accepted', true, ['local-player','scripted-remote'], 'interaction contact visible', 'interaction cue audible', 'interaction success state visible'),
+      step(16_000, 'strike', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-strike', 'accepted', true, ['local-player'], 'strike contact visible', 'impact cue audible', 'strike progression update visible'),
+      step(17_000, 'remote-observe', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-strike', 'accepted', true, ['scripted-remote'], 'remote observes same contact', 'remote impact cue de-duplicated', 'remote outcome visible'),
       step(20_000, 'refusal', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-refusal', 'refused', false, ['local-player','scripted-remote'], 'refusal cancels anticipation', 'refusal cue audible', 'refusal reason visible'),
       step(22_000, 'cooldown', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-cooldown', 'cooldown', false, ['local-player'], 'cooldown telegraph visible', 'cooldown cue audible', 'cooldown timer visible'),
       step(25_000, 'recovery', 'local-player', 'training-sentinel', 'strike-sentinel', 'event-recovery', 'recovered', false, ['local-player','scripted-remote'], 'recovery pose visible', 'recovery cue audible', 'ready state visible'),
-      step(28_000, 'reset', 'local-player', 'training-sentinel', null, null, null, null, ['local-player','scripted-remote'], 'sentinel reset visible', 'ambience continues', 'loop complete visible'),
+      step(28_000, 'reset', 'local-player', 'training-sentinel', null, null, null, null, ['local-player','scripted-remote'], 'sentinel reset visible', 'reset ambience continues', 'loop reset complete visible'),
     ]),
   })
   const maxVisualBytes = dimension === '2d' ? 4_194_304 : 12_582_912
@@ -162,9 +163,11 @@ import { createHash } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { inflateSync } from 'node:zlib'
 
 const validatePolishRecipeDocument = ${validatePolishRecipeDocument.toString()}
 const validatePolishAssetManifestDocument = ${validatePolishAssetManifestDocument.toString()}
+const polishSourceCatalogRecord = ${polishSourceCatalogRecord.toString()}
 const validatePolishSourceManifestDocument = ${validatePolishSourceManifestDocument.toString()}
 const validatePolishRecipeManifestBinding = ${validatePolishRecipeManifestBinding.toString()}
 const validatePolishMediaBytes = ${validatePolishMediaBytes.toString()}
