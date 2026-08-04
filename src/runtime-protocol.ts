@@ -12,6 +12,9 @@ import {
 } from './runtime.js'
 import { resolveProvider } from './providers.js'
 import { MAX_BRIEF_LENGTH, MAX_MODEL_LENGTH } from './harness.js'
+import { IntentError, parseMmoIntent } from './intent.js'
+import { planBrief, type ImplementationPlan } from './plan.js'
+import { planMmo } from './planner.js'
 
 export { ENGINE_ERROR_MESSAGES } from './runtime.js'
 
@@ -47,6 +50,8 @@ type InputCommand =
 
 export type ProtocolOutput =
   | { readonly v: 1; readonly type: 'accepted'; readonly id: string; readonly command: 'open' | 'turn' | 'cancel' | 'close' }
+  /** The machine-readable plan, sent once per session that was opened from an intent. */
+  | { readonly v: 1; readonly type: 'plan'; readonly id: string; readonly plan: ImplementationPlan }
   | { readonly v: 1; readonly type: 'event'; readonly id: string; readonly seq: number; readonly event: EngineEvent }
   | { readonly v: 1; readonly type: 'error'; readonly id?: string; readonly error: { readonly code: ProtocolErrorCode | EngineError['code']; readonly message: string; readonly field?: string } }
   | { readonly v: 1; readonly type: 'shutdown' }
@@ -78,30 +83,73 @@ function protocolFailure(code: ProtocolErrorCode, message: string, id?: string, 
   }
 }
 
-function parseRequest(value: unknown): EngineRequest | undefined {
-  if (!isRecord(value) || typeof value.workspace !== 'string' || value.workspace.trim() === '') return undefined
-  if (!hasOnlyKeys(value, ['workspace', 'provider', 'model', 'brief'])) return undefined
-  if (!posix.isAbsolute(value.workspace) && !win32.isAbsolute(value.workspace)) return undefined
-  if (typeof value.model !== 'string' || value.model.trim() === '' || value.model.length > MAX_MODEL_LENGTH) return undefined
-  if (typeof value.brief !== 'string' || value.brief.trim() === '' || value.brief.length > MAX_BRIEF_LENGTH) return undefined
-  if (!isRecord(value.provider)) return undefined
+type ParsedRequest =
+  | { readonly ok: true; readonly request: EngineRequest }
+  | { readonly ok: false; readonly field: string }
+
+function rejected(field: string): ParsedRequest {
+  return { ok: false, field }
+}
+
+/**
+ * A session is opened from an `intent` — which this plans, so the plan is
+ * always harness-authored and a caller cannot hand the model a description the
+ * harness never derived. A raw `brief` is still accepted, as the compatibility
+ * path for a caller that has its own text and no intent to plan from.
+ */
+function parseRequest(value: unknown): ParsedRequest {
+  if (!isRecord(value)) return rejected('request')
+  if (!hasOnlyKeys(value, ['workspace', 'provider', 'model', 'brief', 'intent'])) return rejected('request')
+  if (typeof value.workspace !== 'string' || value.workspace.trim() === '') return rejected('request.workspace')
+  if (!posix.isAbsolute(value.workspace) && !win32.isAbsolute(value.workspace)) return rejected('request.workspace')
+  if (typeof value.model !== 'string' || value.model.trim() === '' || value.model.length > MAX_MODEL_LENGTH) {
+    return rejected('request.model')
+  }
+  if ((value.brief === undefined) === (value.intent === undefined)) {
+    return rejected('request.intent')
+  }
+  if (!isRecord(value.provider)) return rejected('request.provider')
   const provider = value.provider
-  if (!hasOnlyKeys(provider, ['provider', 'protocol', 'baseUrl', 'apiKeyEnv'])) return undefined
-  if (typeof provider.provider !== 'string') return undefined
+  if (!hasOnlyKeys(provider, ['provider', 'protocol', 'baseUrl', 'apiKeyEnv'])) return rejected('request.provider')
+  if (typeof provider.provider !== 'string') return rejected('request.provider')
+
+  let plan: ImplementationPlan | undefined
+  let brief: string
+  if (value.intent === undefined) {
+    if (typeof value.brief !== 'string' || value.brief.trim() === '' || value.brief.length > MAX_BRIEF_LENGTH) {
+      return rejected('request.brief')
+    }
+    brief = value.brief
+  } else {
+    try {
+      plan = planMmo(parseMmoIntent(value.intent))
+    } catch (error) {
+      return rejected(error instanceof IntentError ? `request.intent.${error.details.field ?? 'intent'}` : 'request.intent')
+    }
+    brief = planBrief(plan)
+  }
+
+  let resolved
   try {
-    return {
+    resolved = resolveProvider({
+      provider: provider.provider,
+      protocol: typeof provider.protocol === 'string' ? provider.protocol : undefined,
+      baseUrl: typeof provider.baseUrl === 'string' ? provider.baseUrl : undefined,
+      apiKeyEnv: typeof provider.apiKeyEnv === 'string' ? provider.apiKeyEnv : undefined,
+    })
+  } catch {
+    return rejected('request.provider')
+  }
+
+  return {
+    ok: true,
+    request: {
       workspace: value.workspace,
       model: value.model,
-      brief: value.brief,
-      provider: resolveProvider({
-        provider: provider.provider,
-        protocol: typeof provider.protocol === 'string' ? provider.protocol : undefined,
-        baseUrl: typeof provider.baseUrl === 'string' ? provider.baseUrl : undefined,
-        apiKeyEnv: typeof provider.apiKeyEnv === 'string' ? provider.apiKeyEnv : undefined,
-      }),
-    }
-  } catch {
-    return undefined
+      brief,
+      provider: resolved,
+      ...(plan === undefined ? {} : { plan }),
+    },
   }
 }
 
@@ -124,10 +172,10 @@ function parseCommand(value: unknown): InputCommand | ProtocolErrorOutput {
       if (!hasOnlyKeys(value, ['v', 'type', 'id', 'request'])) {
         return protocolFailure('invalid_message', 'Protocol command contains unknown fields.', id, 'command')
       }
-      const request = parseRequest(value.request)
-      return request
-        ? { v: 1, type: 'open', id, request }
-        : protocolFailure('invalid_message', 'Engine request is not valid.', id, 'request')
+      const parsed = parseRequest(value.request)
+      return parsed.ok
+        ? { v: 1, type: 'open', id, request: parsed.request }
+        : protocolFailure('invalid_message', 'Engine request is not valid.', id, parsed.field)
     }
     case 'turn':
       return hasOnlyKeys(value, ['v', 'type', 'id', 'prompt']) && typeof value.prompt === 'string' && value.prompt.trim() !== ''
@@ -257,6 +305,11 @@ export async function runJsonlEngine(
         const runtime = factory.create(command.request)
         sessions.set(command.id, { engine: new EngineSession({ request: command.request, ...runtime }), sequence: 0 })
         await send({ v: 1, type: 'accepted', id: command.id, command: 'open' })
+        // The plan crosses the boundary once, right after the session exists,
+        // so whatever is driving this can act on the same document the model got.
+        if (command.request.plan) {
+          await send({ v: 1, type: 'plan', id: command.id, plan: command.request.plan })
+        }
       } catch (error) { await send(publicError(error, command.id)) }
       return
     }

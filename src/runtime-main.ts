@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `create-kei-game-engine`: the shared creation engine as a long-running JSONL
+ * `create-kei-mmo-engine`: the shared creation engine as a long-running JSONL
  * process. Stdout carries the protocol and nothing else, which is why nothing
  * in here logs.
  */

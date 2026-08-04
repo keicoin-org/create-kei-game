@@ -6,7 +6,7 @@ claim that arbitrary future tools are safe.
 
 ## Trust boundaries
 
-The front end may choose a provider, model, brief, workspace, and prompt. It
+The front end may choose a provider, model, intent, workspace, and prompt. It
 never sends a credential value. The engine receives a validated `apiKeyEnv`
 reference and resolves it against **its own inherited environment**, immediately
 before each request. The resolved value goes into exactly one request header —
@@ -80,18 +80,19 @@ completed features.
 
 Three limits worth stating rather than leaving to be discovered. A model can
 overwrite any file in the workspace it was pointed at, including one the
-developer wrote, so pointing `--source local` at a project means accepting that
-— the harness does not snapshot or back it up, and version control is the
-developer's. And the credential check on writes compares against the value the
-harness holds; it is a guard against the obvious accident, not a general
-data-loss-prevention control.
+developer wrote — the harness does not snapshot or back it up, and version
+control is the developer's. That matters most when the planner decided to clone
+a reference project: the workspace is then somebody else's working code, and the
+turn may rewrite it. And the credential check on writes compares against the
+value the harness holds; it is a guard against the obvious accident, not a
+general data-loss-prevention control.
 
 The third runs the other way, and the write-side rules do not imply it. **The
 harness protects the project from the harness's credential; it does not protect
 the project's own secrets from the provider.** `read_file` reads any UTF-8 file
 in the workspace, `.env` included — the basename refusal is on writes only — and
 whatever it reads enters the transcript, which is sent upstream on the next turn.
-For a blank or template source there is nothing there to leak. For `--source
-local` pointed at a working project there may well be, and that is a property of
-the source the developer chose rather than of a defect here. Whether reads should
-carry their own refusal list is an open decision, not a settled one.
+For a scaffolded workspace there is nothing there to leak. For a workspace the
+harness cloned, or a directory a caller pointed the engine at over JSONL, there
+may well be. Whether reads should carry their own refusal list is an open
+decision, not a settled one.

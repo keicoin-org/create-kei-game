@@ -11,6 +11,9 @@ const entry = fileURLToPath(new URL('../dist/index.js', import.meta.url))
 const temporary: string[] = []
 const secret = 'sk-cli-secret-never-print'
 
+/** Nothing like a reference project, so no test can end up wanting a network. */
+const GAMEPLAY = 'Crews salvage derelict stations and haul cargo home.'
+
 beforeAll(ensureBuilt)
 
 interface RunResult {
@@ -20,7 +23,7 @@ interface RunResult {
 }
 
 function workspace(): string {
-  const directory = mkdtempSync(join(tmpdir(), 'create-kei-game-agent-'))
+  const directory = mkdtempSync(join(tmpdir(), 'create-kei-mmo-agent-'))
   temporary.push(directory)
   return directory
 }
@@ -68,14 +71,14 @@ afterEach(() => {
 })
 
 describe('real prompt-free agent CLI', () => {
-  test('flags-only mode prepares once and emits one sanitized JSON object', async () => {
+  test('flags-only mode plans, prepares once, and emits one sanitized JSON object', async () => {
     const directory = workspace()
     const result = await run(
       directory,
       [
-        'Flag Game', '--agent', '--json', '--source', 'blank', '--into', 'game',
+        'Flag MMO', '--agent', '--json', '--3d', '--gameplay', GAMEPLAY, '--into', 'game',
         '--provider', 'openai', '--model', 'explicit-model', '--api-key-env', 'TEST_MODEL_KEY',
-        '--brief', 'Build a tiny puzzle game.', '--no-launch',
+        '--no-launch',
       ],
       { environment: { TEST_MODEL_KEY: secret } },
     )
@@ -86,8 +89,10 @@ describe('real prompt-free agent CLI', () => {
       status: 'prepared',
       launch: 'disabled',
       request: {
-        project: { title: 'Flag Game', slug: 'flag-game' },
+        project: { title: 'Flag MMO', slug: 'flag-mmo' },
         selection: { kind: 'blank' },
+        intent: { intentVersion: 1, dimension: '3d', gameplay: GAMEPLAY },
+        plan: { planVersion: 1, reference: { strategy: 'scaffold' } },
         provider: { provider: 'openai', apiKeyEnv: 'TEST_MODEL_KEY' },
         model: 'explicit-model',
         launch: false,
@@ -96,22 +101,42 @@ describe('real prompt-free agent CLI', () => {
     })
     expect(result.stdout).not.toContain(secret)
     expect(result.stdout).not.toContain('Cloning')
-    expect(readFileSync(join(directory, 'game', 'package.json'), 'utf8')).toContain('flag-game')
+    expect(readFileSync(join(directory, 'game', 'package.json'), 'utf8')).toContain('flag-mmo')
+    const plan = JSON.parse(readFileSync(join(directory, 'game', 'kei-mmo', 'plan.json'), 'utf8'))
+    expect(plan.planVersion).toBe(1)
+    expect(plan.capabilities.length).toBeGreaterThan(5)
   })
 
-  test('reads config from a file and explicit flags replace it with source-group precedence', async () => {
+  test('--plan-only decides everything and touches nothing', async () => {
+    const directory = workspace()
+    const result = await run(directory, [
+      'Planned MMO', '--agent', '--json', '--plan-only', '--gameplay', GAMEPLAY, '--into', 'game',
+    ])
+    expect(result.status).toBe(0)
+    const output = jsonLine(result)
+    expect(output.ok).toBeTrue()
+    expect(output.status).toBe('planned')
+    expect(output.plan.intent.name).toBe('Planned MMO')
+    expect(output.plan.engine.dimension).toBeString()
+    expect(output.plan.reference.considered).toHaveLength(3)
+    expect(output.plan.constraints.length).toBeGreaterThan(0)
+    // No provider was named and no credential was set, and neither was needed.
+    expect(existsSync(join(directory, 'game'))).toBeFalse()
+  })
+
+  test('reads config from a file and explicit flags replace it field by field', async () => {
     const directory = workspace()
     const configPath = join(directory, 'agent.json')
     writeFileSync(configPath, JSON.stringify({
-      name: 'Config Game', source: 'template', template: 'button', into: 'config-game',
-      force: false, provider: 'openai', model: 'config-model', apiKeyEnv: 'TEST_MODEL_KEY',
-      brief: 'Config brief', launch: true,
+      name: 'Config MMO', dimension: '2d', gameplay: 'Config gameplay', world: 'Config world',
+      into: 'config-mmo', force: false, provider: 'openai', model: 'config-model',
+      apiKeyEnv: 'TEST_MODEL_KEY', launch: true,
     }))
     const result = await run(
       directory,
       [
-        'Flag Game', '--agent', '--json', '--agent-config', configPath, '--source', 'blank',
-        '--into', 'flag-game', '--force', '--model', 'flag-model', '--brief', 'Flag brief',
+        'Flag MMO', '--agent', '--json', '--agent-config', configPath, '--3d',
+        '--into', 'flag-mmo', '--force', '--model', 'flag-model', '--gameplay', GAMEPLAY,
         '--no-launch',
       ],
       { environment: { TEST_MODEL_KEY: 'present' } },
@@ -120,8 +145,11 @@ describe('real prompt-free agent CLI', () => {
     expect(jsonLine(result)).toMatchObject({
       launch: 'disabled',
       request: {
-        project: { title: 'Flag Game' }, selection: { kind: 'blank' }, force: true,
-        model: 'flag-model', brief: 'Flag brief', launch: false,
+        project: { title: 'Flag MMO' },
+        force: true,
+        model: 'flag-model',
+        intent: { dimension: '3d', gameplay: GAMEPLAY, world: 'Config world' },
+        launch: false,
       },
     })
   })
@@ -129,8 +157,8 @@ describe('real prompt-free agent CLI', () => {
   test('reads bounded config from stdin without asking anything', async () => {
     const directory = workspace()
     const input = JSON.stringify({
-      name: 'Stdin Game', source: 'blank', into: 'stdin-game', provider: 'openai',
-      model: 'stdin-model', apiKeyEnv: 'TEST_MODEL_KEY', brief: 'Build from stdin.', launch: false,
+      name: 'Stdin MMO', gameplay: GAMEPLAY, into: 'stdin-mmo', provider: 'openai',
+      model: 'stdin-model', apiKeyEnv: 'TEST_MODEL_KEY', launch: false,
     })
     const result = await run(directory, ['--agent', '--json', '--agent-config', '-'], {
       input,
@@ -148,8 +176,19 @@ describe('real prompt-free agent CLI', () => {
       error: {
         code: 'missing_inputs',
         message: 'Agent mode is missing required inputs.',
-        missing: ['name', 'source', 'provider', 'model', 'apiKeyEnv', 'brief'],
+        missing: ['name', 'gameplay', 'provider', 'model', 'apiKeyEnv'],
       },
+    })
+  })
+
+  test('a retired starting-point field comes back with its own code', async () => {
+    const result = await run(workspace(), ['--agent', '--json', '--agent-config', '-'], {
+      input: JSON.stringify({ name: 'g', gameplay: GAMEPLAY, source: 'blank' }),
+    })
+    expect(result.status).toBe(1)
+    expect(jsonLine(result)).toMatchObject({
+      ok: false,
+      error: { code: 'retired_field', field: 'source' },
     })
   })
 
@@ -162,8 +201,8 @@ describe('real prompt-free agent CLI', () => {
     expect(secretResult.stdout).not.toContain(secret)
 
     const missingEnv = await run(workspace(), [
-      'g', '--agent', '--json', '--source', 'blank', '--provider', 'openai', '--model', 'm',
-      '--api-key-env', 'DEFINITELY_MISSING_KEY', '--brief', 'b',
+      'g', '--agent', '--json', '--gameplay', GAMEPLAY, '--provider', 'openai', '--model', 'm',
+      '--api-key-env', 'DEFINITELY_MISSING_KEY',
     ])
     expect(jsonLine(missingEnv)).toEqual({
       ok: false,
@@ -176,8 +215,8 @@ describe('real prompt-free agent CLI', () => {
     expect(missingEnv.stdout).not.toContain('DEFINITELY_MISSING_KEY')
 
     const rawLookingEnv = await run(workspace(), [
-      'g', '--agent', '--json', '--source', 'blank', '--provider', 'openai', '--model', 'm',
-      '--api-key-env', 'ThisLooksLikeRawCredentialABC123', '--brief', 'b',
+      'g', '--agent', '--json', '--gameplay', GAMEPLAY, '--provider', 'openai', '--model', 'm',
+      '--api-key-env', 'ThisLooksLikeRawCredentialABC123',
     ])
     expect(jsonLine(rawLookingEnv)).toEqual({
       ok: false,
@@ -221,32 +260,43 @@ describe('real human onboarding integration', () => {
   // The launch itself is covered offline in test/creation-runtime.test.ts against
   // a scripted fetch. Reaching a real provider from a test suite would be both
   // nondeterministic and somebody else's bill, so --no-launch stops short of it.
-  test('complete flags avoid readline, validate the shared plan, and honour --no-launch', async () => {
+  test('complete flags avoid readline, show the decisions, and honour --no-launch', async () => {
     const directory = workspace()
     const result = await run(
       directory,
       [
-        'Human Game', '--source', 'blank', '--into', 'game', '--provider', 'openai',
-        '--model', 'explicit-model', '--api-key-env', 'HUMAN_MODEL_KEY',
-        '--brief', 'Build a cooperative puzzle.', '--no-launch',
+        'Human MMO', '--3d', '--gameplay', GAMEPLAY, '--into', 'game', '--provider', 'openai',
+        '--model', 'explicit-model', '--api-key-env', 'HUMAN_MODEL_KEY', '--no-launch',
       ],
       { environment: { HUMAN_MODEL_KEY: secret } },
     )
     expect(result.status).toBe(0)
     expect(result.stderr).toBe('')
+    expect(result.stdout).toContain('a 3D Kei MMORPG')
+    expect(result.stdout).toContain('Start from')
     expect(result.stdout).toContain('Provider: openai / explicit-model')
     expect(result.stdout).toContain('Credential: inherited from HUMAN_MODEL_KEY')
     expect(result.stdout).toContain('Launch: disabled')
     expect(result.stdout).toContain('because launch was disabled')
     expect(result.stdout).not.toContain(secret)
     expect(existsSync(join(directory, 'game', 'package.json'))).toBeTrue()
+    expect(existsSync(join(directory, 'game', 'kei-mmo', 'PLAN.md'))).toBeTrue()
+  })
+
+  test('a human --plan-only run prints the decisions and writes nothing', async () => {
+    const directory = workspace()
+    const result = await run(directory, ['Planned', '--plan-only', '--2d', '--gameplay', GAMEPLAY])
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('a 2D Kei MMORPG')
+    expect(result.stdout).toContain('Nothing was written')
+    expect(existsSync(join(directory, 'planned'))).toBeFalse()
   })
 
   test('missing inherited env fails before the destination is created', async () => {
     const directory = workspace()
     const result = await run(directory, [
-      'Human Game', '--source', 'blank', '--into', 'untouched', '--provider', 'openai',
-      '--model', 'explicit-model', '--api-key-env', 'MISSING_HUMAN_KEY', '--brief', 'Build it.',
+      'Human MMO', '--gameplay', GAMEPLAY, '--into', 'untouched', '--provider', 'openai',
+      '--model', 'explicit-model', '--api-key-env', 'MISSING_HUMAN_KEY',
     ])
     expect(result.status).toBe(1)
     expect(result.stdout).toContain('Required provider API key environment variable is not set.')
@@ -258,8 +308,8 @@ describe('real human onboarding integration', () => {
     const directory = workspace()
     const candidate = 'ThisLooksLikeRawCredentialABC123'
     const result = await run(directory, [
-      'Human Game', '--source', 'blank', '--into', 'untouched', '--provider', 'openai',
-      '--model', 'explicit-model', '--api-key-env', candidate, '--brief', 'Build it.',
+      'Human MMO', '--gameplay', GAMEPLAY, '--into', 'untouched', '--provider', 'openai',
+      '--model', 'explicit-model', '--api-key-env', candidate,
     ])
     expect(result.status).toBe(1)
     expect(result.stdout).toContain('Required provider API key environment variable is not set.')
@@ -268,30 +318,53 @@ describe('real human onboarding integration', () => {
     expect(existsSync(join(directory, 'untouched'))).toBeFalse()
   })
 
-  test('complete source flags without provider answers still enter interactive onboarding', async () => {
+  test('a complete intent without provider answers still enters interactive onboarding', async () => {
     const directory = workspace()
-    const result = await run(directory, ['Human Game', '--source', 'blank', '--into', 'untouched'])
+    const result = await run(directory, ['Human MMO', '--gameplay', GAMEPLAY, '--into', 'untouched'])
     expect(result.status).toBe(1)
-    expect(result.stdout).toContain('--provider, --model, --api-key-env, and --brief')
+    expect(result.stdout).toContain('--provider, --model, and --api-key-env')
     expect(existsSync(join(directory, 'untouched'))).toBeFalse()
   })
 
-  test('--yes retains prompt-free source-only preparation', async () => {
+  test('--yes plans and scaffolds without a provider', async () => {
     const directory = workspace()
-    const result = await run(directory, ['Legacy Game', '--yes', '--source', 'blank', '--into', 'legacy'])
+    const result = await run(directory, ['Legacy MMO', '--yes', '--into', 'legacy'])
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('Legacy Game')
+    expect(result.stdout).toContain('Legacy MMO')
     expect(result.stdout).not.toContain('Provider:')
     expect(existsSync(join(directory, 'legacy', 'package.json'))).toBeTrue()
+    expect(existsSync(join(directory, 'legacy', 'kei-mmo', 'plan.json'))).toBeTrue()
+  })
+
+  test('the retired starting-point flags are refused with a sentence, not ignored', async () => {
+    const result = await run(workspace(), ['g', '--source', 'blank'])
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('--source is gone')
   })
 })
 
 test('package exposes non-executing library subpaths', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+    name: string
+    bin: Record<string, string>
     exports: Record<string, unknown>
   }
+  expect(manifest.name).toBe('create-kei-mmo')
+  // The old command names stay pointed at the same files: the repository is not
+  // being renamed, and a checkout that already has them on PATH keeps working.
+  expect(Object.keys(manifest.bin)).toEqual([
+    'create-kei-mmo',
+    'create-kei-mmo-engine',
+    'create-kei-game',
+    'create-kei-game-engine',
+  ])
   expect(Object.keys(manifest.exports)).toEqual([
     '.',
+    './intent',
+    './capabilities',
+    './references',
+    './plan',
+    './planner',
     './source',
     './providers',
     './harness',
@@ -302,18 +375,18 @@ test('package exposes non-executing library subpaths', () => {
     './tools',
     './creation-runtime',
   ])
+  expect(JSON.stringify(manifest.exports['./planner'])).toContain('dist/planner.js')
   expect(JSON.stringify(manifest.exports['./harness'])).toContain('dist/harness.js')
-  expect(JSON.stringify(manifest.exports['./agent'])).toContain('dist/agent.js')
   const probe = spawnSync(
     'node',
     [
       '-e',
-      "const [a,h,p,t,c]=await Promise.all([import('create-kei-game/agent'),import('create-kei-game/harness'),import('create-kei-game/providers'),import('create-kei-game/tools'),import('create-kei-game/creation-runtime')]);process.stdout.write([typeof a.createAgentRequest,typeof h.createHarnessRequest,typeof p.resolveProvider,typeof t.createWorkspaceTools,typeof c.runCreationTurn].join(','))",
+      "const [a,h,p,t,c,i,n]=await Promise.all([import('create-kei-mmo/agent'),import('create-kei-mmo/harness'),import('create-kei-mmo/providers'),import('create-kei-mmo/tools'),import('create-kei-mmo/creation-runtime'),import('create-kei-mmo/intent'),import('create-kei-mmo/planner')]);process.stdout.write([typeof a.createAgentRequest,typeof h.createHarnessRequest,typeof p.resolveProvider,typeof t.createWorkspaceTools,typeof c.runCreationTurn,typeof i.parseMmoIntent,typeof n.planMmo].join(','))",
     ],
     { cwd: root, encoding: 'utf8', timeout: 30_000 },
   )
   if (probe.error) throw probe.error
   expect(probe.status).toBe(0)
   expect(probe.stderr).toBe('')
-  expect(probe.stdout).toBe('function,function,function,function,function')
+  expect(probe.stdout).toBe('function,function,function,function,function,function,function')
 })

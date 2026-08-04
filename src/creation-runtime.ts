@@ -17,14 +17,35 @@ import {
   type ModelTransport,
 } from './runtime.js'
 import type { RuntimeFactory } from './runtime-protocol.js'
+import { PLAN_JSON_PATH } from './source.js'
 import { createWorkspaceTools, type ToolFs, type ToolPath } from './tools.js'
 
-/** What the harness sends when a session is launched rather than continued. */
+/** What the harness sends when a session has no plan to point at. */
 export const FIRST_TURN_PROMPT = [
   'Build the game described in the brief, inside this workspace.',
   'Look at what is already there before you write anything, then create or update',
   'the files the brief needs. Explain what you changed when you are done.',
 ].join(' ')
+
+/**
+ * The opening turn, aimed at the first step of the plan rather than at the
+ * whole plan. A model told to build an MMO writes ten shallow files; a model
+ * told to finish step one writes one that works.
+ */
+export function firstTurnPrompt(request: EngineRequest): string {
+  const first = request.plan?.steps[0]
+  if (!first) return FIRST_TURN_PROMPT
+
+  return [
+    `Start on step ${first.order} of the plan: ${first.title}.`,
+    `Outcome: ${first.outcome}`,
+    `Capability packets for this step: ${first.capabilities.join(', ')} — their prerequisites, tools, and methods are in your instructions, and the whole plan is in the workspace at ${PLAN_JSON_PATH}.`,
+    'Look at what is already in the workspace before you write anything. Do the',
+    'work of this step and stop; the later steps are later turns. Say what you',
+    'changed, and say plainly if the plan is wrong rather than quietly doing',
+    'something else.',
+  ].join(' ')
+}
 
 /** Enough of the final reply for a machine caller to act on, and no more. */
 export const MAX_SUMMARY_CHARACTERS = 4000
@@ -96,7 +117,7 @@ export async function runCreationTurn(
   request: EngineRequest,
   options: CreationRuntimeOptions,
   observe: (event: EngineEvent) => void = () => {},
-  prompt: string = FIRST_TURN_PROMPT,
+  prompt: string = firstTurnPrompt(request),
 ): Promise<CreationRunSummary> {
   const runtime = createCreationRuntime(request, options)
   const session = new EngineSession({

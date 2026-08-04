@@ -1,18 +1,26 @@
+/**
+ * The one validated request both front ends produce.
+ *
+ * It carries an intent and the plan derived from it, and no key material of any
+ * kind. The brief that reaches a provider is *generated here* from the plan
+ * rather than accepted from a caller — there is no way to hand the model a
+ * description of the game that the harness did not itself derive, which is what
+ * keeps the plan and what gets built the same thing.
+ */
+
 import { posix, win32 } from 'node:path'
 
+import { parseMmoIntent, type MmoIntent } from './intent.js'
 import { projectFrom } from './naming.js'
+import { planBrief, type ImplementationPlan } from './plan.js'
+import { planMmo, selectionForPlan } from './planner.js'
 import {
   requireApiKeyEnvironment,
   resolveProvider,
   type ProviderInput,
   type ResolvedProvider,
 } from './providers.js'
-import {
-  KNOWN_TEMPLATES,
-  parseRepositoryUrl,
-  type ProjectIdentity,
-  type SourceSelection,
-} from './source.js'
+import type { ProjectIdentity, SourceSelection } from './source.js'
 
 export const MAX_MODEL_LENGTH = 256
 export const MAX_BRIEF_LENGTH = 32_000
@@ -21,13 +29,11 @@ export const DEFAULT_SECRET_GUARD_MAX_NODES = 10_000
 
 export type HarnessRequestErrorCode =
   | 'invalid_project'
-  | 'invalid_source'
   | 'invalid_base_directory'
   | 'invalid_destination'
   | 'invalid_force'
   | 'invalid_provider_config'
   | 'invalid_model'
-  | 'invalid_brief'
   | 'invalid_launch'
   | 'secret_fields'
   | 'config_too_deep'
@@ -52,26 +58,28 @@ export class HarnessRequestError extends Error {
 
 /** Untrusted, parsed request data. No credential value is part of this shape. */
 export interface HarnessRequestInput {
-  readonly project?: unknown
-  readonly selection?: unknown
+  readonly intent?: unknown
   readonly baseDirectory?: unknown
   readonly destination?: unknown
   readonly force?: unknown
   readonly provider?: unknown
   readonly model?: unknown
-  readonly brief?: unknown
   readonly launch?: unknown
 }
 
-/** The common, credential-free plan used by both people and automation. */
+/** The common, credential-free request used by both people and automation. */
 export interface HarnessRequest {
   readonly project: ProjectIdentity
+  readonly intent: MmoIntent
+  readonly plan: ImplementationPlan
+  /** Derived from the plan's reference decision, never chosen by a caller. */
   readonly selection: SourceSelection
   readonly baseDirectory: string
   readonly destination?: string
   readonly force: boolean
   readonly provider: ResolvedProvider
   readonly model: string
+  /** The plan, rendered for one system instruction. Derived, never supplied. */
   readonly brief: string
   readonly launch: boolean
 }
@@ -91,25 +99,11 @@ function invalid(code: HarnessRequestErrorCode, field: string, message: string):
   throw new HarnessRequestError(code, message, { field })
 }
 
-function normalizedProject(value: unknown): ProjectIdentity {
-  if (typeof value === 'string') {
-    try {
-      return projectFrom(value)
-    } catch {
-      return invalid('invalid_project', 'project', 'Project name is not valid.')
-    }
-  }
-  if (!isRecord(value) || typeof value.title !== 'string' || typeof value.slug !== 'string') {
-    return invalid('invalid_project', 'project', 'Project must be a name or a project identity.')
-  }
+function projectIdentity(name: string): ProjectIdentity {
   try {
-    const derived = projectFrom(value.title)
-    if (derived.slug !== value.slug || value.title !== value.title.trim()) {
-      return invalid('invalid_project', 'project', 'Project identity is not normalized.')
-    }
-    return derived
+    return projectFrom(name)
   } catch {
-    return invalid('invalid_project', 'project', 'Project identity is not valid.')
+    return invalid('invalid_project', 'intent.name', 'Project name is not valid.')
   }
 }
 
@@ -118,38 +112,6 @@ function nonblank(value: unknown, field: string, code: HarnessRequestErrorCode):
     return invalid(code, field, `${field} must be a nonblank string.`)
   }
   return value.trim()
-}
-
-function normalizedSource(value: unknown): SourceSelection {
-  if (!isRecord(value) || typeof value.kind !== 'string') {
-    return invalid('invalid_source', 'selection', 'Source selection is not valid.')
-  }
-  switch (value.kind) {
-    case 'blank':
-      return { kind: 'blank' }
-    case 'template': {
-      const template = nonblank(value.template, 'selection.template', 'invalid_source')
-      if (!KNOWN_TEMPLATES.some(({ id }) => id === template)) {
-        return invalid('invalid_source', 'selection.template', 'Template is not supported.')
-      }
-      return { kind: 'template', template }
-    }
-    case 'existing':
-      return {
-        kind: 'existing',
-        path: nonblank(value.path, 'selection.path', 'invalid_source'),
-      }
-    case 'repository': {
-      const url = nonblank(value.url, 'selection.url', 'invalid_source')
-      try {
-        return { kind: 'repository', url: parseRepositoryUrl(url).url }
-      } catch {
-        return invalid('invalid_source', 'selection.url', 'Repository source is not valid.')
-      }
-    }
-    default:
-      return invalid('invalid_source', 'selection.kind', 'Source kind is not supported.')
-  }
 }
 
 function normalizedProvider(value: unknown): ProviderInput {
@@ -173,15 +135,10 @@ function normalizedProvider(value: unknown): ProviderInput {
   }
 }
 
-function boundedText(
-  value: unknown,
-  field: 'model' | 'brief',
-  maximum: number,
-  code: 'invalid_model' | 'invalid_brief',
-): string {
-  const text = nonblank(value, field, code)
-  if (text.length > maximum) {
-    return invalid(code, field, `${field} is longer than the supported limit.`)
+function boundedModel(value: unknown): string {
+  const text = nonblank(value, 'model', 'invalid_model')
+  if (text.length > MAX_MODEL_LENGTH) {
+    return invalid('invalid_model', 'model', 'model is longer than the supported limit.')
   }
   return text
 }
@@ -204,8 +161,13 @@ export function createHarnessRequest(
 ): HarnessRequest {
   assertSafeConfigFields(input)
 
-  const project = normalizedProject(input.project)
-  const selection = normalizedSource(input.selection)
+  // The intent is validated, then planned, before anything is looked at on
+  // disk. Every downstream decision — where it lands, what gets cloned, what
+  // the model is told — comes out of the plan rather than out of a caller.
+  const intent = parseMmoIntent(input.intent)
+  const project = projectIdentity(intent.name)
+  const plan = planMmo(intent)
+  const selection = selectionForPlan(plan)
   const baseDirectory = absoluteBaseDirectory(input.baseDirectory)
   const destination =
     input.destination === undefined
@@ -223,13 +185,15 @@ export function createHarnessRequest(
 
   return Object.freeze({
     project,
+    intent,
+    plan,
     selection,
     baseDirectory,
     ...(destination === undefined ? {} : { destination }),
     force: input.force ?? false,
     provider,
-    model: boundedText(input.model, 'model', MAX_MODEL_LENGTH, 'invalid_model'),
-    brief: boundedText(input.brief, 'brief', MAX_BRIEF_LENGTH, 'invalid_brief'),
+    model: boundedModel(input.model),
+    brief: planBrief(plan),
     launch: input.launch,
   })
 }

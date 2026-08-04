@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   MAX_AGENT_CONFIG_BYTES,
-  AgentError,
+  createAgentIntent,
   createAgentRequest,
   readAgentConfig,
   type AgentAnswers,
@@ -17,22 +17,24 @@ async function* chunks(...values: Array<string | Uint8Array>): AsyncIterable<str
   yield* values
 }
 
+const GAMEPLAY = 'Crews salvage derelict stations and haul cargo home.'
+
 const complete: AgentAnswers = {
-  name: 'My Game',
-  source: 'blank',
+  name: 'My MMO',
+  dimension: '3d',
+  gameplay: GAMEPLAY,
   provider: 'openai',
   model: 'model-from-config',
   apiKeyEnv: 'OPENAI_API_KEY',
-  brief: 'Build a puzzle game.',
   launch: false,
 }
 
 describe('bounded agent config reader', () => {
   test('reads JSON split across byte and string chunks, including Unicode', async () => {
     const config = await readAgentConfig(
-      chunks('{"name":"Caf', new TextEncoder().encode('é"'), ',"source":"blank"}'),
+      chunks('{"name":"Caf', new TextEncoder().encode('é"'), ',"dimension":"2d"}'),
     )
-    expect(config).toEqual({ name: 'Café', source: 'blank' })
+    expect(config).toEqual({ name: 'Café', dimension: '2d' })
   })
 
   test('accepts exactly 64 KiB and rejects one byte more before parsing', async () => {
@@ -63,6 +65,12 @@ describe('bounded agent config reader', () => {
     })
   })
 
+  test.each(['source', 'template', 'from'])('refuses the retired field %s by name', async (field) => {
+    const error = await readAgentConfig(chunks(JSON.stringify({ [field]: 'blank' }))).catch((reason) => reason)
+    expect(error).toMatchObject({ code: 'retired_field', details: { field } })
+    expect(String(error)).toMatch(/planner|harness decides|no source/)
+  })
+
   test.each(['apiKey', 'api_key', 'token', 'clientSecret', 'password', 'credentials'])(
     'rejects nested secret field %s without retaining its value',
     async (field) => {
@@ -83,27 +91,38 @@ describe('bounded agent config reader', () => {
       apiKeyEnv: 'SAFE_REF',
       launch: false,
     })
-    for (const json of ['{"name":1}', '{"launch":"false"}', '{"force":1}']) {
+    for (const json of ['{"name":1}', '{"launch":"false"}', '{"force":1}', '{"intentVersion":2}']) {
       await expect(readAgentConfig(chunks(json))).rejects.toMatchObject({ code: 'invalid_config' })
     }
   })
 })
 
 describe('agent request resolution', () => {
-  test('creates a credential-free plan and defaults launch true and force false', () => {
+  test('creates a credential-free request and defaults launch true and force false', () => {
     const config = { ...complete, launch: undefined }
     const request = createAgentRequest(config, {}, '/workspace', { OPENAI_API_KEY: secret })
     expect(request.launch).toBeTrue()
     expect(request.force).toBeFalse()
     expect(request.provider.apiKeyEnv).toBe('OPENAI_API_KEY')
+    expect(request.intent.gameplay).toBe(GAMEPLAY)
     expect(JSON.stringify(request)).not.toContain(secret)
+  })
+
+  test('the plan, its selection, and the brief are derived, never supplied', () => {
+    const request = createAgentRequest(complete, {}, '/workspace', { OPENAI_API_KEY: 'present' })
+    expect(request.plan.planVersion).toBe(1)
+    expect(request.plan.intent).toEqual(request.intent)
+    expect(request.selection).toEqual({ kind: 'blank' })
+    expect(request.brief).toContain('CAPABILITY PACKETS')
+    expect(request.brief).toContain(request.intent.gameplay)
   })
 
   test('explicit overrides win field-by-field, including false booleans', () => {
     const config: AgentAnswers = {
       name: 'Config Name',
-      source: 'template',
-      template: 'button',
+      dimension: '2d',
+      gameplay: 'Config gameplay',
+      world: 'Config world',
       into: './config',
       force: true,
       provider: 'custom',
@@ -111,13 +130,12 @@ describe('agent request resolution', () => {
       apiKeyEnv: 'CONFIG_KEY',
       baseUrl: 'https://config.example/v1',
       protocol: 'messages',
-      brief: 'Config brief',
       launch: true,
     }
     const overrides: AgentOverrides = {
       name: 'Flag Name',
-      source: 'blank',
-      template: undefined,
+      dimension: '3d',
+      gameplay: 'Flag gameplay',
       into: './flag',
       force: false,
       provider: 'openai',
@@ -125,13 +143,11 @@ describe('agent request resolution', () => {
       apiKeyEnv: 'FLAG_KEY',
       baseUrl: 'https://flag.example/v1',
       protocol: 'responses',
-      brief: 'Flag brief',
       launch: false,
     }
     const request = createAgentRequest(config, overrides, '/workspace', { FLAG_KEY: 'present' })
     expect(request).toMatchObject({
       project: { title: 'Flag Name', slug: 'flag-name' },
-      selection: { kind: 'blank' },
       destination: './flag',
       force: false,
       provider: {
@@ -141,77 +157,54 @@ describe('agent request resolution', () => {
         apiKeyEnv: 'FLAG_KEY',
       },
       model: 'flag-model',
-      brief: 'Flag brief',
       launch: false,
     })
+    expect(request.intent).toMatchObject({
+      dimension: '3d',
+      gameplay: 'Flag gameplay',
+      world: 'Config world',
+    })
+  })
+
+  test('brief is the compatibility spelling of gameplay, and loses to it', () => {
+    const fromBrief = createAgentRequest(
+      { ...complete, gameplay: undefined, brief: 'Legacy description' },
+      {},
+      '/workspace',
+      { OPENAI_API_KEY: 'present' },
+    )
+    expect(fromBrief.intent.gameplay).toBe('Legacy description')
+
+    const both = createAgentRequest(
+      { ...complete, gameplay: 'Current', brief: 'Legacy' },
+      {},
+      '/workspace',
+      { OPENAI_API_KEY: 'present' },
+    )
+    expect(both.intent.gameplay).toBe('Current')
   })
 
   test('reports every missing required field once in stable order', () => {
     expect(() => createAgentRequest({}, {}, '/workspace', {})).toThrow(
       expect.objectContaining({
         code: 'missing_inputs',
-        details: {
-          missing: ['name', 'source', 'provider', 'model', 'apiKeyEnv', 'brief'],
-        },
+        details: { missing: ['name', 'gameplay', 'provider', 'model', 'apiKeyEnv'] },
       }),
     )
-    expect(() =>
-      createAgentRequest(
-        { name: 'g', source: 'template', provider: 'openai', model: 'm', apiKeyEnv: 'K', brief: 'b' },
-        {},
-        '/workspace',
-        {},
-      ),
-    ).toThrow(expect.objectContaining({ code: 'missing_inputs', details: { missing: ['template'] } }))
-    expect(() =>
-      createAgentRequest(
-        { name: 'g', source: 'repository', provider: 'openai', model: 'm', apiKeyEnv: 'K', brief: 'b' },
-        {},
-        '/workspace',
-        {},
-      ),
-    ).toThrow(expect.objectContaining({ code: 'missing_inputs', details: { missing: ['from'] } }))
   })
 
-  test('requires an explicit source and does not infer it from template or from', () => {
-    for (const config of [{ ...complete, source: undefined, template: 'button' }, { ...complete, source: undefined, from: './x' }]) {
-      expect(() => createAgentRequest(config, {}, '/workspace', { OPENAI_API_KEY: 'present' })).toThrow(
-        expect.objectContaining({ code: 'missing_inputs', details: { missing: ['source'] } }),
-      )
-    }
+  test('a plan-only intent needs no provider and no credential at all', () => {
+    const intent = createAgentIntent({ name: 'Plan Me', gameplay: 'Questing' }, {})
+    expect(intent).toMatchObject({ name: 'Plan Me', dimension: 'auto' })
+    expect(() => createAgentIntent({ gameplay: 'Questing' }, {})).toThrow(
+      expect.objectContaining({ code: 'missing_inputs', details: { missing: ['name'] } }),
+    )
   })
 
-  test('source override clears only incompatible config details and keeps explicit contradictions', () => {
-    const config = { ...complete, source: 'template', template: 'button', from: undefined }
-    expect(
-      createAgentRequest(config, { source: 'blank' }, '/workspace', { OPENAI_API_KEY: 'present' })
-        .selection,
-    ).toEqual({ kind: 'blank' })
-    expect(() =>
-      createAgentRequest(
-        config,
-        { source: 'blank', template: 'world-of-wonder' },
-        '/workspace',
-        { OPENAI_API_KEY: 'present' },
-      ),
-    ).toThrow(expect.objectContaining({ code: 'invalid_config', details: { field: 'source' } }))
-    expect(() =>
-      createAgentRequest(
-        { ...complete, source: 'blank', template: 'button' },
-        {},
-        '/workspace',
-        { OPENAI_API_KEY: 'present' },
-      ),
-    ).toThrow(expect.objectContaining({ code: 'invalid_config', details: { field: 'source' } }))
-  })
-
-  test.each([
-    [{ ...complete, source: 'template', template: 'button' }, 'template'],
-    [{ ...complete, source: 'local', from: './game' }, 'existing'],
-    [{ ...complete, source: 'repository', from: 'https://github.com/keicoin-org/button' }, 'repository'],
-  ] as const)('resolves explicit source details', (config, kind) => {
-    const request = createAgentRequest(config, {}, '/workspace', { OPENAI_API_KEY: 'present' })
-    expect(request.selection.kind).toBe(kind)
+  test('an unsupported dimension is refused with the intent code, not silently defaulted', () => {
+    expect(() => createAgentIntent({ ...complete, dimension: 'holographic' }, {})).toThrow(
+      expect.objectContaining({ code: 'invalid_dimension' }),
+    )
   })
 
   test('supports explicit Qwen and custom provider settings', () => {

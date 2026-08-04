@@ -1,29 +1,40 @@
 /**
- * The two questions, in the one order they are asked: what the project is
- * called, then where it starts from — and then, only if the answer needs one,
- * the single detail that answer implies.
+ * The questions, in the one order they are asked: what it is called, whether it
+ * is flat or solid, and then the five goals — and only after those, the model
+ * provider that will build it.
+ *
+ * None of them is about a template, a repository, or a starting point. That was
+ * the first question this program used to ask, and it was the wrong one: it
+ * made somebody choose between three projects they had not read, before they
+ * had said a single thing about the game they wanted. The planner answers it
+ * now, from the answers below, and writes down why.
+ *
+ * Four of the five goals can be left blank. A blank one is not a gap the
+ * harness hides — the plan records what it assumed instead, in the same file.
  *
  * Deliberately not a dependency: a harness that pulls in a prompt library, a
  * colour library, and a spinner is three supply-chain risks for a program that
  * runs once. `readline` is in the runtime already.
- *
- * The asker is an argument everywhere below, which is what lets the tests read
- * back the exact questions in the exact order, and prove that `--yes` asks
- * none of them, without a terminal.
  */
 
 import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
 
-import { DEFAULT_NAME, DEFAULT_TEMPLATE, SOURCE_FLAGS, type CliOptions, type SourceFlag } from './cli.js'
+import { DEFAULT_NAME, type CliOptions } from './cli.js'
 import { fail } from './errors.js'
+import {
+  MMO_DIMENSIONS,
+  MMO_INTENT_VERSION,
+  parseMmoIntent,
+  type MmoDimension,
+  type MmoIntent,
+} from './intent.js'
 import {
   PROVIDERS,
   PROVIDER_PROTOCOLS,
   type ProviderDefinition,
   type ProviderInput,
 } from './providers.js'
-import { KNOWN_TEMPLATES, templateNamed, type SourceSelection } from './source.js'
 
 export interface Asker {
   /** The answer, trimmed. An empty line means the fallback, when there is one. */
@@ -36,7 +47,7 @@ export type AskerFactory = () => Asker
 export function createAsker(): Asker {
   if (!stdin.isTTY) {
     fail(
-      'There is nothing to type into here, so the questions cannot be asked and this will not guess at them. For source-only preparation, pass create-kei-game <project> --source blank --yes. For full onboarding, also pass --provider, --model, --api-key-env, and --brief.',
+      'There is nothing to type into here, so the questions cannot be asked and this will not guess at them. To see what it would plan, pass create-kei-mmo <project> --gameplay "..." --plan-only. To plan and scaffold without a provider, pass --yes. For a full run, also pass --provider, --model, and --api-key-env.',
     )
   }
 
@@ -59,19 +70,45 @@ export function createAsker(): Asker {
   }
 }
 
-/** Whether full human onboarding has at least one answer left to ask for. */
-export function harnessNeedsAsker(
-  options: CliOptions,
-  selection: SourceSelection | null,
-): boolean {
+export const NAME_QUESTION = 'Project name?'
+export const DIMENSION_QUESTION =
+  'Flat or solid? 1) 2d  2) 3d  3) auto — auto reads it out of what you describe next'
+export const GAMEPLAY_QUESTION =
+  'What do players do? Classes, combat, quests, crafting, progression — the minute-to-minute.'
+export const WORLD_QUESTION =
+  'The world: size, regions, persistence, how much stays loaded. Blank leaves it to the planner.'
+export const ART_QUESTION =
+  'How it should look: style, palette, camera, lighting. Blank leaves it to the planner.'
+export const NETWORK_QUESTION =
+  'Sessions and authority: players per shard, latency budget, what the server owns. Blank leaves it to the planner.'
+export const ECONOMY_QUESTION =
+  'The Kei economy: currencies, items, trade, sinks. Blank leaves it to the planner.'
+
+export const PROVIDER_QUESTION = `Which provider? ${PROVIDERS.map(({ id, label }) => `${id} (${label})`).join(', ')}`
+export const MODEL_QUESTION = 'Which model? Give the exact model ID — there is no default.'
+export const API_KEY_ENV_QUESTION =
+  'Name of the environment variable to read at run time? The name only — nothing secret is typed here.'
+export const BASE_URL_QUESTION = 'HTTPS base URL for this provider?'
+export const PROTOCOL_QUESTION = `Which protocol? ${PROVIDER_PROTOCOLS.join(', ')}`
+
+/** What `--yes` builds with when nobody said. Reported, never hidden. */
+export const DEFAULT_YES_GAMEPLAY =
+  'A persistent multiplayer world with characters, progression, and player-to-player trade.'
+
+/** Whether the intent alone still has an answer left to ask for. */
+export function intentNeedsAsker(options: CliOptions): boolean {
   if (options.yes) return false
+  return options.name === undefined || options.gameplay === undefined
+}
+
+/** Whether a full run — intent plus provider — still has anything to ask for. */
+export function harnessNeedsAsker(options: CliOptions): boolean {
+  if (options.yes) return false
+  if (intentNeedsAsker(options)) return true
   if (
-    options.name === undefined ||
-    selection === null ||
     options.provider === undefined ||
     options.model === undefined ||
-    options.apiKeyEnv === undefined ||
-    options.brief === undefined
+    options.apiKeyEnv === undefined
   ) return true
 
   const provider = providerNamed(options.provider)
@@ -80,66 +117,72 @@ export function harnessNeedsAsker(
   return false
 }
 
-const SOURCE_LABELS: Record<SourceFlag, string> = {
-  blank: 'blank workspace',
-  template: 'a game this publishes',
-  local: 'a project already on this disk',
-  repository: 'a GitHub or GitLab repository',
-}
-
-export const NAME_QUESTION = 'Project name?'
-export const SOURCE_QUESTION = 'Start from? 1) blank  2) template  3) local project  4) repository'
-
-/**
- * Everything the flags did not already say, and nothing else. `create-kei-game
- * my-game --template button` asks nothing at all; the bare command asks the
- * name, then the source, then the one detail that source needs.
- */
-export async function onboard(
-  options: CliOptions,
-  selection: SourceSelection | null,
-  asker: Asker,
-): Promise<{ name: string; selection: SourceSelection }> {
-  // `--yes` is a promise that nothing will be asked, and it is kept here rather
-  // than only at the call site, so that no caller can break it by passing an
-  // asker anyway.
-  if (options.yes) return { name: options.name ?? DEFAULT_NAME, selection: selection ?? { kind: 'blank' } }
-
-  const name = options.name ?? (await asker.ask(NAME_QUESTION, DEFAULT_NAME))
-  return { name, selection: selection ?? (await askSource(asker)) }
-}
-
-async function askSource(asker: Asker): Promise<SourceSelection> {
-  const kind = sourceNamed(await asker.ask(SOURCE_QUESTION, 'blank'))
-
-  switch (kind) {
-    case 'blank':
-      return { kind: 'blank' }
-    case 'template':
-      return { kind: 'template', template: templateNamed(await asker.ask(templateQuestion(), DEFAULT_TEMPLATE)).id }
-    case 'local':
-      return { kind: 'existing', path: required(await asker.ask('Path to the project?'), 'a path to it') }
-    case 'repository':
-      return { kind: 'repository', url: required(await asker.ask('Repository URL?'), 'an https URL') }
-  }
-}
-
-function templateQuestion(): string {
-  return `Which one? ${KNOWN_TEMPLATES.map((template) => template.id).join(', ')}`
-}
-
 function required(answer: string, wanted: string): string {
   if (answer.trim() === '') fail(`That needs ${wanted}, and there is no sensible default to fall back to.`)
   return answer
 }
 
 /**
+ * The intent, from whatever the flags did not already say. A complete command
+ * line asks nothing at all; the bare command asks seven things and then stops
+ * asking, because everything after that is the planner's job.
+ */
+export async function onboardIntent(options: CliOptions, asker: Asker): Promise<MmoIntent> {
+  // The optional goals are only asked for while there is already a
+  // conversation. Once the two required answers are on the command line, this
+  // stops talking — and the planner records what it assumed for the rest.
+  if (!intentNeedsAsker(options)) return intentFromOptions(options)
+
+  const name = options.name ?? (await asker.ask(NAME_QUESTION, DEFAULT_NAME))
+  const dimension =
+    options.dimension ?? dimensionNamed(await asker.ask(DIMENSION_QUESTION, 'auto'))
+  const gameplay = required(
+    options.gameplay ?? (await asker.ask(GAMEPLAY_QUESTION)),
+    'a sentence about what players do',
+  )
+
+  return parseMmoIntent({
+    intentVersion: MMO_INTENT_VERSION,
+    name,
+    dimension,
+    gameplay,
+    world: options.world ?? (await asker.ask(WORLD_QUESTION)),
+    art: options.art ?? (await asker.ask(ART_QUESTION)),
+    network: options.network ?? (await asker.ask(NETWORK_QUESTION)),
+    economy: options.economy ?? (await asker.ask(ECONOMY_QUESTION)),
+  })
+}
+
+/**
+ * Whatever the flags said, with no questions asked and no provider involved.
+ * `--yes` and `--plan-only` both come through here.
+ */
+export function intentFromOptions(
+  options: CliOptions,
+  fallbackGameplay?: string,
+): MmoIntent {
+  return parseMmoIntent({
+    intentVersion: MMO_INTENT_VERSION,
+    name: options.name ?? DEFAULT_NAME,
+    dimension: options.dimension ?? 'auto',
+    gameplay: options.gameplay ?? fallbackGameplay,
+    world: options.world,
+    art: options.art,
+    network: options.network,
+    economy: options.economy,
+  })
+}
+
+/** Everything a run needs to become a request, with no key material in it. */
+export interface InteractiveOnboarding {
+  readonly intent: MmoIntent
+  readonly provider: ProviderInput
+  readonly model: string
+  readonly launch: true
+}
+
+/**
  * The rest of the questions, for a run with somebody sitting in front of it.
- *
- * The order is the order a person can answer in: what the project is, where it
- * starts from, who serves the model, which model, and only then the settings
- * that the chosen provider actually needs. Asking for a base URL before the
- * provider is known would be asking somebody to guess at their own answer.
  *
  * Nothing here touches a credential. The one question near one asks for the
  * *name* of an environment variable, which is a reference to something already
@@ -147,38 +190,18 @@ function required(answer: string, wanted: string): string {
  * this prompt would land in a scrollback buffer and a shell history, and that is
  * reason enough for the value never to be asked for at all.
  */
-export const PROVIDER_QUESTION = `Which provider? ${PROVIDERS.map(({ id, label }) => `${id} (${label})`).join(', ')}`
-export const MODEL_QUESTION = 'Which model? Give the exact model ID — there is no default.'
-export const API_KEY_ENV_QUESTION =
-  'Name of the environment variable to read at run time? The name only — nothing secret is typed here.'
-export const BASE_URL_QUESTION = 'HTTPS base URL for this provider?'
-export const PROTOCOL_QUESTION = `Which protocol? ${PROVIDER_PROTOCOLS.join(', ')}`
-export const BRIEF_QUESTION = 'What game should this build?'
-
-/** Everything a run needs to become a request, with no key material in it. */
-export interface InteractiveOnboarding {
-  readonly name: string
-  readonly selection: SourceSelection
-  readonly provider: ProviderInput
-  readonly model: string
-  readonly brief: string
-  readonly launch: true
-}
-
 export async function onboardHarness(
   options: CliOptions,
-  selection: SourceSelection | null,
   asker: Asker,
 ): Promise<InteractiveOnboarding> {
-  // `--yes` is prompt-free source preparation and stops before any of this. It
-  // is refused rather than quietly answered, because the alternative is a mode
-  // that promises to ask nothing and then asks seven things.
+  // `--yes` is a promise that nothing will be asked. It is refused rather than
+  // quietly answered, because the alternative is a mode that promises to ask
+  // nothing and then asks eleven things.
   if (options.yes) {
-    fail('--yes prepares the project without asking anything, so it cannot answer the provider questions. Drop --yes to be asked them, or use --agent to pass them as flags.')
+    fail('--yes plans and scaffolds without asking anything, so it cannot answer the provider questions. Drop --yes to be asked them, or use --agent to pass them as flags.')
   }
 
-  const name = options.name ?? (await asker.ask(NAME_QUESTION, DEFAULT_NAME))
-  const source = selection ?? (await askSource(asker))
+  const intent = await onboardIntent(options, asker)
 
   const provider = providerNamed(options.provider ?? (await asker.ask(PROVIDER_QUESTION)))
   const model = required(options.model ?? (await asker.ask(MODEL_QUESTION)), 'the exact model ID')
@@ -194,11 +217,8 @@ export async function onboardHarness(
   const protocol =
     options.protocol ?? (provider.protocol === undefined ? protocolNamed(await asker.ask(PROTOCOL_QUESTION)) : undefined)
 
-  const brief = required(options.brief ?? (await asker.ask(BRIEF_QUESTION)), 'a sentence about the game')
-
   return {
-    name,
-    selection: source,
+    intent,
     provider: {
       provider: provider.id,
       ...(baseUrl === undefined ? {} : { baseUrl }),
@@ -206,7 +226,6 @@ export async function onboardHarness(
       apiKeyEnv,
     },
     model,
-    brief,
     launch: true,
   }
 }
@@ -243,15 +262,14 @@ function protocolNamed(answer: string): string {
 }
 
 /** Takes the number off the list, or the word, because both get typed. */
-function sourceNamed(answer: string): SourceFlag {
+function dimensionNamed(answer: string): MmoDimension {
   const wanted = answer.trim().toLowerCase()
 
-  const numbered = SOURCE_FLAGS[Number(wanted) - 1]
+  const numbered = MMO_DIMENSIONS[Number(wanted) - 1]
   if (/^[1-9]$/.test(wanted) && numbered) return numbered
 
-  const named = SOURCE_FLAGS.find((source) => source === wanted)
+  const named = MMO_DIMENSIONS.find((dimension) => dimension === wanted)
   if (named) return named
 
-  const list = SOURCE_FLAGS.map((source, index) => `${index + 1}) ${source} — ${SOURCE_LABELS[source]}`).join(', ')
-  fail(`"${answer}" is not one of the four. They are: ${list}.`)
+  fail(`"${answer}" is not one of the three. They are: 1) 2d, 2) 3d, 3) auto.`)
 }

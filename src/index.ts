@@ -1,28 +1,41 @@
 #!/usr/bin/env node
-/** `npm create kei-game`: human onboarding and its hard no-prompt agent boundary. */
+/** `create-kei-mmo`: intent in, a planned MMORPG project out. */
 
 import { createReadStream, readFileSync } from 'node:fs'
 import process, { argv, cwd, env, stdin, stdout } from 'node:process'
 
 import {
   AgentError,
+  createAgentIntent,
   createAgentRequest,
+  overridesFrom,
   readAgentConfig,
   type AgentAnswers,
-  type AgentOverrides,
 } from './agent.js'
 import { nodeFs, nodeGit, nodePath, nodeToolFs, nodeToolPath } from './adapters.js'
-import { helpText, parseArgs, selectionFrom, DEFAULT_NAME, type CliOptions } from './cli.js'
+import { helpText, parseArgs, type CliOptions } from './cli.js'
 import { runCreationTurn, type CreationRunSummary, type CreationRuntimeOptions } from './creation-runtime.js'
 import { HarnessError } from './errors.js'
 import { createHarnessRequest, HarnessRequestError, type HarnessRequest } from './harness.js'
+import { IntentError, type MmoIntent } from './intent.js'
 import { projectFrom } from './naming.js'
-import { createAsker, harnessNeedsAsker, onboardHarness, type Asker } from './prompt.js'
+import { planSummary } from './plan.js'
+import { planMmo, selectionForPlan } from './planner.js'
+import {
+  createAsker,
+  harnessNeedsAsker,
+  intentFromOptions,
+  intentNeedsAsker,
+  onboardHarness,
+  onboardIntent,
+  DEFAULT_YES_GAMEPLAY,
+  type Asker,
+} from './prompt.js'
 import type { HttpFetch } from './provider-transport.js'
 import { ProviderError } from './providers.js'
 import { EngineError, engineRequestFromHarness } from './runtime.js'
 import { ENGINE_ERROR_MESSAGES } from './runtime-protocol.js'
-import { prepareSource, type PreparedSource, type SourceDeps } from './source.js'
+import { prepareSource, PLAN_MARKDOWN_PATH, type PreparedSource, type SourceDeps } from './source.js'
 
 // Nothing is re-exported from here: importing this file executes the command.
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -51,39 +64,19 @@ async function main(): Promise<void> {
     stdout.write(`${version}\n`)
     return
   }
+  if (options.planOnly) {
+    await runPlanOnly(options)
+    return
+  }
   if (options.agent) {
     await runAgent(options)
     return
   }
-
-  const fromFlags = selectionFrom(options)
-  if (!options.yes) {
-    await runInteractive(options, fromFlags)
+  if (options.yes) {
+    await runUnattended(options)
     return
   }
-
-  // Compatibility: --yes remains prompt-free source preparation and does not
-  // require provider settings that have no safe defaults.
-  const answers = {
-    name: options.name ?? DEFAULT_NAME,
-    selection: fromFlags ?? { kind: 'blank' as const },
-  }
-
-  const project = projectFrom(answers.name)
-  if (answers.selection.kind === 'template' || answers.selection.kind === 'repository') {
-    stdout.write('\n  Cloning...\n')
-  }
-  const prepared = await prepareSource(
-    {
-      project,
-      selection: answers.selection,
-      baseDirectory: cwd(),
-      destination: options.into,
-      force: options.force,
-    },
-    deps,
-  )
-  stdout.write(report(project.title, prepared))
+  await runInteractive(options)
 }
 
 const noQuestions: Asker = {
@@ -93,51 +86,107 @@ const noQuestions: Asker = {
   close() {},
 }
 
-async function runInteractive(
-  options: CliOptions,
-  fromFlags: ReturnType<typeof selectionFrom>,
-): Promise<void> {
-  const asks = harnessNeedsAsker(options, fromFlags)
+/**
+ * Planning reaches nothing: no directory, no provider, no credential, no model.
+ * It is the way to see what the harness decided, and to disagree with it,
+ * before it acts on any of it.
+ */
+async function runPlanOnly(options: CliOptions): Promise<void> {
+  const intent = options.agent
+    ? createAgentIntent(await loadAgentConfig(options.agentConfig), overridesFrom(options))
+    : await interactiveIntent(options)
+  const plan = planMmo(intent)
+
+  if (options.json) {
+    writeJson({ ok: true, status: 'planned', plan })
+    return
+  }
+  stdout.write(`\n  ${indented(planSummary(plan))}\n\n  Nothing was written. Drop --plan-only to build it.\n\n`)
+}
+
+async function interactiveIntent(options: CliOptions): Promise<MmoIntent> {
+  if (!intentNeedsAsker(options)) return intentFromOptions(options)
+  const asker = createAsker()
+  try {
+    return await onboardIntent(options, asker)
+  } finally {
+    asker.close()
+  }
+}
+
+async function runInteractive(options: CliOptions): Promise<void> {
+  const asks = harnessNeedsAsker(options)
   const asker = asks ? createAsker() : noQuestions
   let answers
   try {
     if (asks) stdout.write('\n  I will ask only for the setup details still missing.\n\n')
-    answers = await onboardHarness(options, fromFlags, asker)
+    answers = await onboardHarness(options, asker)
   } finally {
     if (asks) asker.close()
   }
 
-  // Credential presence and every provider/source invariant are checked before
+  // Credential presence and every provider invariant are checked before
   // prepareSource can create or clone anything.
   const request = createHarnessRequest(
     {
-      project: answers.name,
-      selection: answers.selection,
+      intent: answers.intent,
       baseDirectory: cwd(),
       destination: options.into,
       force: options.force,
       provider: answers.provider,
       model: answers.model,
-      brief: answers.brief,
       launch: options.launch ?? answers.launch,
     },
     env,
   )
-  if (request.selection.kind === 'template' || request.selection.kind === 'repository') {
-    stdout.write('\n  Cloning...\n')
-  }
+  stdout.write(`\n  ${indented(planSummary(request.plan))}\n`)
+
+  const prepared = await prepare(request, true)
+  const run = request.launch ? await launch(request, prepared, true) : undefined
+  stdout.write(report(request, prepared, run))
+}
+
+/** `--yes`: plan and scaffold with nothing asked and no provider involved. */
+async function runUnattended(options: CliOptions): Promise<void> {
+  const intent = intentFromOptions(options, DEFAULT_YES_GAMEPLAY)
+  const plan = planMmo(intent)
   const prepared = await prepareSource(
+    {
+      project: projectFrom(plan.intent.name),
+      selection: selectionForPlan(plan),
+      baseDirectory: cwd(),
+      destination: options.into,
+      force: options.force,
+      plan,
+    },
+    deps,
+  )
+  stdout.write(`\n  ${indented(planSummary(plan))}\n`)
+  stdout.write(`
+    cd ${prepared.directory}
+
+  --yes plans and scaffolds and stops there, by design: it asks nothing, so it
+  has no provider, model, or credential to build with. Run without it to build.
+
+  The plan is at ${PLAN_MARKDOWN_PATH} in there, and it is yours to edit.
+
+  https://keicoin.org
+`)
+}
+
+async function prepare(request: HarnessRequest, narrate: boolean): Promise<PreparedSource> {
+  if (narrate && request.selection.kind !== 'blank') stdout.write('\n  Cloning the reference...\n')
+  return await prepareSource(
     {
       project: request.project,
       selection: request.selection,
       baseDirectory: request.baseDirectory,
       destination: request.destination,
       force: request.force,
+      plan: request.plan,
     },
     deps,
   )
-  const run = request.launch ? await launch(request, prepared, true) : undefined
-  stdout.write(agentReport(request, prepared, run))
 }
 
 /**
@@ -164,32 +213,8 @@ async function launch(
 
 async function runAgent(options: CliOptions): Promise<void> {
   const config = await loadAgentConfig(options.agentConfig)
-  const overrides: AgentOverrides = {
-    name: options.name,
-    source: options.source,
-    template: options.template,
-    from: options.from,
-    into: options.into,
-    force: options.force ? true : undefined,
-    provider: options.provider,
-    model: options.model,
-    apiKeyEnv: options.apiKeyEnv,
-    baseUrl: options.baseUrl,
-    protocol: options.protocol,
-    brief: options.brief,
-    launch: options.launch,
-  }
-  const request = createAgentRequest(config, overrides, cwd(), env)
-  const prepared = await prepareSource(
-    {
-      project: request.project,
-      selection: request.selection,
-      baseDirectory: request.baseDirectory,
-      destination: request.destination,
-      force: request.force,
-    },
-    deps,
-  )
+  const request = createAgentRequest(config, overridesFrom(options), cwd(), env)
+  const prepared = await prepare(request, false)
 
   // Progress narration would corrupt a single-JSON-object contract, so the
   // machine caller gets the run summary in the one object instead.
@@ -206,7 +231,7 @@ async function runAgent(options: CliOptions): Promise<void> {
     })
     return
   }
-  stdout.write(agentReport(request, prepared, run))
+  stdout.write(report(request, prepared, run))
 }
 
 async function loadAgentConfig(path: string | undefined): Promise<AgentAnswers> {
@@ -222,19 +247,29 @@ async function loadAgentConfig(path: string | undefined): Promise<AgentAnswers> 
   }
 }
 
+/** Two spaces in front of every line that has something on it. */
+function indented(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .map((line) => (line === '' ? '' : `  ${line}`))
+    .join('\n')
+    .trimStart()
+}
+
 function writeJson(value: unknown): void {
   stdout.write(`${JSON.stringify(value)}\n`)
 }
 
 function isSafeError(
   error: unknown,
-): error is AgentError | HarnessRequestError | ProviderError | HarnessError | EngineError {
+): error is AgentError | HarnessRequestError | ProviderError | HarnessError | EngineError | IntentError {
   return (
     error instanceof AgentError ||
     error instanceof HarnessRequestError ||
     error instanceof ProviderError ||
     error instanceof HarnessError ||
-    error instanceof EngineError
+    error instanceof EngineError ||
+    error instanceof IntentError
   )
 }
 
@@ -243,7 +278,12 @@ function machineError(error: unknown): Record<string, unknown> {
     // Phrased from the canonical table, never from the adapter's own words.
     return { ok: false, error: { code: error.code, message: ENGINE_ERROR_MESSAGES[error.code] } }
   }
-  if (error instanceof AgentError || error instanceof HarnessRequestError || error instanceof ProviderError) {
+  if (
+    error instanceof AgentError ||
+    error instanceof HarnessRequestError ||
+    error instanceof ProviderError ||
+    error instanceof IntentError
+  ) {
     return { ok: false, error: { code: error.code, message: error.message, ...machineDetails(error.details) } }
   }
   if (error instanceof HarnessError) {
@@ -264,21 +304,7 @@ function machineDetails(details: object): Record<string, unknown> {
   return safe
 }
 
-function report(title: string, prepared: PreparedSource): string {
-  const head = `\n  ${title} — ${where(prepared)}\n`
-  return `${head}
-    cd ${prepared.directory}
-
-  --yes prepares the source and stops there, by design: it asks nothing, so it
-  has no provider, model, or brief to build with. Run without it to build.
-
-  The prepared project is yours to inspect, edit, build, and run as it is.
-
-  https://keicoin.org
-`
-}
-
-function agentReport(
+function report(
   request: HarnessRequest,
   prepared: PreparedSource,
   run: CreationRunSummary | undefined,
@@ -288,16 +314,17 @@ function agentReport(
     : 'disabled'
   const files = run && run.written.length > 0 ? `\n${run.written.map((file) => `    ${file}`).join('\n')}\n` : ''
   const tail = run
-    ? `  This turn is finished. Run the harness again to keep building; the Kei
-  terminal interface that holds the session open is later M9 work.`
-    : `  The sanitized plan is valid and the project is prepared. No model or tool
-  loop ran, because launch was disabled.`
+    ? `  This turn is finished. Run the harness again to keep working through the
+  plan; the Kei terminal interface that holds the session open is later M9 work.`
+    : `  The intent, the plan, and the provider settings are valid and the project
+  is prepared. No model or tool loop ran, because launch was disabled.`
 
   return `
   ${request.project.title} — ${where(prepared)}
 
     cd ${prepared.directory}
 
+  Plan: ${PLAN_MARKDOWN_PATH}
   Provider: ${request.provider.provider} / ${request.model}
   Credential: inherited from ${request.provider.apiKeyEnv}
   Launch: ${outcome}

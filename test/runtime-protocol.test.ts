@@ -112,6 +112,61 @@ describe('versioned JSONL engine boundary', () => {
     expect(JSON.stringify(output)).not.toContain(secret)
   })
 
+  test('an intent-opened session plans here and sends the plan back once', async () => {
+    const intent = { name: 'Wonderlands', dimension: '3d', gameplay: 'A fantasy mmorpg with quests and loot.' }
+    const { brief: _brief, ...withoutBrief } = request
+    async function* input() {
+      yield line({ v: 1, type: 'open', id: 'game', request: { ...withoutBrief, intent } })
+      yield line({ v: 1, type: 'turn', id: 'game', prompt: 'x' })
+      await pause()
+      yield line({ v: 1, type: 'shutdown' })
+    }
+    const transport = new ScriptedTransport([{ content: 'Done.' }])
+    const output = await execute(input(), transport)
+
+    const plans = output.filter((item): item is Extract<ProtocolOutput, { type: 'plan' }> => item.type === 'plan')
+    expect(plans).toHaveLength(1)
+    expect(plans[0]!.plan.planVersion).toBe(1)
+    expect(plans[0]!.plan.intent.name).toBe('Wonderlands')
+    expect(plans[0]!.plan.reference.strategy).toBe('clone')
+    // The plan lands immediately after the session exists, before any event.
+    expect(output.findIndex(({ type }) => type === 'plan')).toBe(1)
+    // And the model is told the plan, not a caller's own words.
+    expect(transport.inputs[0]!.brief).toContain('CAPABILITY PACKETS')
+  })
+
+  test('a brief-opened session carries no plan, which is the compatibility path', async () => {
+    async function* input() {
+      yield line({ v: 1, type: 'open', id: 'game', request })
+      yield line({ v: 1, type: 'shutdown' })
+    }
+    const output = await execute(input(), new ScriptedTransport([]))
+    expect(output.some(({ type }) => type === 'plan')).toBeFalse()
+  })
+
+  test('refuses a request that gives both an intent and a brief, or neither', async () => {
+    const intent = { name: 'g', gameplay: 'Questing' }
+    const { brief: _brief, ...withoutBrief } = request
+    async function* input() {
+      yield line({ v: 1, type: 'open', id: 'both', request: { ...request, intent } })
+      yield line({ v: 1, type: 'open', id: 'neither', request: withoutBrief })
+      yield line({ v: 1, type: 'open', id: 'bad', request: { ...withoutBrief, intent: { name: 'g' } } })
+      yield line({ v: 1, type: 'shutdown' })
+    }
+    const output = await execute(input(), new ScriptedTransport([]))
+    const errors = output.filter((item): item is Extract<ProtocolOutput, { type: 'error' }> => item.type === 'error')
+    expect(errors.map(({ error }) => error.code)).toEqual([
+      'invalid_message',
+      'invalid_message',
+      'invalid_message',
+    ])
+    expect(errors.map(({ error }) => error.field)).toEqual([
+      'request.intent',
+      'request.intent',
+      'request.intent.gameplay',
+    ])
+  })
+
   test('does not reflect a huge secret-like unavailable tool name in protocol errors', async () => {
     const unsafeName = `tool-sk-private-${'x'.repeat(500)}`
     const transport = new ScriptedTransport([{ content: '', toolCalls: [{ id: 'call', name: unsafeName, arguments: {} }] }])

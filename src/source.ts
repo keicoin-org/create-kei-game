@@ -1,65 +1,41 @@
 /**
- * Where the game comes from, and what "prepare it" means for each answer.
+ * Where the project comes from on disk, and what "prepare it" means.
  *
- * Four answers, and only four: nothing, one of the games we publish, a project
- * already on this disk, or a repository somewhere. Everything downstream of the
- * first question needs a directory to work in, so this is the piece that decides
- * which directory that is and puts it in the state the rest can assume.
+ * Nobody chooses between these any more. The planner decides whether the
+ * project starts from a reference or from a scaffold, and this file carries the
+ * decision out: make the directory, write the workspace, or clone the reference
+ * the planner named — and in every case leave the plan itself in the project,
+ * so the first thing in there is a written account of what is about to be built.
  *
  * The filesystem, the path rules, and the ability to run `git` all arrive as
- * arguments. That is not ceremony: it is what lets the tests below check the
- * exact argv this hands to git, and check the refusals, without a network, a
+ * arguments. That is not ceremony: it is what lets the tests check the exact
+ * argv this hands to git, and check the refusals, without a network, a
  * temporary directory, or git installed at all.
  */
 
 import { fail } from './errors.js'
+import { planJson, renderPlanMarkdown, type ImplementationPlan } from './plan.js'
+import { REFERENCE_PROJECTS, type ReferenceProject } from './references.js'
 
 // ── The data model ───────────────────────────────────────────────────────────
 
 /**
  * All this step needs of a project: a directory name and something to put at the
- * top of a README. A blank workspace has no currency, so it does not ask for one.
+ * top of a README.
  */
 export interface ProjectIdentity {
   readonly slug: string
   readonly title: string
 }
 
-export interface KnownTemplate {
-  /** What `--template` takes. */
-  readonly id: string
-  /** What a human is shown and may type instead. */
-  readonly label: string
-  readonly summary: string
-  /** Cloned over HTTPS. There is no packaged copy of any of these. */
-  readonly url: string
-}
+/**
+ * The reference catalog, under the name the source layer has always used for
+ * it. It is the planner's input now, not a menu.
+ */
+export const KNOWN_TEMPLATES: readonly ReferenceProject[] = REFERENCE_PROJECTS
 
-export const KNOWN_TEMPLATES = [
-  {
-    id: 'button',
-    label: 'Button',
-    summary: 'One button, one currency, one item. The small one, and the one to read first.',
-    url: 'https://github.com/keicoin-org/button.git',
-  },
-  {
-    id: 'world-of-wonder',
-    label: 'World of Wonder',
-    summary: 'A multiplayer 3D RPG whose gold and items are on the chain.',
-    url: 'https://github.com/keicoin-org/world-of-wonder.git',
-  },
-  {
-    id: 'carpet-markets',
-    label: 'Carpet Markets',
-    summary: 'A coin launchpad where whether a coin can be rugged is a policy the chain enforces.',
-    url: 'https://github.com/keicoin-org/carpet-markets.git',
-  },
-] as const satisfies readonly KnownTemplate[]
-
-export type TemplateId = (typeof KNOWN_TEMPLATES)[number]['id']
-
-/** Accepts the flag spelling and the spelling a human would type at a prompt. */
-export function templateNamed(name: string): KnownTemplate {
+/** Accepts the id and the human label, because both end up stored somewhere. */
+export function templateNamed(name: string): ReferenceProject {
   const wanted = name.trim().toLowerCase()
   const found = KNOWN_TEMPLATES.find(
     (template) => template.id === wanted || template.label.toLowerCase() === wanted,
@@ -67,15 +43,15 @@ export function templateNamed(name: string): KnownTemplate {
   if (found) return found
 
   const known = KNOWN_TEMPLATES.map((template) => template.label).join(', ')
-  fail(`There is no template called "${name}". The ones there are: ${known}.`)
+  fail(`There is no reference project called "${name}". The ones there are: ${known}.`)
 }
 
 export type SourceSelection =
-  /** Nothing to start from. A workspace you own and four files you can read. */
+  /** A scaffolded workspace: the MMO shape, the plan, and nothing borrowed. */
   | { readonly kind: 'blank' }
-  /** One of the three above, cloned from its own repository. */
+  /** A reference project the planner chose, cloned from its own repository. */
   | { readonly kind: 'template'; readonly template: string }
-  /** A project already on this disk. Used where it lies, and never written to. */
+  /** A project already on this disk. Used where it lies. */
   | { readonly kind: 'existing'; readonly path: string }
   /** A GitHub or GitLab repository, over HTTPS. */
   | { readonly kind: 'repository'; readonly url: string }
@@ -89,7 +65,7 @@ export interface PreparedSource {
    * which is the case where the directory was somebody else's already.
    */
   readonly created: boolean
-  /** Relative POSIX paths written by this call. Empty unless the source is blank. */
+  /** Relative POSIX paths written by this call. Empty for an existing project. */
   readonly written: readonly string[]
   /** What was cloned, when something was. */
   readonly remote: string | null
@@ -290,12 +266,18 @@ export interface PrepareRequest {
   readonly baseDirectory: string
   readonly destination?: string | undefined
   /**
-   * Only ever means one thing: write the blank workspace into a directory that
-   * already has files in it, overwriting files of the same name. It does not
-   * delete anything, and it does not apply to a clone — git needs an empty
-   * directory and this will not empty one for it.
+   * Only ever means one thing: write the scaffold into a directory that already
+   * has files in it, overwriting files of the same name. It does not delete
+   * anything, and it does not apply to a clone — git needs an empty directory
+   * and this will not empty one for it.
    */
   readonly force?: boolean | undefined
+  /**
+   * What is about to be built. It lands in the project as `kei-mmo/plan.json`
+   * and `kei-mmo/PLAN.md` in every case where this call created the directory,
+   * so a cloned reference arrives with the reasoning for cloning it attached.
+   */
+  readonly plan: ImplementationPlan
 }
 
 export async function prepareSource(request: PrepareRequest, deps: SourceDeps): Promise<PreparedSource> {
@@ -303,7 +285,7 @@ export async function prepareSource(request: PrepareRequest, deps: SourceDeps): 
     case 'existing':
       return useExisting(request, request.selection, deps)
     case 'blank':
-      return writeBlank(request, request.selection, deps)
+      return writeScaffold(request, request.selection, deps)
     case 'template': {
       const template = templateNamed(request.selection.template)
       return clone(request, request.selection, template.url, deps)
@@ -311,6 +293,19 @@ export async function prepareSource(request: PrepareRequest, deps: SourceDeps): 
     case 'repository':
       return clone(request, request.selection, parseRepositoryUrl(request.selection.url).url, deps)
   }
+}
+
+async function writeFiles(
+  directory: string,
+  files: readonly WorkspaceFile[],
+  deps: SourceDeps,
+): Promise<readonly string[]> {
+  for (const file of files) {
+    const target = deps.path.join(directory, ...file.path.split('/'))
+    await deps.fs.mkdir(deps.path.dirname(target))
+    await deps.fs.writeFile(target, file.contents)
+  }
+  return Object.freeze(files.map((file) => file.path))
 }
 
 /**
@@ -334,7 +329,7 @@ async function useExisting(
   return Object.freeze({ selection, directory, created: false, written: [], remote: null })
 }
 
-async function writeBlank(
+async function writeScaffold(
   request: PrepareRequest,
   selection: SourceSelection & { kind: 'blank' },
   deps: SourceDeps,
@@ -361,20 +356,13 @@ async function writeBlank(
     }
   }
 
-  const files = blankWorkspace(request.project)
-  for (const file of files) {
-    const target = deps.path.join(directory, ...file.path.split('/'))
-    await deps.fs.mkdir(deps.path.dirname(target))
-    await deps.fs.writeFile(target, file.contents)
-  }
-
-  return Object.freeze({
-    selection,
+  const written = await writeFiles(
     directory,
-    created: true,
-    written: Object.freeze(files.map((file) => file.path)),
-    remote: null,
-  })
+    [...scaffoldWorkspace(request.project, request.plan), ...planFiles(request.plan)],
+    deps,
+  )
+
+  return Object.freeze({ selection, directory, created: true, written, remote: null })
 }
 
 async function clone(
@@ -424,63 +412,182 @@ async function clone(
     fail(`git clone ${url} failed (exit ${result.code}).${said === '' ? '' : `\n\n  ${said}`}`)
   }
 
-  return Object.freeze({ selection, directory, created: true, written: [], remote: url })
+  // The reference arrives with the case for cloning it sitting beside it. A
+  // clone with no note in it is a directory of somebody else's decisions.
+  const written = await writeFiles(directory, planFiles(request.plan), deps)
+  return Object.freeze({ selection, directory, created: true, written, remote: url })
 }
 
-// ── The blank workspace ──────────────────────────────────────────────────────
+// ── The scaffolded workspace ─────────────────────────────────────────────────
 
-interface WorkspaceFile {
+export interface WorkspaceFile {
   /** Relative, POSIX-separated. */
   readonly path: string
   readonly contents: string
 }
 
+/** Where the plan lives inside every project this prepares. */
+export const PLAN_DIRECTORY = 'kei-mmo'
+export const PLAN_JSON_PATH = `${PLAN_DIRECTORY}/plan.json`
+export const PLAN_MARKDOWN_PATH = `${PLAN_DIRECTORY}/PLAN.md`
+
+/** The plan as two files: the one a model reads, and the one a person argues with. */
+export function planFiles(plan: ImplementationPlan): readonly WorkspaceFile[] {
+  return Object.freeze([
+    { path: PLAN_JSON_PATH, contents: planJson(plan) },
+    { path: PLAN_MARKDOWN_PATH, contents: renderPlanMarkdown(plan) },
+  ])
+}
+
 /**
- * Deliberately almost nothing. This is not a template with the name filed off —
- * it is an empty room with the lights on, for somebody who knows what they are
- * building and does not want to delete a game first.
+ * The one opinion the scaffold holds: client, server, and a simulation neither
+ * of them owns. Everything else here is a stub, because the plan is the design
+ * and a scaffold that pre-writes the game would be arguing with it.
  */
-export function blankWorkspace(project: ProjectIdentity): readonly WorkspaceFile[] {
+export function scaffoldWorkspace(
+  project: ProjectIdentity,
+  plan: ImplementationPlan,
+): readonly WorkspaceFile[] {
   const manifest = {
     name: project.slug,
     version: '0.0.0',
     private: true,
     type: 'module',
     description: project.title,
+    scripts: {
+      dev: 'echo "Wire this up in the first plan step." && exit 1',
+      test: 'bun test',
+    },
   }
 
   return Object.freeze([
     { path: 'package.json', contents: `${JSON.stringify(manifest, null, 2)}\n` },
-    { path: 'README.md', contents: readme(project) },
-    { path: '.gitignore', contents: 'node_modules/\ndist/\n.DS_Store\n' },
-    { path: 'src/main.ts', contents: main(project) },
+    { path: 'README.md', contents: readme(project, plan) },
+    { path: '.gitignore', contents: 'node_modules/\ndist/\n*.sqlite*\n.DS_Store\n' },
+    { path: 'src/shared/simulation.ts', contents: simulation() },
+    { path: 'src/client/main.ts', contents: client(project) },
+    { path: 'src/server/main.ts', contents: server() },
   ])
 }
 
-function readme(project: ProjectIdentity): string {
+function readme(project: ProjectIdentity, plan: ImplementationPlan): string {
+  const start =
+    plan.reference.strategy === 'clone' && plan.reference.reference
+      ? `This started from the **${plan.reference.reference.label}** reference project, because the plan judged it a closer starting point than an empty directory.`
+      : 'This started from a scaffold rather than a reference project. The plan says why.'
+
   return `# ${project.title}
 
-An empty workspace. Nothing has been chosen for you: no renderer, no server, no
-dependencies, and no currency. \`src/main.ts\` is the only line of code here and
-it is yours to replace.
+A ${plan.engine.dimension.toUpperCase()} Kei MMORPG, planned by Create Kei MMO.
 
-If you wanted something to read instead of a blank page, the games are:
+${start}
 
-${KNOWN_TEMPLATES.map((template) => `- **${template.label}** — ${template.summary}`).join('\n')}
+## The plan
 
-\`\`\`sh
-npm create kei-game ${project.slug} -- --template button
-\`\`\`
+\`${PLAN_MARKDOWN_PATH}\` is the readable version and \`${PLAN_JSON_PATH}\` is the
+machine-readable original. Between them they hold the engine decision, the
+reference decision, the constraints, the acceptance criteria, the build order,
+and one capability packet per piece of work — each naming its prerequisites,
+its tools, and the calls that do the job.
+
+Disagree with it. It was derived from what you asked for, and it is a file in
+your repository, not a contract.
+
+## Shape
+
+| Path | What lives here |
+|---|---|
+| \`src/shared/\` | The simulation, and the wire schema. Imported by both sides. |
+| \`src/client/\` | Rendering, input, and prediction. Owns no authority. |
+| \`src/server/\` | The fixed tick, validation, persistence, and settlement. |
+
+Renderer: ${plan.engine.renderer}
+
+Server: ${plan.engine.server}
 `
 }
 
-function main(project: ProjectIdentity): string {
-  return `/** Replace this file with the first piece of your game. */
+function simulation(): string {
+  return `/**
+ * The simulation both sides run.
+ *
+ * Client and server import this same function. That is what makes prediction
+ * possible and what keeps the server the only authority: the client guesses
+ * with the same rules, then accepts a correction.
+ *
+ * Keep it pure. No fetch, no Date.now(), no Math.random() — a seeded generator
+ * passed in, or the replay tests stop meaning anything.
+ */
 
-export function start(): void {
-  console.log(${JSON.stringify(project.title)})
+export interface PlayerInput {
+  /** Monotonic per player. The server echoes the last one it applied. */
+  readonly seq: number
+  readonly moveX: number
+  readonly moveY: number
+  readonly buttons: number
 }
 
-start()
+export interface WorldState {
+  readonly tick: number
+  readonly players: Readonly<Record<string, { x: number; y: number; z: number }>>
+}
+
+export const TICK_HZ = 20
+export const STEP_MS = 1000 / TICK_HZ
+
+export function step(
+  state: WorldState,
+  inputs: Readonly<Record<string, PlayerInput>>,
+  dtSeconds: number,
+): WorldState {
+  void inputs
+  void dtSeconds
+  // Plan step "Project shape" replaces this with the real simulation.
+  return { tick: state.tick + 1, players: state.players }
+}
+`
+}
+
+function client(project: ProjectIdentity): string {
+  // The title is data, not source. A name with `*/` in it would otherwise close
+  // the comment above and put whatever follows into the file as code.
+  return `/** Client entry. Renders and predicts; decides nothing. */
+
+import { step, type WorldState } from '../shared/simulation.js'
+
+export const TITLE = ${JSON.stringify(project.title)}
+
+export function start(canvas: HTMLCanvasElement): void {
+  void canvas
+  void step
+  // Plan step "First frame" replaces this with the renderer and the frame loop.
+}
+
+export const EMPTY: WorldState = { tick: 0, players: {} }
+`
+}
+
+function server(): string {
+  return `/** Shard entry. Owns the tick, the truth, and every economic action. */
+
+import { STEP_MS, step, type WorldState } from '../shared/simulation.js'
+
+export function createShard(): { state: WorldState; advance: (elapsedMs: number) => void } {
+  let state: WorldState = { tick: 0, players: {} }
+  let accumulator = 0
+
+  return {
+    get state() {
+      return state
+    },
+    advance(elapsedMs: number) {
+      accumulator += elapsedMs
+      while (accumulator >= STEP_MS) {
+        state = step(state, {}, STEP_MS / 1000)
+        accumulator -= STEP_MS
+      }
+    },
+  }
+}
 `
 }

@@ -14,14 +14,21 @@ import { join } from 'node:path'
 
 import { nodeFs, nodePath, nodeGit, runCommand } from '../src/adapters.js'
 import { HarnessError } from '../src/errors.js'
-import { prepareSource, type GitOptions, type SourceDeps } from '../src/source.js'
+import {
+  PLAN_JSON_PATH,
+  PLAN_MARKDOWN_PATH,
+  prepareSource,
+  type GitOptions,
+  type SourceDeps,
+} from '../src/source.js'
+import { SCAFFOLD_PLAN } from './fixtures.js'
 
 let root: string
 /** Prints its own argv to stderr and exits 3. Stands in for a git that failed. */
 let echo: string
 
 beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), 'create-kei-game-'))
+  root = await mkdtemp(join(tmpdir(), 'create-kei-mmo-'))
   echo = join(root, 'echo-argv.mjs')
   await writeFile(
     echo,
@@ -134,15 +141,27 @@ describe('the whole seam, wired up', () => {
     const deps: SourceDeps = { fs: nodeFs, path: nodePath, git: nodeGit }
 
     const prepared = await prepareSource(
-      { project: { slug: 'my-game', title: 'My Game' }, selection: { kind: 'blank' }, baseDirectory: base },
+      { project: { slug: 'my-game', title: 'My Game' }, selection: { kind: 'blank' }, baseDirectory: base, plan: SCAFFOLD_PLAN },
       deps,
     )
 
     expect(prepared.directory).toBe(join(base, 'my-game'))
-    expect([...prepared.written].sort()).toEqual(['.gitignore', 'README.md', 'package.json', 'src/main.ts'])
+    expect([...prepared.written].sort()).toEqual([
+      '.gitignore',
+      'README.md',
+      PLAN_MARKDOWN_PATH,
+      PLAN_JSON_PATH,
+      'package.json',
+      'src/client/main.ts',
+      'src/server/main.ts',
+      'src/shared/simulation.ts',
+    ].sort())
     expect(JSON.parse(await readFile(join(prepared.directory, 'package.json'), 'utf8')).name).toBe('my-game')
     // Nested, so this proves the recursive mkdir rather than assuming it.
-    expect(await readFile(join(prepared.directory, 'src', 'main.ts'), 'utf8')).toContain('My Game')
+    expect(await readFile(join(prepared.directory, 'src', 'client', 'main.ts'), 'utf8')).toContain('My Game')
+    expect(
+      JSON.parse(await readFile(join(prepared.directory, ...PLAN_JSON_PATH.split('/')), 'utf8')).planVersion,
+    ).toBe(1)
   })
 
   test('a directory with files in it stops a blank workspace, and --force writes in', async () => {
@@ -152,6 +171,7 @@ describe('the whole seam, wired up', () => {
       project: { slug: 'taken', title: 'Taken' },
       selection: { kind: 'blank' as const },
       baseDirectory: base,
+      plan: SCAFFOLD_PLAN,
     }
 
     await nodeFs.mkdir(join(base, 'taken'))
@@ -179,6 +199,7 @@ describe('the whole seam, wired up', () => {
         project: { slug: 'nope', title: 'Nope' },
         selection: { kind: 'repository', url: 'https://github.com/keicoin-org/button.git' },
         baseDirectory: base,
+        plan: SCAFFOLD_PLAN,
       },
       deps,
     )
@@ -202,6 +223,7 @@ describe('the whole seam, wired up', () => {
         project: { slug: 'nope', title: 'Nope' },
         selection: { kind: 'template', template: 'button' },
         baseDirectory: base,
+        plan: SCAFFOLD_PLAN,
       },
       deps,
     )

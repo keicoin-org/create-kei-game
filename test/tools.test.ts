@@ -333,7 +333,7 @@ describe('against the real filesystem adapter', () => {
   })
 
   test('reads, writes, and lists a real directory through nodeToolFs', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'create-kei-game-tools-'))
+    const root = mkdtempSync(join(tmpdir(), 'create-kei-mmo-tools-'))
     roots.push(root)
     mkdirSync(join(root, 'src'))
     writeFileSync(join(root, 'src', 'main.ts'), 'export const start = 1\n', 'utf8')
@@ -362,7 +362,7 @@ describe('against the real filesystem adapter', () => {
   })
 
   test('refuses to escape a real workspace with ..', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'create-kei-game-tools-'))
+    const root = mkdtempSync(join(tmpdir(), 'create-kei-mmo-tools-'))
     roots.push(root)
     writeFileSync(join(root, 'inside.txt'), 'ok', 'utf8')
     const workspace = createWorkspaceTools({ workspace: root, fs: nodeToolFs, path: nodeToolPath })

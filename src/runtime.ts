@@ -1,4 +1,5 @@
 import type { HarnessRequest } from './harness.js'
+import type { ImplementationPlan } from './plan.js'
 import type { ResolvedProvider } from './providers.js'
 
 export const DEFAULT_ENGINE_LIMITS = Object.freeze({
@@ -33,7 +34,13 @@ export interface EngineRequest {
   readonly workspace: string
   readonly provider: ResolvedProvider
   readonly model: string
+  /** The plan, rendered for the system instruction. */
   readonly brief: string
+  /**
+   * The plan itself, when there is one. The brief is what the model is told;
+   * this is what the front end and the JSONL caller can act on.
+   */
+  readonly plan?: ImplementationPlan
 }
 
 export function engineRequestFromHarness(request: HarnessRequest, workspace: string): EngineRequest {
@@ -42,6 +49,7 @@ export function engineRequestFromHarness(request: HarnessRequest, workspace: str
     provider: request.provider,
     model: request.model,
     brief: request.brief,
+    plan: request.plan,
   })
 }
 

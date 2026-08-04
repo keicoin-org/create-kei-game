@@ -1,7 +1,7 @@
 {
-  "name": "create-kei-game",
-  "version": "0.2.0",
-  "description": "The Kei game-building harness and its shared bounded creation-engine protocol.",
+  "name": "create-kei-mmo",
+  "version": "0.3.0",
+  "description": "The Kei MMORPG harness: intent in, a planned 2D or 3D MMO out, over a bounded creation-engine protocol.",
   "license": "MIT",
   "author": "Sano",
   "homepage": "https://github.com/keicoin-org/create-kei-game",
@@ -16,13 +16,16 @@
     "kei",
     "create",
     "harness",
-    "game",
+    "mmo",
+    "mmorpg",
     "gamedev",
     "game-development",
     "cli"
   ],
   "type": "module",
   "bin": {
+    "create-kei-mmo": "./dist/index.js",
+    "create-kei-mmo-engine": "./dist/runtime-main.js",
     "create-kei-game": "./dist/index.js",
     "create-kei-game-engine": "./dist/runtime-main.js"
   },
@@ -31,6 +34,31 @@
       "types": "./dist/index.d.ts",
       "bun": "./src/index.ts",
       "import": "./dist/index.js"
+    },
+    "./intent": {
+      "types": "./dist/intent.d.ts",
+      "bun": "./src/intent.ts",
+      "import": "./dist/intent.js"
+    },
+    "./capabilities": {
+      "types": "./dist/capabilities.d.ts",
+      "bun": "./src/capabilities.ts",
+      "import": "./dist/capabilities.js"
+    },
+    "./references": {
+      "types": "./dist/references.d.ts",
+      "bun": "./src/references.ts",
+      "import": "./dist/references.js"
+    },
+    "./plan": {
+      "types": "./dist/plan.d.ts",
+      "bun": "./src/plan.ts",
+      "import": "./dist/plan.js"
+    },
+    "./planner": {
+      "types": "./dist/planner.d.ts",
+      "bun": "./src/planner.ts",
+      "import": "./dist/planner.js"
     },
     "./source": {
       "types": "./dist/source.d.ts",

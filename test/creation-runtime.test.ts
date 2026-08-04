@@ -25,7 +25,7 @@ afterAll(() => {
 })
 
 function workspace(): string {
-  const root = mkdtempSync(join(tmpdir(), 'create-kei-game-run-'))
+  const root = mkdtempSync(join(tmpdir(), 'create-kei-mmo-run-'))
   roots.push(root)
   return root
 }
