@@ -601,17 +601,17 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     prerequisites: [
       'The previs-biped rig definition, admitted in the content manifest like any other record.',
       'Clip documents at the current clip version; a stale or foreign clip parses to null and is not ready.',
-      'The animation-3d packet for playback, because these clips drive the same mixer as glTF clips do.',
+      'The animation-3d packet for playback, because these clips use the same AnimationGroup boundary as glTF clips do.',
     ],
     tools: [
       'the motion-clip records in kei-mmo/content/manifest.json',
-      'three (THREE.AnimationClip, THREE.VectorKeyframeTrack, THREE.AnimationMixer)',
+      '@babylonjs/core (Animation, AnimationGroup, TargetedAnimation)',
       'the harness ready gate (create-kei-mmo/motion motionReadyGate), run before any scene document is emitted',
     ],
     methods: [
-      { call: "new THREE.VectorKeyframeTrack(`${track.node}.position`, track.times, track.values.flat())", does: 'One keyframe track per clip track; rotation tracks target `.rotation` the same way.' },
-      { call: 'new THREE.AnimationClip(doc.id, doc.durationMs / 1000, tracks)', does: 'Builds a playable clip from the document, named by its id so lookups never use array order.' },
-      { call: 'mixer.clipAction(clip).setLoop(doc.loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)', does: 'The loop flag comes from the record; a one-shot clamps its last frame.' },
+      { call: "new Animation(track.id, track.property, frameRate, Animation.ANIMATIONTYPE_VECTOR3, loopMode)", does: 'Creates one Babylon animation per document track; the target property remains data rather than provider naming.' },
+      { call: 'animation.setKeys(track.keys.map(({ frame, value }) => ({ frame, value: Vector3.FromArray(value) })))', does: 'Copies versioned key data into Babylon values without changing timing.' },
+      { call: 'group.addTargetedAnimation(animation, node); group.start(doc.loop, 1, fromFrame, toFrame)', does: 'Groups tracks under the semantic clip id and starts with the document loop policy.' },
       { call: 'isClipReady(record) === (record.status === "ready" && record.clip !== undefined && record.clipVersion === MOTION_CLIP_VERSION)', does: 'The ready triple, checked strictly: a claim of ready without a current-version payload fails closed.' },
       { call: 'motionReadyGate(records, requiredClipIds)', does: 'Resolves every clip a scene needs at once, and returns every miss at once when any is not ready.' },
     ],
@@ -710,12 +710,12 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     tools: [
       'an external text-to-3D or image-to-3D service (none is bundled)',
       'the model-file records and admission gate in kei-mmo/content/manifest.json',
-      'three GLTFLoader for the admitted output, exactly as the content-pipeline packet loads anything else',
+      '@babylonjs/core LoadAssetContainerAsync for admitted output, exactly as the content-pipeline packet loads anything else',
     ],
     methods: [
       { call: "manifest.assets.push({ id, kind: 'model-file', source: { kind: 'generated', generator }, path, licence })", does: 'The record shape a generator adapter must produce: provenance and licence, or admission refuses it.' },
       { call: 'admitAssets(manifest, probe).blocked.find((v) => v.code === "generator_output_missing")', does: 'The gate that already exists: a declared output with no bytes blocks, it never becomes a scene reference.' },
-      { call: "loader.load(record.path, (gltf) => scene.add(gltf.scene))", does: 'Admitted output enters the scene through the ordinary loader path, nothing bespoke.' },
+      { call: 'const container = await LoadAssetContainerAsync(record.path, scene); container.addAllToScene()', does: 'Admitted output enters the scene through the ordinary Babylon loader path, nothing bespoke.' },
     ],
     acceptance: [
       'Declaring a generated model without its file blocks admission with generator_output_missing.',

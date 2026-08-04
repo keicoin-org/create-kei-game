@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -220,6 +220,8 @@ describe('generated projects install, build, and start without the harness', () 
       // this generated-project check cannot silently depend on registry access.
       run(directory, 'install', ['install', '--offline'])
       run(directory, 'build', ['run', 'build'])
+      expect(existsSync(join(directory, 'dist', 'client', 'main.js'))).toBeTrue()
+      expect(existsSync(join(directory, 'dist', 'server', 'main.js'))).toBeTrue()
 
       if (dimension === '3d') {
         const dependencyTree = run(directory, 'dependency_tree', ['pm', 'ls', '--all'])
