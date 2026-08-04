@@ -283,7 +283,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     domain: 'networking',
     title: 'First shared authoritative encounter',
     summary:
-      'One server assigns identities and owns movement. Intent goes up, whole snapshots come down, and two clients can see each other without trusting either client with position.',
+      'One server assigns resumable identities and owns movement plus minimal progression. Intent goes up, whole snapshots come down, and durable state returns after restart without trusting a client with identity or results.',
     dimension: 'any',
     status: 'available',
     core: true,
@@ -307,20 +307,22 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
       { call: 'session.lastSeq = input.seq', does: 'Rejects a stale replay and echoes the last accepted sequence in this client\'s snapshots.' },
       { call: 'for (const session of sessions) if (session.welcomed) snapshot(session)', does: 'Sends the whole small construction world; delta compression stays deferred until measurement justifies it.' },
       { call: 'tokens = Math.min(BURST, tokens + elapsedMs * RATE); if (tokens < 1) return; tokens -= 1', does: 'Per-socket token bucket, so one client cannot flood a tick.' },
+      { call: "connectGame(url, localStorage.getItem('kei-game:<slug>:resume-token') ?? undefined)", does: 'Presents only the opaque server-issued resume capability; a client never selects its player ID.' },
     ],
     acceptance: [
       'Two clients on one server see each other move within the plan\'s latency budget.',
       'A client that stops sending input stops moving on every other client within one tick.',
       'A forged message claiming a position, an item, or a balance changes nothing on the server.',
+      'Position and fixed-rule XP/level restore exactly after a clean restart; duplicate and unknown capabilities are refused.',
       'Both generated dimensions pass the same two-client black-box connection and movement check.',
     ],
   },
   {
     id: 'persistence-streaming',
     domain: 'persistence',
-    title: 'World streaming and durable state',
+    title: 'Durable characters and later world streaming',
     summary:
-      'Chunks loaded and evicted around players, and character state written often enough that a crash costs one interval, not a session.',
+      'The generated baseline durably stores only character position and minimal progression; bounded chunk loading remains the next, separately measurable layer.',
     dimension: 'any',
     status: 'available',
     core: true,
@@ -340,7 +342,8 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
       { call: 'const radius = Math.ceil(viewDistance / CHUNK_SIZE); for (let dz = -radius; dz <= radius; dz += 1)', does: 'The load ring around each player, recomputed when a player crosses a chunk edge.' },
       { call: 'if (loaded.size > MAX_CHUNKS) { const [oldest] = loaded.keys(); await unloadChunk(oldest) }', does: 'LRU eviction; re-insert on access so recency is the map order.' },
       { call: "db.run('PRAGMA journal_mode = WAL')", does: 'Lets the save pass write while readers continue.' },
-      { call: "db.query('INSERT INTO character (id, x, y, z, inventory) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id) DO UPDATE SET x = ?2, y = ?3, z = ?4, inventory = ?5')", does: 'The upsert that character saving is, without a read first.' },
+      { call: "db.run('UPDATE characters SET x = ?, y = ?, z = ?, xp = ?, level = ?, updated_at = ? WHERE player_id = ?', values)", does: 'Writes only server-authored position/progression; Kei balances, items, and wallet seeds do not belong in this database.' },
+      { call: "createHash('sha256').update(resumeToken, 'utf8').digest('hex')", does: 'Looks up an opaque capability without persisting its plaintext.' },
       { call: 'const flush = db.transaction((rows) => { for (const row of rows) save.run(row) }); flush(dirty)', does: 'One transaction per save pass; one per row is orders of magnitude slower.' },
       { call: 'dirty.add(entityId)', does: 'The save set. Saving everything every interval does not survive a real population.' },
       { call: "process.on('SIGTERM', async () => { await flushAll(); process.exit(0) })", does: 'A clean shutdown writes the last interval instead of losing it.' },
@@ -349,7 +352,8 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     acceptance: [
       'Killing the server uncleanly loses at most one save interval of progress.',
       'Walking a straight line for several minutes keeps the loaded chunk count bounded.',
-      'Restarting the server restores character position and inventory exactly.',
+      'Restarting the server restores server-assigned identity, position, XP, and level exactly.',
+      'Malformed, random, duplicate, and authority-forging clients change neither live nor durable state.',
     ],
   },
   {

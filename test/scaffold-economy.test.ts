@@ -67,6 +67,13 @@ describe('generated Kei economy', () => {
       .join('\n')
     expect(server).not.toContain('kei-transaction')
     expect(server).not.toMatch(/KEI_(?:SEED|PRIVATE_KEY)|private[_-]?key/i)
+    expect(server).not.toMatch(/from\s+['"][^'"]*economy\//)
+
+    const persistence = files.get('src/server/persistence.ts')!
+    expect(persistence).toContain(
+      "['player_id', 'resume_hash', 'x', 'y', 'z', 'xp', 'level', 'updated_at']",
+    )
+    expect(persistence).not.toMatch(/\b(?:balance|currency|inventory|item|settlement|wallet_seed)\s+(?:TEXT|INTEGER|REAL|BLOB)\b/i)
 
     const protocol = files.get('src/shared/protocol.ts')!
     for (const key of ['balance', 'inventory', 'mint', 'transfer', 'settlement']) {
