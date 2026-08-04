@@ -359,32 +359,43 @@ export interface OwnedTreeQuery {
    */
   readonly rootKnownAliveAtMs?: number
   /**
-   * The root's creation instant as recorded from an earlier snapshot that saw
-   * it alive, once one exists. It distinguishes the root's own lingering table
-   * entry from an unrelated process that has taken over its PID.
+   * The exact root generation captured while its child handle/table identity
+   * still proved it owned. Once the PID is absent or recycled, only children
+   * created inside this proven interval can be attributed to the root without
+   * confusing them with an intervening holder of the same numeric PID.
    */
-  readonly rootCreatedMs?: number
+  readonly rootGeneration?: OwnedProcessGeneration
   /**
-   * Creation instants, as recorded from earlier snapshots, of pids this sweep
-   * already proved owned. A later snapshot reaches their children through these
-   * even after the pid itself died between snapshots.
+   * Generations this sweep already proved owned. A later snapshot can safely
+   * re-signal an exact identity or reach children created inside its captured
+   * alive interval even after the holder disappeared.
    */
-  readonly priorOwned?: ReadonlyMap<number, number>
+  readonly priorOwned?: ReadonlyMap<number, OwnedProcessGeneration>
+}
+
+export interface OwnedProcessGeneration {
+  /** Exact creation instant from the Windows process table. */
+  readonly createdAtMs: number
+  /**
+   * Exclusive child-creation ceiling sampled while this exact holder was known
+   * alive. A child below it cannot belong to a later generation of the PID.
+   */
+  readonly knownAliveAtMs: number
 }
 
 interface OwnedSeed {
   readonly pid: number
   /** Children created before this instant belong to an older use of the PID. */
   readonly floor: number
-  /** Children created at or after this instant belong to a recycled PID. */
-  readonly ceiling: number
-  /** No current holder exists, so an unrecorded child cannot be attributed safely. */
-  readonly missingHolder: boolean
+  /** Children below this instant are proven to belong to this generation. */
+  readonly ownedCeiling: number
+  /** Children at or above this instant belong to the current recycled holder. */
+  readonly ambiguityCeiling: number
 }
 
 export interface OwnedTreeSnapshot {
   readonly descendants: readonly number[]
-  /** An absent PID holder has an unrecorded child that may belong to a vanished successor. */
+  /** An unrecorded child falls outside every captured generation interval. */
   readonly ambiguous: boolean
 }
 
@@ -394,20 +405,17 @@ export interface OwnedTreeSnapshot {
  *
  * - A live root appears in the table as itself, and a candidate child is owned
  *   only when it was created at or after its parent.
- * - A dead root whose PID has been taken over by an unrelated process is
- *   recognised by a table entry whose creation instant differs from the one
- *   recorded while the root was alive. That instant becomes a ceiling: the
- *   original root's orphans were created before it (and no earlier than the
- *   recorded spawn instant), while the recycled process' own children were
- *   created after it and are never touched or traversed.
- * - An absent root (or previously owned intermediary) is not enough evidence
- *   to admit a new child. A successor may have appeared, spawned it, and exited
- *   between snapshots. Only identities recorded by an earlier snapshot remain
- *   safe in that case; any other candidate makes the snapshot ambiguous.
+ * - Once a holder disappears or is recycled, its captured known-alive instant
+ *   closes the owned generation. Children inside `[creation, known-alive)` are
+ *   still provably owned. Children between that boundary and the current
+ *   holder's creation are ambiguous: any number of intervening PID generations
+ *   may have existed, so they are never touched or traversed.
+ * - An identity recorded by an earlier snapshot remains safe even when it falls
+ *   in such a gap. This is how a late child captured while the root was live is
+ *   revalidated and terminated after a parent-only configured terminator.
  *
- * The same floor/ceiling rule guards every previously owned pid in
- * `priorOwned`, using its recorded creation instant in place of the spawn
- * instant, so a descendant's PID recycled between snapshots cannot aim the
+ * The same explicit generation interval guards every previously owned pid in
+ * `priorOwned`, so a descendant's PID recycled between snapshots cannot aim the
  * sweep at an unrelated tree either.
  */
 export function classifyOwnedDescendants(
@@ -419,7 +427,8 @@ export function classifyOwnedDescendants(
   const seen = new Set<number>([query.root])
   const rootCreated = table.created.get(query.root)
   const rootIsOriginal = rootCreated !== undefined && (
-    rootCreated === query.rootCreatedMs || (
+    rootCreated === query.rootGeneration?.createdAtMs || (
+      query.rootGeneration === undefined &&
       query.rootKnownAliveAtMs !== undefined &&
       rootCreated >= query.spawnedAtMs &&
       rootCreated < query.rootKnownAliveAtMs
@@ -428,57 +437,71 @@ export function classifyOwnedDescendants(
   if (rootCreated !== undefined && rootIsOriginal) {
     // The entry is the root itself, even if its handle reported exit while the
     // table was being read. Its children therefore have no recycling ceiling.
-    seeds.push({ pid: query.root, floor: rootCreated, ceiling: Infinity, missingHolder: false })
-  } else if (rootCreated !== undefined) {
-    // A visible successor provides a safe exclusive ceiling for original
-    // orphans; its own children are at or above that instant.
     seeds.push({
       pid: query.root,
-      floor: query.spawnedAtMs,
-      ceiling: rootCreated,
-      missingHolder: false,
+      floor: rootCreated,
+      ownedCeiling: Infinity,
+      ambiguityCeiling: Infinity,
     })
   } else {
+    const generation = query.rootGeneration
+    const ambiguityCeiling = rootCreated ?? Infinity
+    const provenAliveCeiling = generation?.knownAliveAtMs ??
+      query.rootKnownAliveAtMs ?? query.spawnedAtMs
     seeds.push({
       pid: query.root,
-      floor: query.rootCreatedMs ?? query.spawnedAtMs,
-      ceiling: Infinity,
-      missingHolder: true,
+      floor: generation?.createdAtMs ?? query.spawnedAtMs,
+      ownedCeiling: Math.min(provenAliveCeiling, ambiguityCeiling),
+      ambiguityCeiling,
     })
   }
-  for (const [pid, createdWhenOwned] of query.priorOwned ?? []) {
+  for (const [pid, generation] of query.priorOwned ?? []) {
     if (pid === query.root) continue
     const current = table.created.get(pid)
     seen.add(pid)
-    if (current === createdWhenOwned) {
+    if (current === generation.createdAtMs) {
       // It survived the previous signal. The fresh creation-time match makes
       // re-signalling this PID safe and prevents false convergence.
       order.push(pid)
-      seeds.push({ pid, floor: createdWhenOwned, ceiling: Infinity, missingHolder: false })
-    } else if (current !== undefined) {
-      seeds.push({ pid, floor: createdWhenOwned, ceiling: current, missingHolder: false })
+      seeds.push({
+        pid,
+        floor: generation.createdAtMs,
+        ownedCeiling: Infinity,
+        ambiguityCeiling: Infinity,
+      })
     } else {
-      seeds.push({ pid, floor: createdWhenOwned, ceiling: Infinity, missingHolder: true })
+      const ambiguityCeiling = current ?? Infinity
+      seeds.push({
+        pid,
+        floor: generation.createdAtMs,
+        ownedCeiling: Math.min(generation.knownAliveAtMs, ambiguityCeiling),
+        ambiguityCeiling,
+      })
     }
   }
 
   let ambiguous = false
   const queue = [...seeds]
   while (queue.length > 0) {
-    const { pid: parent, floor, ceiling, missingHolder } = queue.shift()!
+    const { pid: parent, floor, ownedCeiling, ambiguityCeiling } = queue.shift()!
     for (const pid of table.children.get(parent) ?? []) {
       if (pid <= 4) continue
       const created = table.created.get(pid) ?? 0
-      if (created < floor || created >= ceiling) continue
-      const wasRecorded = query.priorOwned?.get(pid) === created
-      if (missingHolder && !wasRecorded) {
+      if (created < floor || created >= ambiguityCeiling) continue
+      const wasRecorded = query.priorOwned?.get(pid)?.createdAtMs === created
+      if (created >= ownedCeiling && !wasRecorded) {
         ambiguous = true
         continue
       }
       if (seen.has(pid)) continue
       seen.add(pid)
       order.push(pid)
-      queue.push({ pid, floor: created, ceiling: Infinity, missingHolder: false })
+      queue.push({
+        pid,
+        floor: created,
+        ownedCeiling: Infinity,
+        ambiguityCeiling: Infinity,
+      })
     }
   }
   return { descendants: order, ambiguous }
@@ -489,8 +512,23 @@ export function ownedDescendants(table: ProcessTable, query: OwnedTreeQuery): re
 }
 
 interface WindowsOwnershipContext {
-  readonly rootCreatedMs?: number
-  readonly priorOwned: ReadonlyMap<number, number>
+  readonly rootGeneration?: OwnedProcessGeneration
+  readonly priorOwned: ReadonlyMap<number, OwnedProcessGeneration>
+}
+
+function captureGeneration(
+  createdAtMs: number,
+  knownAliveAtMs: number,
+  previous?: OwnedProcessGeneration,
+): OwnedProcessGeneration {
+  const capturedThrough = Math.max(createdAtMs, knownAliveAtMs)
+  if (previous?.createdAtMs === createdAtMs) {
+    return {
+      createdAtMs,
+      knownAliveAtMs: Math.max(previous.knownAliveAtMs, capturedThrough),
+    }
+  }
+  return { createdAtMs, knownAliveAtMs: capturedThrough }
 }
 
 /**
@@ -503,27 +541,34 @@ async function captureWindowsOwnership(
   spawnedAtMs: number,
   rootKnownAliveAtMs: number,
 ): Promise<WindowsOwnershipContext> {
+  const snapshotStartedAtMs = Date.now()
   const table = await readWindowsProcessTable()
   const currentRootCreated = table.created.get(root)
-  const rootCreatedMs = currentRootCreated !== undefined &&
+  const rootGeneration = currentRootCreated !== undefined &&
     currentRootCreated >= spawnedAtMs && currentRootCreated < rootKnownAliveAtMs
-    ? currentRootCreated
+    ? captureGeneration(
+        currentRootCreated,
+        Math.max(rootKnownAliveAtMs, snapshotStartedAtMs),
+      )
     : undefined
   const snapshot = classifyOwnedDescendants(table, {
     root,
     spawnedAtMs,
     rootKnownAliveAtMs,
-    rootCreatedMs,
+    rootGeneration,
   })
   if (snapshot.ambiguous) {
     throw new Error('the owned process tree identity was ambiguous before configured termination')
   }
   const protectedPids = ownAncestry(table.parents)
-  const priorOwned = new Map<number, number>()
+  const priorOwned = new Map<number, OwnedProcessGeneration>()
   for (const pid of snapshot.descendants) {
-    if (!protectedPids.has(pid)) priorOwned.set(pid, table.created.get(pid) ?? spawnedAtMs)
+    const createdAtMs = table.created.get(pid)
+    if (createdAtMs !== undefined && !protectedPids.has(pid)) {
+      priorOwned.set(pid, captureGeneration(createdAtMs, snapshotStartedAtMs))
+    }
   }
-  return { rootCreatedMs, priorOwned }
+  return { rootGeneration, priorOwned }
 }
 
 async function terminateWindowsTree(
@@ -538,25 +583,34 @@ async function terminateWindowsTree(
   // `taskkill /t` cannot do that: it refuses an already-exited root and so never
   // reaches the orphaned descendants.
   const priorOwned = new Map(initialContext?.priorOwned)
-  let rootCreatedMs = initialContext?.rootCreatedMs
+  let rootGeneration = initialContext?.rootGeneration
   let rootKnownAliveAtMs = initialRootKnownAliveAtMs
   for (let snapshot = 1; ; snapshot += 1) {
     // Sampled before the read, so a root that exits mid-read is still resolved
     // as itself rather than mistaken for a successor holding its PID.
+    const snapshotStartedAtMs = Date.now()
     const rootAlive = child.exitCode === null && child.signalCode === null
-    if (rootAlive) rootKnownAliveAtMs = Date.now()
+    if (rootAlive) rootKnownAliveAtMs = snapshotStartedAtMs
     const table = await readWindowsProcessTable()
     const protectedPids = ownAncestry(table.parents)
     const currentRootCreated = table.created.get(root)
-    if (
-      rootCreatedMs === undefined &&
-      currentRootCreated !== undefined &&
-      rootKnownAliveAtMs !== undefined &&
-      currentRootCreated >= spawnedAtMs &&
-      currentRootCreated < rootKnownAliveAtMs
-    ) rootCreatedMs = currentRootCreated
+    const currentIsOriginal = currentRootCreated !== undefined && (
+      currentRootCreated === rootGeneration?.createdAtMs || (
+        rootGeneration === undefined &&
+        rootKnownAliveAtMs !== undefined &&
+        currentRootCreated >= spawnedAtMs &&
+        currentRootCreated < rootKnownAliveAtMs
+      )
+    )
+    if (currentRootCreated !== undefined && currentIsOriginal) {
+      rootGeneration = captureGeneration(
+        currentRootCreated,
+        Math.max(rootKnownAliveAtMs ?? currentRootCreated, snapshotStartedAtMs),
+        rootGeneration,
+      )
+    }
     const ownership = classifyOwnedDescendants(table, {
-      root, spawnedAtMs, rootKnownAliveAtMs, rootCreatedMs, priorOwned,
+      root, spawnedAtMs, rootKnownAliveAtMs, rootGeneration, priorOwned,
     })
     const descendants = ownership.descendants.filter((pid) => !protectedPids.has(pid))
 
@@ -566,7 +620,15 @@ async function terminateWindowsTree(
     // child spawned between the previous snapshot and its kills is owned but
     // was invisible to that snapshot.
     if (!ownership.ambiguous && !rootAlive && descendants.length === 0) return
-    for (const pid of descendants) priorOwned.set(pid, table.created.get(pid) ?? spawnedAtMs)
+    for (const pid of descendants) {
+      const createdAtMs = table.created.get(pid)
+      if (createdAtMs !== undefined) {
+        priorOwned.set(
+          pid,
+          captureGeneration(createdAtMs, snapshotStartedAtMs, priorOwned.get(pid)),
+        )
+      }
+    }
     // Deepest first: terminating a middle process would otherwise orphan the
     // level below it out of the parent chain this snapshot walked.
     for (let index = descendants.length - 1; index >= 0; index -= 1) killPid(descendants[index]!)
@@ -625,9 +687,9 @@ async function terminatePosixTree(
  * Kills the whole owned tree and confirms it is gone. Unlike a direct kill this
  * does not short-circuit once the direct child has exited, because that is
  * precisely the state a partial terminator leaves behind. `spawnedAtMs` is the
- * Date.now() instant just before the root was spawned; it anchors the Windows
- * PID-recycling creation floor, and omitting it disables only that floor — the
- * dead-root recycling ceiling does not depend on it.
+ * Date.now() instant just before the root was spawned. It only identifies a
+ * still-visible original root; after recycling, signalling requires the exact
+ * generation interval captured by the bounded sweep.
  */
 export async function terminateProcessTree(
   child: ChildProcessWithoutNullStreams,

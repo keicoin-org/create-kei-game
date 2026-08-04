@@ -442,6 +442,10 @@ describe('Windows owned-tree ownership graph', () => {
     return parseProcessTable(rows.map(([pid, parent, created]) => `${pid} ${parent} ${created}`).join('\n'))
   }
 
+  function generation(createdAtMs: number, knownAliveAtMs: number) {
+    return { createdAtMs, knownAliveAtMs }
+  }
+
   test('a live root owns children created at or after it, however late, and none created before it', () => {
     const table = tableOf([
       [100, 4, 1_010], // the root itself, still running
@@ -465,39 +469,39 @@ describe('Windows owned-tree ownership graph', () => {
       [400, 200, 1_600], // the orphan's own child
     ])
     expect(ownedDescendants(table, {
-      root: 100, spawnedAtMs: SPAWNED_AT, rootCreatedMs: 1_010,
+      root: 100,
+      spawnedAtMs: SPAWNED_AT,
+      rootGeneration: generation(1_010, 2_000),
     }))
       .toEqual([200, 400])
   })
 
-  test('an absent root keeps only orphan identities captured while the root was live', () => {
+  test('an absent root still owns a genuine late child inside its captured generation', () => {
     const table = tableOf([
-      [200, 100, 1_500],
-      [400, 200, 1_600],
+      [200, 100, 2_500], // created late, but before the root's proven-alive boundary
+      [400, 200, 2_600],
     ])
-    const priorOwned = new Map([[200, 1_500]])
     expect(classifyOwnedDescendants(table, {
       root: 100,
       spawnedAtMs: SPAWNED_AT,
-      rootCreatedMs: 1_010,
-      priorOwned,
+      rootGeneration: generation(1_010, 3_000),
     })).toEqual({ descendants: [200, 400], ambiguous: false })
   })
 
-  test('an absent root with an unrecorded child fails closed as vanished-successor ambiguity', () => {
+  test('an absent root fails closed for a child outside its captured generation', () => {
     const table = tableOf([
       // This could be an original orphan or a child of a successor that already
       // exited. Creation times in this one snapshot cannot distinguish them.
-      [200, 100, 1_500],
+      [200, 100, 2_500],
     ])
     expect(classifyOwnedDescendants(table, {
       root: 100,
       spawnedAtMs: SPAWNED_AT,
-      rootCreatedMs: 1_010,
+      rootGeneration: generation(1_010, 2_000),
     })).toEqual({ descendants: [], ambiguous: true })
   })
 
-  test("a recycled dead root keeps its orphans and never touches the recycled process' children", () => {
+  test("one root-PID reuse keeps proven orphans and never touches the successor's children", () => {
     const table = tableOf([
       [100, 4, 5_000], // unrelated process now holding the dead root's PID
       [200, 100, 1_500], // original orphan, created before the recycled process
@@ -506,25 +510,40 @@ describe('Windows owned-tree ownership graph', () => {
       [210, 200, 1_800], // the orphan's child, still owned
     ])
     const owned = ownedDescendants(table, {
-      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
+      root: 100,
+      spawnedAtMs: SPAWNED_AT,
+      rootGeneration: generation(1_010, 2_000),
     })
     expect(owned).toEqual([200, 210])
     expect(owned).not.toContain(600)
     expect(owned).not.toContain(700)
   })
 
-  test('the creation floor admits its exact instant and the ceiling excludes its own', () => {
+  test('the captured interval excludes an unproven gap before the current holder', () => {
     const table = tableOf([
       [100, 4, 5_000], // recycled holder of the dead root's PID
-      [200, 100, 1_000], // created at the exact spawn instant: owned
-      [300, 100, 999], // created just before the spawn instant: not owned
-      [400, 100, 5_000], // created at the recycled instant: ambiguous, never killed
-      [500, 100, 4_999], // created just under the ceiling: an owned orphan
+      [200, 100, 1_010], // exact generation floor: owned
+      [300, 100, 1_009], // before the root generation: not owned
+      [400, 100, 5_000], // current holder's child: not owned
+      [500, 100, 4_999], // could belong to any intervening PID generation
     ])
-    expect(ownedDescendants(table, {
-      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
-    }))
-      .toEqual([200, 500])
+    expect(classifyOwnedDescendants(table, {
+      root: 100,
+      spawnedAtMs: SPAWNED_AT,
+      rootGeneration: generation(1_010, 2_000),
+    })).toEqual({ descendants: [200], ambiguous: true })
+  })
+
+  test('multiple root-PID reuses never select an intervening holder\'s child', () => {
+    const table = tableOf([
+      [100, 4, 5_000], // current successor B
+      [600, 100, 3_500], // child of vanished successor A, which held PID 100 at 3000
+    ])
+    expect(classifyOwnedDescendants(table, {
+      root: 100,
+      spawnedAtMs: SPAWNED_AT,
+      rootGeneration: generation(1_010, 2_000),
+    })).toEqual({ descendants: [], ambiguous: true })
   })
 
   test('a root listed under its own recorded instant keeps its children after the handle exits', () => {
@@ -544,7 +563,9 @@ describe('Windows owned-tree ownership graph', () => {
     // Sampled after the read instead, the recorded instant is what still
     // identifies the entry as the root rather than a successor.
     expect(ownedDescendants(table, {
-      root: 100, spawnedAtMs: SPAWNED_AT, rootCreatedMs: 1_010,
+      root: 100,
+      spawnedAtMs: SPAWNED_AT,
+      rootGeneration: generation(1_010, 2_000),
     })).toEqual([200])
     // The boundary also works when no earlier table captured the exact root
     // creation instant, as with a parent-only custom terminator.
@@ -561,7 +582,7 @@ describe('Windows owned-tree ownership graph', () => {
     ])
     expect(ownedDescendants(table, {
       root: 100, spawnedAtMs: SPAWNED_AT,
-      rootKnownAliveAtMs: 2_000, rootCreatedMs: 1_010,
+      rootGeneration: generation(1_010, 2_000),
     })).toEqual([200])
   })
 
@@ -573,7 +594,9 @@ describe('Windows owned-tree ownership graph', () => {
       [400, 100, 2_001], // successor child
     ])
     expect(ownedDescendants(table, {
-      root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
+      root: 100,
+      spawnedAtMs: SPAWNED_AT,
+      rootGeneration: generation(1_010, 2_000),
     })).toEqual([200])
   })
 
@@ -615,12 +638,12 @@ describe('Windows owned-tree ownership graph', () => {
       [100, 4, 1_010],
       [200, 100, 1_500],
     ])
-    const priorOwned = new Map<number, number>()
+    const priorOwned = new Map<number, ReturnType<typeof generation>>()
     const firstPass = ownedDescendants(first, {
       root: 100, spawnedAtMs: SPAWNED_AT, rootKnownAliveAtMs: 2_000,
     })
     expect(firstPass).toEqual([200])
-    for (const pid of firstPass) priorOwned.set(pid, first.created.get(pid)!)
+    for (const pid of firstPass) priorOwned.set(pid, generation(first.created.get(pid)!, 2_000))
 
     // Snapshot 2, after the first signals: the intermediary survived under the
     // exact recorded creation identity and exposed a child that did not exist in
@@ -632,10 +655,12 @@ describe('Windows owned-tree ownership graph', () => {
     ])
     const secondPass = ownedDescendants(second, {
       root: 100, spawnedAtMs: SPAWNED_AT,
-      rootKnownAliveAtMs: 2_000, rootCreatedMs: 1_010, priorOwned,
+      rootGeneration: generation(1_010, 2_000), priorOwned,
     })
     expect(secondPass).toEqual([200, 210])
-    for (const pid of secondPass) priorOwned.set(pid, second.created.get(pid)!)
+    for (const pid of secondPass) {
+      priorOwned.set(pid, generation(second.created.get(pid)!, 2_000))
+    }
 
     // Snapshot 3: the dead descendant's PID has been recycled by an unrelated
     // process with a child of its own. Nothing is owned: the sweep converged
@@ -646,7 +671,7 @@ describe('Windows owned-tree ownership graph', () => {
     ])
     expect(ownedDescendants(third, {
       root: 100, spawnedAtMs: SPAWNED_AT,
-      rootKnownAliveAtMs: 2_000, rootCreatedMs: 1_010, priorOwned,
+      rootGeneration: generation(1_010, 2_000), priorOwned,
     })).toEqual([])
   })
 
@@ -657,8 +682,8 @@ describe('Windows owned-tree ownership graph', () => {
     expect(classifyOwnedDescendants(table, {
       root: 100,
       spawnedAtMs: SPAWNED_AT,
-      rootCreatedMs: 1_010,
-      priorOwned: new Map([[200, 1_500]]),
+      rootGeneration: generation(1_010, 2_000),
+      priorOwned: new Map([[200, generation(1_500, 1_900)]]),
     })).toEqual({ descendants: [], ambiguous: true })
   })
 })
