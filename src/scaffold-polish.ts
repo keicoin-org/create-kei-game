@@ -11,7 +11,10 @@ import {
   POLISH_SOURCE_MANIFEST_VERSION,
   expectedCredits,
   validatePolishAssetManifestDocument,
+  validatePolishLicenceBytes,
+  validatePolishMediaBytes,
   validatePolishRecipeDocument,
+  validatePolishRecipeManifestBinding,
   validatePolishSourceManifestDocument,
   type ActionRecipe,
   type PolishAssetKind,
@@ -127,7 +130,7 @@ function starterRecipe(plan: ImplementationPlan, sourceManifestHash: string, sty
     styleProfileHash, sourceManifestHash,
     actor: Object.freeze({ characterAsset: 'hero-character', rigOrAtlas: 'hero-motion' }),
     target: Object.freeze({ asset: 'training-sentinel', interactionRadiusM: 2.25 }), actions, cues, effects, qualityProfiles,
-    budgets: Object.freeze({ referenceDevice: 'named desktop 1080p reference device (capture required)', maxVisualBytes, maxAudioBytes: 3_145_728, maxAggregateBytes: maxVisualBytes + 3_145_728 + 1_048_576, maxBytesByRole: ROLE_MAX }),
+    budgets: Object.freeze({ referenceDevice: 'named desktop 1080p reference device (capture required)', maxVisualBytes, maxAudioBytes: 3_145_728, maxAggregateBytes: maxVisualBytes + 3_145_728 + 8_388_608, maxBytesByRole: ROLE_MAX }),
     authority, capture,
   })
 }
@@ -163,6 +166,9 @@ import { fileURLToPath } from 'node:url'
 const validatePolishRecipeDocument = ${validatePolishRecipeDocument.toString()}
 const validatePolishAssetManifestDocument = ${validatePolishAssetManifestDocument.toString()}
 const validatePolishSourceManifestDocument = ${validatePolishSourceManifestDocument.toString()}
+const validatePolishRecipeManifestBinding = ${validatePolishRecipeManifestBinding.toString()}
+const validatePolishMediaBytes = ${validatePolishMediaBytes.toString()}
+const validatePolishLicenceBytes = ${validatePolishLicenceBytes.toString()}
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '../..')
 const rootReal = realpathSync(root)
@@ -223,9 +229,9 @@ if (hash(sourceDoc.raw) !== recipe?.sourceManifestHash) problems.push({ code: 's
 if (hash(styleDoc.raw) !== recipe?.styleProfileHash) problems.push({ code: 'style_profile_hash_mismatch', message: 'recipe style hash is stale' })
 if (qualityDoc.value?.version !== 1 || JSON.stringify(qualityDoc.value?.profiles) !== JSON.stringify(recipe?.qualityProfiles)) problems.push({ code: 'quality_mismatch', message: 'quality.json differs from the authoritative recipe' })
 const required = new Map((manifest?.assets ?? []).map((asset) => [asset.id, asset])); const byId = new Map((sources?.assets ?? []).map((asset) => [asset.id, asset]))
-for (const referenced of [recipe?.actor?.characterAsset, recipe?.actor?.rigOrAtlas, recipe?.target?.asset, ...Object.values(recipe?.cues ?? {}).flat()]) if (!required.has(referenced)) problems.push({ code: 'undeclared_recipe_asset', id: referenced, message: 'recipe asset is absent from content/polish-manifest.json' })
+for (const code of validatePolishRecipeManifestBinding(recipe, manifest)) problems.push({ code, message: 'recipe/manifest semantic role binding rejected' })
 for (const id of byId.keys()) if (!required.has(id)) problems.push({ code: 'unrequired_source', id, message: 'source registry contains bytes outside the polish admission manifest' })
-const verify = (id, entry, maximum) => { try { const bytes = secureRead(entry.path, maximum, entry.bytes); if (hash(bytes) !== entry.sha256) problems.push({ code: 'hash_mismatch', id, message: entry.path }) } catch (error) { problems.push({ code: 'file_invalid', id, message: entry.path + ': ' + (error instanceof Error ? error.message : String(error)) }) } }
+const verify = (id, entry, maximum) => { try { const bytes = secureRead(entry.path, maximum, entry.bytes); if (hash(bytes) !== entry.sha256) { problems.push({ code: 'hash_mismatch', id, message: entry.path }); return null } return bytes } catch (error) { problems.push({ code: 'file_invalid', id, message: entry.path + ': ' + (error instanceof Error ? error.message : String(error)) }); return null } }
 if (sources?.credits) {
   verify('credits', sources.credits, 262_144)
   try {
@@ -235,21 +241,24 @@ if (sources?.credits) {
     if (actual !== lines.join('\\n') + '\\n') problems.push({ code: 'credits_content_mismatch', message: 'generated credits do not exactly describe sources.json' })
   } catch {}
 }
-let visualBytes = 0; let audioBytes = 0; let aggregateBytes = 0; const roleBytes = new Map()
+let visualBytes = 0; let audioBytes = 0; let aggregateBytes = sources?.credits?.bytes ?? 0; const roleBytes = new Map()
 for (const asset of manifest?.assets ?? []) {
   const source = byId.get(asset.id)
   if (!source) { problems.push({ code: 'missing_source', id: asset.id, message: 'required polish asset has no source record' }); continue }
   verify(asset.id, source.sourceFile, 16_777_216)
-  verify(asset.id, { path: source.licence.filePath, sha256: source.licence.sha256, bytes: source.licence.bytes }, 262_144)
-  const extensions = { atlas: ['.png','.webp'], image: ['.png','.webp'], model: ['.glb','.gltf'], animation: ['.glb','.gltf'], audio: ['.ogg','.mp3','.wav'] }[asset.kind] ?? []
+  const licenceBytes = verify(asset.id, { path: source.licence.filePath, sha256: source.licence.sha256, bytes: source.licence.bytes }, 262_144)
+  if (licenceBytes) for (const code of validatePolishLicenceBytes(licenceBytes)) problems.push({ code, id: asset.id, message: source.licence.filePath })
+  aggregateBytes += source.sourceFile.bytes + source.licence.bytes
+  const extensions = { atlas: ['.png'], image: ['.png'], model: ['.glb'], animation: ['.glb'], audio: ['.ogg'] }[asset.kind] ?? []
   for (const output of source.processedOutputs) {
     if (!extensions.some((extension) => output.path.toLocaleLowerCase('en-US').endsWith(extension))) problems.push({ code: 'asset_kind_mismatch', id: asset.id, message: output.path })
-    verify(asset.id, output, asset.maxBytes)
+    const outputBytes = verify(asset.id, output, asset.maxBytes)
+    if (outputBytes) for (const code of validatePolishMediaBytes(asset.kind, outputBytes)) problems.push({ code, id: asset.id, message: output.path })
     aggregateBytes += output.bytes; roleBytes.set(asset.role, (roleBytes.get(asset.role) ?? 0) + output.bytes)
     if (asset.role === 'audio') audioBytes += output.bytes; else visualBytes += output.bytes
   }
 }
-if (visualBytes > (recipe?.budgets?.maxVisualBytes ?? 0) || audioBytes > (recipe?.budgets?.maxAudioBytes ?? 0) || aggregateBytes > (recipe?.budgets?.maxAggregateBytes ?? 0)) problems.push({ code: 'aggregate_budget_exceeded', message: 'content bytes exceed recipe budgets' })
+if (visualBytes > (recipe?.budgets?.maxVisualBytes ?? 0) || audioBytes > (recipe?.budgets?.maxAudioBytes ?? 0) || aggregateBytes > (recipe?.budgets?.maxAggregateBytes ?? 0)) problems.push({ code: 'aggregate_budget_exceeded', message: 'packaged credits, source, licence, and output bytes exceed recipe budgets' })
 for (const [role, bytes] of roleBytes) if (bytes > (recipe?.budgets?.maxBytesByRole?.[role] ?? 0)) problems.push({ code: 'role_budget_exceeded', id: role, message: String(bytes) })
 if (problems.length) {
   const pending = problems.every((problem) => problem.code === 'missing_source')
