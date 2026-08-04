@@ -169,6 +169,18 @@ export function uniformPalettePng(): Buffer {
   return Buffer.concat([signature, pngChunk('IHDR', ihdr), pngChunk('PLTE', palette), pngChunk('IDAT', deflateSync(Buffer.concat(rows))), pngChunk('IEND', Buffer.alloc(0))])
 }
 
+/** Four legitimate colours appear first, followed by an out-of-range palette index. */
+export function outOfRangePaletteIndexPng(): Buffer {
+  const width = 16; const height = 16
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 3
+  const palette = Buffer.from([255,0,0, 0,255,0, 0,0,255, 255,255,0])
+  const rows: Buffer[] = []
+  for (let y = 0; y < height; y += 1) { const row = Buffer.alloc(width + 1); for (let x = 0; x < width; x += 1) row[x + 1] = (x + y) % 4; rows.push(row) }
+  rows[height - 1]![width] = 4
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  return Buffer.concat([signature, pngChunk('IHDR', ihdr), pngChunk('PLTE', palette), pngChunk('IDAT', deflateSync(Buffer.concat(rows))), pngChunk('IEND', Buffer.alloc(0))])
+}
+
 /** A 16x16 decoded grayscale gradient that clears the placeholder floor. */
 export function variedPng(): Buffer {
   const width = 16; const height = 16
@@ -237,6 +249,27 @@ function packedGlb(gltf: Record<string, unknown>, bin: Buffer): Buffer {
   return Buffer.concat([header, jsonHeader, json, binHeader, bin])
 }
 
+function indexedModelGlb(
+  positions: readonly number[],
+  indices: readonly number[],
+  options: { readonly mode?: number; readonly extraUnreferencedMesh?: boolean; readonly extraPointPrimitive?: boolean } = {},
+): Buffer {
+  const positionBytes = Buffer.alloc(positions.length * 4)
+  positions.forEach((value, index) => positionBytes.writeFloatLE(value, index * 4))
+  const indexBytes = Buffer.alloc(indices.length * 2)
+  indices.forEach((value, index) => indexBytes.writeUInt16LE(value, index * 2))
+  const bin = Buffer.concat([positionBytes, indexBytes, Buffer.alloc((4 - ((positionBytes.length + indexBytes.length) % 4)) % 4)])
+  const triangle = { attributes: { POSITION: 0 }, indices: 1, mode: options.mode ?? 4 }
+  const primitives = options.extraPointPrimitive ? [triangle, { attributes: { POSITION: 0 }, mode: 0 }] : [triangle]
+  return packedGlb({
+    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }],
+    bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: positionBytes.length }, { buffer: 0, byteOffset: positionBytes.length, byteLength: indexBytes.length }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: positions.length / 3, type: 'VEC3' }, { bufferView: 1, componentType: 5123, count: indices.length, type: 'SCALAR' }],
+    meshes: [{ primitives }, ...(options.extraUnreferencedMesh ? [{ primitives: [triangle] }] : [])],
+    nodes: [{ mesh: 0 }], scenes: [{ nodes: [0] }], scene: 0,
+  }, bin)
+}
+
 /** Four finite points hidden in an unreferenced mesh behind an empty active scene. */
 export function unreferencedPointGlb(): Buffer {
   const bin = Buffer.alloc(48)
@@ -271,6 +304,48 @@ export function sceneTriangleGlb(): Buffer {
   }, bin)
 }
 
+const SQUARE_POSITIONS = [0,0,0, 1,0,0, 0,1,0, 1,1,0] as const
+
+/** Four stored positions but only one referenced triangle: the fourth cannot satisfy the floor. */
+export function unusedFourthPositionGlb(): Buffer {
+  return indexedModelGlb(SQUARE_POSITIONS, [0,1,2])
+}
+
+/** Two triangles address four indices, but the fourth coordinate repeats the third. */
+export function repeatedFourthPositionGlb(): Buffer {
+  return indexedModelGlb([0,0,0, 1,0,0, 0,1,0, 0,1,0], [0,1,2, 0,1,3])
+}
+
+/** A good triangle followed by a zero-area triangle must not hide the degenerate geometry. */
+export function mixedDegenerateTriangleGlb(): Buffer {
+  return indexedModelGlb(SQUARE_POSITIONS, [0,1,2, 0,0,3])
+}
+
+/** One valid scene mesh plus a second declared mesh that no active-scene node references. */
+export function extraUnreferencedMeshGlb(): Buffer {
+  return indexedModelGlb(SQUARE_POSITIONS, [0,1,2, 1,3,2], { extraUnreferencedMesh: true })
+}
+
+/** A reachable mesh may not combine accepted triangles with a point-only primitive. */
+export function mixedTrianglePointGlb(): Buffer {
+  return indexedModelGlb(SQUARE_POSITIONS, [0,1,2, 1,3,2], { extraPointPrimitive: true })
+}
+
+/** A scene-reachable point-only primitive isolates topology rejection from scene reachability. */
+export function referencedPointGlb(): Buffer {
+  return indexedModelGlb(SQUARE_POSITIONS, [0,1,2,3], { mode: 0 })
+}
+
+/** An index outside the POSITION accessor must fail safely before any coordinate read. */
+export function outOfRangeIndexGlb(): Buffer {
+  return indexedModelGlb(SQUARE_POSITIONS, [0,1,4, 1,3,2])
+}
+
+/** Two indexed non-degenerate triangles over four referenced coordinates. */
+export function indexedQuadGlb(): Buffer {
+  return indexedModelGlb(SQUARE_POSITIONS, [0,1,2, 1,3,2])
+}
+
 /** Observable joint motion on a skin attached to a scene-referenced mesh node. */
 export function riggedAnimationGlb(): Buffer {
   const bin = Buffer.alloc(68); bin.writeFloatLE(1, 12); bin.writeFloatLE(1, 28); bin.writeFloatLE(1, 40); bin.writeFloatLE(0, 36); bin.writeFloatLE(1, 40)
@@ -281,6 +356,32 @@ export function riggedAnimationGlb(): Buffer {
     meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], nodes: [{ mesh: 0, skin: 0, children: [1, 2] }, {}, {}], skins: [{ joints: [1, 2] }],
     animations: [{ samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }], channels: [{ sampler: 0, target: { node: 1, path: 'translation' } }] }], scenes: [{ nodes: [0] }], scene: 0,
   }, bin)
+}
+
+function jointBindingAnimationGlb(options: { readonly attachSkin: boolean; readonly joints: readonly number[]; readonly target: number }): Buffer {
+  const bin = Buffer.alloc(68); bin.writeFloatLE(1, 12); bin.writeFloatLE(1, 28); bin.writeFloatLE(0, 36); bin.writeFloatLE(1, 40)
+  ;[0,0,0, 1,0,0].forEach((value, index) => bin.writeFloatLE(value, 44 + index * 4))
+  return packedGlb({
+    asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }, { buffer: 0, byteOffset: 36, byteLength: 8 }, { buffer: 0, byteOffset: 44, byteLength: 24 }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }, { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' }, { bufferView: 2, componentType: 5126, count: 2, type: 'VEC3' }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], nodes: [{ mesh: 0, ...(options.attachSkin ? { skin: 0 } : {}), children: [1,2,3] }, {}, {}, {}], skins: [{ joints: [...options.joints] }],
+    animations: [{ samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }], channels: [{ sampler: 0, target: { node: options.target, path: 'translation' } }] }], scenes: [{ nodes: [0] }], scene: 0,
+  }, bin)
+}
+
+/** The animated joint belongs only to a skin that no scene-reachable mesh node uses. */
+export function unusedSkinJointAnimationGlb(): Buffer {
+  return jointBindingAnimationGlb({ attachSkin: false, joints: [1,2], target: 1 })
+}
+
+/** A skin is used, but the observable channel targets a reachable non-joint node. */
+export function unrelatedUsedSkinAnimationGlb(): Buffer {
+  return jointBindingAnimationGlb({ attachSkin: true, joints: [1,2], target: 3 })
+}
+
+/** Repeating one node does not create the required two-joint rig. */
+export function duplicateJointSkinAnimationGlb(): Buffer {
+  return jointBindingAnimationGlb({ attachSkin: true, joints: [1,1], target: 1 })
 }
 
 /** A container-valid GLB whose mesh points at a nonexistent accessor. */

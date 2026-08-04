@@ -21,7 +21,7 @@ import {
 } from '../src/polish.js'
 import { polishProjectFiles, POLISH_ASSET_MANIFEST_PATH, POLISH_RECIPE_PATH } from '../src/scaffold-polish.js'
 import { planFor } from './fixtures.js'
-import { CC0_TEXT, dummySkinAnimationGlb, glbWithOutOfRangePosition, oggWithoutAudioPacket, pngWithInvalidDeflate, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, uniformFilteredPng, uniformPalettePng, unreferencedPointGlb, variedPng } from './media.js'
+import { CC0_TEXT, dummySkinAnimationGlb, duplicateJointSkinAnimationGlb, extraUnreferencedMeshGlb, glbWithOutOfRangePosition, indexedQuadGlb, mixedDegenerateTriangleGlb, mixedTrianglePointGlb, oggWithoutAudioPacket, outOfRangeIndexGlb, outOfRangePaletteIndexPng, pngWithInvalidDeflate, referencedPointGlb, repeatedFourthPositionGlb, riggedAnimationGlb, sceneTriangleGlb, tinyGlb, tinyOgg, tinyPng, uniformFilteredPng, uniformPalettePng, unrelatedUsedSkinAnimationGlb, unreferencedPointGlb, unusedFourthPositionGlb, unusedSkinJointAnimationGlb, variedPng } from './media.js'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function generated(dimension: '2d' | '3d' = '2d') {
@@ -134,13 +134,29 @@ describe('admitted media and licence byte semantics', () => {
     expect(validatePolishMediaBytes('model', unreferencedPointGlb())).toEqual(['media_glb_placeholder'])
     expect(validatePolishMediaBytes('animation', tinyGlb('animation'))).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('animation', dummySkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', unusedSkinJointAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
+    expect(validatePolishMediaBytes('animation', unrelatedUsedSkinAnimationGlb())).toEqual(['media_glb_animation_no_motion'])
+    expect(validatePolishMediaBytes('animation', duplicateJointSkinAnimationGlb())).toEqual(['media_glb_animation_rig_missing'])
     expect(validatePolishMediaBytes('audio', tinyOgg())).toEqual(['media_ogg_placeholder'])
   })
 
   test('accepts bounded decoded pixels, scene triangles, and joint-bound motion above the placeholder floor', () => {
     expect(validatePolishMediaBytes('image', variedPng())).toEqual([])
     expect(validatePolishMediaBytes('model', sceneTriangleGlb())).toEqual([])
+    expect(validatePolishMediaBytes('model', indexedQuadGlb())).toEqual([])
     expect(validatePolishMediaBytes('animation', riggedAnimationGlb())).toEqual([])
+  })
+
+  test.each([
+    ['an unused fourth POSITION behind one triangle', unusedFourthPositionGlb, 'media_glb_placeholder'],
+    ['a repeated fourth POSITION', repeatedFourthPositionGlb, 'media_glb_placeholder'],
+    ['one good triangle beside a degenerate triangle', mixedDegenerateTriangleGlb, 'media_glb_placeholder'],
+    ['an extra unreferenced mesh', extraUnreferencedMeshGlb, 'media_glb_placeholder'],
+    ['mixed triangle and point primitives', mixedTrianglePointGlb, 'media_glb_placeholder'],
+    ['a scene-reachable point-only primitive', referencedPointGlb, 'media_glb_placeholder'],
+    ['an out-of-range vertex index', outOfRangeIndexGlb, 'media_glb_malformed'],
+  ] as const)('rejects %s', (_name, build, code) => {
+    expect(validatePolishMediaBytes('model', build())).toEqual([code])
   })
 
   test.each([
@@ -149,6 +165,7 @@ describe('admitted media and licence byte semantics', () => {
     ['text bytes labelled as OGG', 'audio', () => Buffer.from('runtime:ambience runtime:ambience runtime:ambience'), 'media_ogg_malformed'],
     ['PNG with a corrupted chunk CRC', 'atlas', () => { const bytes = tinyPng(); bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff; return bytes }, 'media_png_malformed'],
     ['PNG with CRC-correct invalid compressed scanlines', 'image', () => pngWithInvalidDeflate(), 'media_png_malformed'],
+    ['palette PNG with a late out-of-range index', 'image', () => outOfRangePaletteIndexPng(), 'media_png_malformed'],
     ['truncated GLB container', 'model', () => tinyGlb('model').subarray(0, 40), 'media_glb_malformed'],
     ['GLB with an out-of-range POSITION accessor', 'model', () => glbWithOutOfRangePosition(), 'media_glb_malformed'],
     ['GLB without an animation for the rig requirement', 'animation', () => tinyGlb('model'), 'media_glb_missing_animation'],
