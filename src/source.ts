@@ -90,8 +90,14 @@ export interface SourceFs {
   stat(target: string): Promise<{ readonly isDirectory: boolean } | null>
   /** Recursive, and not an error when it already exists. */
   mkdir(directory: string): Promise<void>
+  /** A bounded UTF-8 read; no implementation may allocate past maxBytes + 1. */
+  readTextFile(file: string, maxBytes: number): Promise<SourceTextRead>
   writeFile(file: string, contents: string): Promise<void>
 }
+
+export type SourceTextRead =
+  | { readonly kind: 'text'; readonly contents: string }
+  | { readonly kind: 'missing' | 'too_large' | 'invalid_utf8' }
 
 export interface SourcePath {
   resolve(...segments: string[]): string
@@ -298,7 +304,7 @@ export async function prepareSource(request: PrepareRequest, deps: SourceDeps): 
       return writeScaffold(request, request.selection, deps)
     case 'template': {
       const template = templateNamed(request.selection.template)
-      return clone(request, request.selection, template.url, deps)
+      return clone(request, request.selection, template.url, deps, template)
     }
     case 'repository':
       return clone(request, request.selection, parseRepositoryUrl(request.selection.url).url, deps)
@@ -380,6 +386,7 @@ async function clone(
   selection: SourceSelection,
   url: string,
   deps: SourceDeps,
+  adoptedReference?: ReferenceProject,
 ): Promise<PreparedSource> {
   const directory = destinationFor(
     { baseDirectory: request.baseDirectory, slug: request.project.slug, destination: request.destination },
@@ -438,10 +445,152 @@ async function clone(
     )
   }
 
+  // A planner-selected reference is adopted as this project, rather than
+  // merely copied under a different directory. Validate every declared target
+  // before writing any of them. An arbitrary repository selection is an
+  // existing project and is deliberately not renamed.
+  const identity = adoptedReference === undefined
+    ? []
+    : await adoptedIdentityFiles(directory, request.project, adoptedReference, deps)
+
   // The reference arrives with the case for cloning it sitting beside it. A
   // clone with no note in it is a directory of somebody else's decisions.
-  const written = await writeFiles(directory, planFiles(request.plan), deps)
+  const written = await writeFiles(directory, [...identity, ...planFiles(request.plan)], deps)
   return Object.freeze({ selection, directory, created: true, written, remote: url })
+}
+
+const MAX_ADOPTED_PACKAGE_BYTES = 256 * 1024
+const MAX_ADOPTED_README_BYTES = 512 * 1024
+const MAX_ADOPTED_SLUG_LENGTH = 214
+const MAX_ADOPTED_TITLE_LENGTH = 200
+
+function failIdentity(reference: ReferenceProject, target: string): never {
+  fail(`The cloned ${reference.id} reference does not have the declared identity at ${target}, so it was not adopted.`)
+}
+
+function exactRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function exactly(value: unknown, expected: unknown): boolean {
+  if (Object.is(value, expected)) return true
+  if (Array.isArray(value) || Array.isArray(expected)) {
+    return Array.isArray(value) && Array.isArray(expected) &&
+      value.length === expected.length && value.every((item, index) => exactly(item, expected[index]))
+  }
+  if (!exactRecord(value) || !exactRecord(expected)) return false
+  const left = Object.keys(value).sort()
+  const right = Object.keys(expected).sort()
+  return left.length === right.length && left.every((key, index) =>
+    key === right[index] && exactly(value[key], expected[key]),
+  )
+}
+
+/** Counts top-level JSON object keys without treating strings or nested keys as targets. */
+function topLevelKeyCounts(text: string): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>()
+  let depth = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!
+    if (character === '{' || character === '[') { depth += 1; continue }
+    if (character === '}' || character === ']') { depth -= 1; continue }
+    if (character !== '"') continue
+
+    const start = index
+    let escaped = false
+    for (index += 1; index < text.length; index += 1) {
+      const inner = text[index]!
+      if (escaped) { escaped = false; continue }
+      if (inner === '\\') { escaped = true; continue }
+      if (inner === '"') break
+    }
+    if (depth !== 1 || index >= text.length) continue
+    let after = index + 1
+    while (/\s/.test(text[after] ?? '')) after += 1
+    if (text[after] !== ':') continue
+    const key = JSON.parse(text.slice(start, index + 1)) as string
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return counts
+}
+
+function formattedPackage(value: Record<string, unknown>, original: string): string {
+  const indentation = /^\{\r?\n([ \t]+)"/.exec(original)?.[1] ?? '  '
+  const newline = original.includes('\r\n') ? '\r\n' : '\n'
+  const ended = /\r?\n$/.test(original)
+  return JSON.stringify(value, null, indentation).replaceAll('\n', newline) + (ended ? newline : '')
+}
+
+function validAdoptionIdentity(project: ProjectIdentity): boolean {
+  return project.slug.length > 0 && project.slug.length <= MAX_ADOPTED_SLUG_LENGTH &&
+    /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(project.slug) &&
+    project.title.length > 0 && project.title.length <= MAX_ADOPTED_TITLE_LENGTH &&
+    project.title.trim() === project.title && !/[\r\n\u0000-\u001f\u007f]/.test(project.title)
+}
+
+async function requiredText(
+  directory: string,
+  path: string,
+  maxBytes: number,
+  reference: ReferenceProject,
+  deps: SourceDeps,
+): Promise<string> {
+  if (path.length > 128 || path.startsWith('/') || path.includes('\\') || path.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+    return failIdentity(reference, path)
+  }
+  const read = await deps.fs.readTextFile(deps.path.join(directory, ...path.split('/')), maxBytes)
+  return read.kind === 'text' ? read.contents : failIdentity(reference, path)
+}
+
+async function adoptedIdentityFiles(
+  directory: string,
+  project: ProjectIdentity,
+  reference: ReferenceProject,
+  deps: SourceDeps,
+): Promise<readonly WorkspaceFile[]> {
+  if (!validAdoptionIdentity(project)) fail('The requested project identity is not safe to adopt into a cloned reference.')
+
+  const declaration = reference.adoption
+  const packageText = await requiredText(directory, declaration.packagePath, MAX_ADOPTED_PACKAGE_BYTES, reference, deps)
+  const readmeText = await requiredText(directory, declaration.readmePath, MAX_ADOPTED_README_BYTES, reference, deps)
+
+  let manifest: unknown
+  try { manifest = JSON.parse(packageText) as unknown } catch { return failIdentity(reference, declaration.packagePath) }
+  if (!exactRecord(manifest)) return failIdentity(reference, declaration.packagePath)
+
+  const keys = topLevelKeyCounts(packageText)
+  if (keys.get('name') !== 1 || manifest.name !== declaration.packageName) {
+    return failIdentity(reference, `${declaration.packagePath}#name`)
+  }
+  const repositoryCount = keys.get('repository') ?? 0
+  if (declaration.repository === null) {
+    if (repositoryCount !== 0 || Object.hasOwn(manifest, 'repository')) {
+      return failIdentity(reference, `${declaration.packagePath}#repository`)
+    }
+  } else if (
+    repositoryCount !== 1 ||
+    !Object.hasOwn(manifest, 'repository') ||
+    !exactly(manifest.repository, declaration.repository)
+  ) {
+    return failIdentity(reference, `${declaration.packagePath}#repository`)
+  }
+
+  const lines = readmeText.split(/\r?\n/)
+  if (lines[0] !== declaration.readmeHeading || lines.filter((line) => line === declaration.readmeHeading).length !== 1) {
+    return failIdentity(reference, `${declaration.readmePath}#heading`)
+  }
+
+  manifest.name = project.slug
+  // There is no requested destination repository in ProjectIdentity. Keeping
+  // the reference URL is false, and inventing a new remote is worse, so an
+  // exactly matched stale repository field is deliberately removed.
+  if (declaration.repository !== null) delete manifest.repository
+  const readme = `# ${project.title}${readmeText.slice(declaration.readmeHeading.length)}`
+
+  return Object.freeze([
+    { path: declaration.packagePath, contents: formattedPackage(manifest, packageText) },
+    { path: declaration.readmePath, contents: readme },
+  ])
 }
 
 // ── The scaffolded workspace ─────────────────────────────────────────────────

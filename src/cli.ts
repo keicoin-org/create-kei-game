@@ -198,7 +198,11 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     }
 
     const retired = Object.keys(RETIRED).find((flag) => arg === flag || arg.startsWith(`${flag}=`))
-    if (retired) fail(RETIRED[retired]!)
+    if (retired) {
+      // This prose is fixed by the harness rather than derived from argv, so it
+      // is the one parse diagnostic safe to preserve at the JSON boundary.
+      fail(RETIRED[retired]!, 'retired_field', { field: retired.slice(2) })
+    }
 
     const valued = VALUED.find((flag) => arg === flag)
     if (valued) {
@@ -297,7 +301,7 @@ export function helpText(version: string): string {
 
     bun run src/index.ts --
     bun run src/index.ts -- <project> --3d --gameplay "..." --plan-only
-    bun run src/index.ts -- <project> --agent --json --plan-only --gameplay "..."
+    bun run src/index.ts -- <project> --agent --json --plan-only --dimension auto --gameplay "..."
 
   This harness is not published. The npm name create-kei-game still resolves to
   the superseded 0.2.0 scaffolder that shipped from kei-transaction, and there
@@ -305,7 +309,8 @@ export function helpText(version: string): string {
 
   What you describe
 
-    --dimension <d>     2d, 3d, or auto. Default: ${DEFAULT_DIMENSION}, which infers it.
+    --dimension <d>     2d, 3d, or auto. Human default: ${DEFAULT_DIMENSION};
+                        agent mode requires an explicit answer, including auto.
     --2d, --3d          The same thing, said shorter.
     --gameplay <text>   What players do: classes, combat, quests, crafting.
                         The one goal a plan cannot be derived without.

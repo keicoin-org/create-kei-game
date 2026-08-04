@@ -25,9 +25,34 @@ export interface ReferenceProject {
   readonly signals: readonly string[]
   /** Why it can be the wrong start, stated so the planner can quote it. */
   readonly caveats: readonly string[]
+  /**
+   * The exact identity the upstream repository must have before it may be
+   * adopted under a new project name. `repository: null` is an asserted
+   * absence, not an invitation to inject metadata the reference did not own.
+   */
+  readonly adoption: {
+    readonly packagePath: 'package.json'
+    readonly packageName: string
+    readonly repository: Readonly<Record<string, unknown>> | null
+    readonly readmePath: 'README.md'
+    readonly readmeHeading: string
+  }
 }
 
-export const REFERENCE_PROJECTS: readonly ReferenceProject[] = Object.freeze([
+function frozenReference(reference: ReferenceProject): ReferenceProject {
+  const repository = reference.adoption.repository === null
+    ? null
+    : Object.freeze({ ...reference.adoption.repository })
+  return Object.freeze({
+    ...reference,
+    demonstrates: Object.freeze([...reference.demonstrates]),
+    signals: Object.freeze([...reference.signals]),
+    caveats: Object.freeze([...reference.caveats]),
+    adoption: Object.freeze({ ...reference.adoption, repository }),
+  })
+}
+
+export const REFERENCE_PROJECTS: readonly ReferenceProject[] = Object.freeze(([
   {
     id: 'button',
     label: 'Button',
@@ -39,6 +64,13 @@ export const REFERENCE_PROJECTS: readonly ReferenceProject[] = Object.freeze([
     caveats: [
       'It has no world, no sessions, and no server authority, so an MMO keeps almost none of it.',
     ],
+    adoption: {
+      packagePath: 'package.json',
+      packageName: 'button',
+      repository: null,
+      readmePath: 'README.md',
+      readmeHeading: '# Button',
+    },
   },
   {
     id: 'world-of-wonder',
@@ -58,6 +90,15 @@ export const REFERENCE_PROJECTS: readonly ReferenceProject[] = Object.freeze([
     caveats: [
       'It brings its own art direction and world structure; a project that wants a different look starts by removing things.',
     ],
+    adoption: {
+      packagePath: 'package.json',
+      packageName: 'world-of-wonder',
+      repository: {
+        url: 'git+https://github.com/keicoin-org/world-of-wonder.git',
+      },
+      readmePath: 'README.md',
+      readmeHeading: '# world-of-wonder',
+    },
   },
   {
     id: 'carpet-markets',
@@ -73,8 +114,18 @@ export const REFERENCE_PROJECTS: readonly ReferenceProject[] = Object.freeze([
     caveats: [
       'It is an economy first and a game second; it contributes no rendering, sessions, or world.',
     ],
+    adoption: {
+      packagePath: 'package.json',
+      packageName: 'carpet-markets',
+      repository: {
+        type: 'git',
+        url: 'git+https://github.com/keicoin-org/carpet-markets.git',
+      },
+      readmePath: 'README.md',
+      readmeHeading: '# Carpet Markets',
+    },
   },
-] as const)
+] satisfies readonly ReferenceProject[]).map(frozenReference))
 
 export type ReferenceId = 'button' | 'world-of-wonder' | 'carpet-markets'
 

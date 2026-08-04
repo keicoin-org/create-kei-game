@@ -111,7 +111,7 @@ describe('real prompt-free agent CLI', () => {
   test('--plan-only decides everything and touches nothing', async () => {
     const directory = workspace()
     const result = await run(directory, [
-      'Planned MMO', '--agent', '--json', '--plan-only', '--gameplay', GAMEPLAY, '--into', 'game',
+      'Planned MMO', '--agent', '--json', '--plan-only', '--dimension', 'auto', '--gameplay', GAMEPLAY, '--into', 'game',
     ])
     expect(result.status).toBe(0)
     const output = jsonLine(result)
@@ -123,6 +123,30 @@ describe('real prompt-free agent CLI', () => {
     expect(output.plan.constraints.length).toBeGreaterThan(0)
     // No provider was named and no credential was set, and neither was needed.
     expect(existsSync(join(directory, 'game'))).toBeFalse()
+  })
+
+  test('built agent flags and config both require dimension, and explicit auto remains valid', async () => {
+    const flags = await run(workspace(), [
+      'Planned MMO', '--agent', '--json', '--plan-only', '--gameplay', GAMEPLAY,
+    ])
+    expect(jsonLine(flags)).toMatchObject({
+      ok: false,
+      error: { code: 'missing_inputs', missing: ['dimension'] },
+    })
+
+    const config = await run(workspace(), ['--agent', '--json', '--plan-only', '--agent-config', '-'], {
+      input: JSON.stringify({ name: 'Planned MMO', gameplay: GAMEPLAY }),
+    })
+    expect(jsonLine(config)).toMatchObject({
+      ok: false,
+      error: { code: 'missing_inputs', missing: ['dimension'] },
+    })
+
+    const delegated = await run(workspace(), ['--agent', '--json', '--plan-only', '--agent-config', '-'], {
+      input: JSON.stringify({ name: 'Planned MMO', gameplay: GAMEPLAY, dimension: 'auto' }),
+    })
+    expect(delegated.status).toBe(0)
+    expect(jsonLine(delegated)).toMatchObject({ ok: true, plan: { intent: { dimension: 'auto' } } })
   })
 
   test('reads config from a file and explicit flags replace it field by field', async () => {
@@ -158,7 +182,7 @@ describe('real prompt-free agent CLI', () => {
   test('reads bounded config from stdin without asking anything', async () => {
     const directory = workspace()
     const input = JSON.stringify({
-      name: 'Stdin MMO', gameplay: GAMEPLAY, into: 'stdin-mmo', provider: 'openai',
+      name: 'Stdin MMO', dimension: '2d', gameplay: GAMEPLAY, into: 'stdin-mmo', provider: 'openai',
       model: 'stdin-model', apiKeyEnv: 'TEST_MODEL_KEY', launch: false,
     })
     const result = await run(directory, ['--agent', '--json', '--agent-config', '-'], {
@@ -177,7 +201,7 @@ describe('real prompt-free agent CLI', () => {
       error: {
         code: 'missing_inputs',
         message: 'Agent mode is missing required inputs.',
-        missing: ['name', 'gameplay', 'provider', 'model', 'apiKeyEnv'],
+        missing: ['name', 'gameplay', 'dimension', 'provider', 'model', 'apiKeyEnv'],
       },
     })
   })
@@ -193,6 +217,43 @@ describe('real prompt-free agent CLI', () => {
     })
   })
 
+  test('every retired CLI spelling preserves its stable field and fixed safe prose', async () => {
+    const cases = [
+      { field: 'source', args: ['--source', 'blank'], phrase: '--source is gone' },
+      { field: 'source', args: ['--source=blank'], phrase: '--source is gone' },
+      { field: 'template', args: ['--template', 'button'], phrase: '--template is gone' },
+      { field: 'template', args: ['--template=button'], phrase: '--template is gone' },
+      { field: 'from', args: ['--from', 'private-value'], phrase: '--from is gone' },
+      { field: 'from', args: ['--from=private-value'], phrase: '--from is gone' },
+    ] as const
+    for (const current of cases) {
+      const result = await run(workspace(), ['g', '--agent', '--json', ...current.args])
+      expect(result.status).toBe(1)
+      const output = jsonLine(result)
+      expect(output).toMatchObject({
+        ok: false,
+        error: { code: 'retired_field', field: current.field },
+      })
+      expect(output.error.message).toContain(current.phrase)
+      expect(result.stdout).not.toContain('private-value')
+    }
+  })
+
+  test('other HarnessError parse paths stay generic and never reflect argv', async () => {
+    const reflected = 'credential-looking-private-argument'
+    const result = await run(workspace(), ['g', '--agent', '--json', `--${reflected}`])
+    expect(result.status).toBe(1)
+    expect(jsonLine(result)).toEqual({
+      ok: false,
+      error: {
+        code: 'invalid_arguments',
+        message: 'Arguments or project preparation are not valid.',
+      },
+    })
+    expect(result.stdout).not.toContain(reflected)
+    expect(result.stderr).not.toContain(reflected)
+  })
+
   test('redacts secret configs, missing env, malformed and oversized stdin', async () => {
     const secretResult = await run(workspace(), ['--agent', '--json', '--agent-config', '-'], {
       input: JSON.stringify({ apiKey: secret }),
@@ -202,7 +263,7 @@ describe('real prompt-free agent CLI', () => {
     expect(secretResult.stdout).not.toContain(secret)
 
     const missingEnv = await run(workspace(), [
-      'g', '--agent', '--json', '--gameplay', GAMEPLAY, '--provider', 'openai', '--model', 'm',
+      'g', '--agent', '--json', '--dimension', '3d', '--gameplay', GAMEPLAY, '--provider', 'openai', '--model', 'm',
       '--api-key-env', 'DEFINITELY_MISSING_KEY',
     ])
     expect(jsonLine(missingEnv)).toEqual({
@@ -216,7 +277,7 @@ describe('real prompt-free agent CLI', () => {
     expect(missingEnv.stdout).not.toContain('DEFINITELY_MISSING_KEY')
 
     const rawLookingEnv = await run(workspace(), [
-      'g', '--agent', '--json', '--gameplay', GAMEPLAY, '--provider', 'openai', '--model', 'm',
+      'g', '--agent', '--json', '--dimension', '3d', '--gameplay', GAMEPLAY, '--provider', 'openai', '--model', 'm',
       '--api-key-env', 'ThisLooksLikeRawCredentialABC123',
     ])
     expect(jsonLine(rawLookingEnv)).toEqual({

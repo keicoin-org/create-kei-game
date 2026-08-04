@@ -7,7 +7,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type { GitOptions, GitResult, GitRunner, SourceFs, SourcePath } from './source.js'
@@ -44,6 +44,33 @@ export const nodeFs: SourceFs = {
 
   async mkdir(directory) {
     await mkdir(directory, { recursive: true })
+  },
+
+  async readTextFile(file, maxBytes) {
+    let handle
+    try {
+      handle = await open(file, 'r')
+    } catch (error) {
+      if (absent(error)) return { kind: 'missing' }
+      throw error
+    }
+    try {
+      const bytes = Buffer.alloc(maxBytes + 1)
+      let offset = 0
+      while (offset < bytes.byteLength) {
+        const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset)
+        if (bytesRead === 0) break
+        offset += bytesRead
+      }
+      if (offset > maxBytes) return { kind: 'too_large' }
+      try {
+        return { kind: 'text', contents: new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, offset)) }
+      } catch {
+        return { kind: 'invalid_utf8' }
+      }
+    } finally {
+      await handle.close()
+    }
   },
 
   async writeFile(file, contents) {

@@ -178,8 +178,12 @@ Other files are left in place and nothing is deleted.
 
 When the planner clones a reference instead, the clone arrives with
 `kei-mmo/PLAN.md` and `kei-mmo/plan.json` written into it — including the reason
-that reference was chosen and the known cost of starting there. A clone still
-refuses a nonempty destination, even with `--force`.
+that reference was chosen and the known cost of starting there. First, the
+declared package name, repository metadata (or declared absence), and first
+README heading must match exactly; package name and heading are rewritten to
+the requested project, stale reference repository metadata and `origin` are
+removed, and any drift fails closed. A clone still refuses a nonempty
+destination, even with `--force`.
 
 ## Plan and scaffold without a provider
 

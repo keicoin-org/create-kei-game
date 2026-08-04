@@ -60,9 +60,17 @@ describe('parseArgs', () => {
       ['--source', 'blank'],
       ['--source=template'],
       ['--template', 'button'],
+      ['--template=button'],
       ['--from', 'https://github.com/a/b'],
+      ['--from=https://github.com/a/b'],
     ]) {
-      expect(() => parseArgs(argv)).toThrow(HarnessError)
+      try {
+        parseArgs(argv)
+        throw new Error('expected retired flag refusal')
+      } catch (error) {
+        expect(error).toBeInstanceOf(HarnessError)
+        expect(error).toMatchObject({ code: 'retired_field', details: { field: argv[0]!.slice(2).split('=')[0] } })
+      }
     }
     expect(() => parseArgs(['--source', 'blank'])).toThrow(/harness decides/)
     expect(() => parseArgs(['--template', 'button'])).toThrow(/chosen by the planner/)

@@ -82,6 +82,19 @@ describe('nodeFs', () => {
     await nodeFs.writeFile(file, 'second — ok')
     expect(await readFile(file, 'utf8')).toBe('second — ok')
   })
+
+  test('readTextFile bounds allocation and distinguishes invalid inputs', async () => {
+    const directory = join(root, 'bounded-read')
+    const file = join(directory, 'file')
+    await nodeFs.mkdir(directory)
+    expect(await nodeFs.readTextFile(file, 4)).toEqual({ kind: 'missing' })
+    await writeFile(file, Buffer.from('hello'))
+    expect(await nodeFs.readTextFile(file, 4)).toEqual({ kind: 'too_large' })
+    await writeFile(file, new Uint8Array([0xc3, 0x28]))
+    expect(await nodeFs.readTextFile(file, 4)).toEqual({ kind: 'invalid_utf8' })
+    await writeFile(file, Buffer.from('okay'))
+    expect(await nodeFs.readTextFile(file, 4)).toEqual({ kind: 'text', contents: 'okay' })
+  })
 })
 
 describe('nodePath', () => {
@@ -205,6 +218,48 @@ describe('the whole seam, wired up', () => {
     expect(forced.created).toBe(true)
     expect(await readFile(join(base, 'taken', 'mine.txt'), 'utf8')).toBe('mine')
   })
+
+  test('a real local git clone is detached and adopted under the requested identity', async () => {
+    const origin = join(root, 'adoption-origin')
+    const base = join(root, 'adoption-destination')
+    await nodeFs.mkdir(origin)
+    await nodeFs.writeFile(join(origin, 'package.json'), '{\n  "name": "button",\n  "private": true\n}\n')
+    await nodeFs.writeFile(join(origin, 'README.md'), '# Button\n\nReference body.\n')
+
+    for (const args of [
+      ['init'],
+      ['add', 'package.json', 'README.md'],
+      ['-c', 'user.name=Kei Test', '-c', 'user.email=kei-test@example.invalid', 'commit', '-m', 'fixture'],
+    ]) {
+      expect((await nodeGit('git', args, { cwd: origin, shell: false })).code).toBe(0)
+    }
+
+    const deps: SourceDeps = {
+      fs: nodeFs,
+      path: nodePath,
+      git: (command, args, options) => {
+        if (args[0] !== 'clone') return nodeGit(command, args, options)
+        const local = [...args]
+        local[local.length - 2] = origin
+        return nodeGit(command, local, options)
+      },
+    }
+    const prepared = await prepareSource({
+      project: { slug: 'harbour-realm', title: 'Harbour Realm' },
+      selection: { kind: 'template', template: 'button' },
+      baseDirectory: base,
+      plan: SCAFFOLD_PLAN,
+    }, deps)
+
+    expect(prepared.written).toEqual(['package.json', 'README.md', PLAN_JSON_PATH, PLAN_MARKDOWN_PATH])
+    expect(JSON.parse(await readFile(join(prepared.directory, 'package.json'), 'utf8'))).toEqual({
+      name: 'harbour-realm',
+      private: true,
+    })
+    expect((await readFile(join(prepared.directory, 'README.md'), 'utf8')).split(/\r?\n/)[0]).toBe('# Harbour Realm')
+    expect((await nodeGit('git', ['remote', 'get-url', 'origin'], { cwd: prepared.directory, shell: false })).code).not.toBe(0)
+    expect((await nodeGit('git', ['log', '-1', '--format=%s'], { cwd: prepared.directory, shell: false })).code).toBe(0)
+  }, 30_000)
 
   test('a failing clone becomes a sentence, with git’s own stderr in it', async () => {
     const base = join(root, 'clone-failure')
