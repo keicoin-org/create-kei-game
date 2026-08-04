@@ -173,7 +173,7 @@ salvage-run/
 │   ├── PLAN.md
 │   ├── plan.json
 │   ├── polish/                   # both dimensions; contract/check, assets pending
-│   └── content/                  # 3D plans only
+│   └── content/                  # source/admission records; 3D pipeline files when selected
 │       ├── manifest.json         # every asset as a versioned, admitted record
 │       ├── pipelines.json        # the workflow records and generator statuses
 │       ├── check.mjs             # the project's own admission gate (plain node)
@@ -208,10 +208,11 @@ path for browser and headless clients. `bun run headless -- <socket-url>` opens
 two server-assigned players, moves each once, proves each observes the other,
 and proves stale and authority-forging messages do not mutate the world.
 
-Both dimensions also receive a project-owned version-1 first-encounter contract
-under `kei-mmo/polish/`: semantic interact/strike timings, effect and cue maps,
-low/medium/high quality profiles, exact asset requirements, and a strict source
-registry. No licensed production asset has been selected in this slice, so
+Both dimensions also receive a project-owned version-1 first-encounter contract:
+`kei-mmo/polish/` owns semantic interact/strike timings, effect and cue maps,
+low/medium/high quality profiles, and exact asset requirements; the canonical
+source registry is `kei-mmo/content/sources.json`. No licensed production asset
+has been selected in this slice, so
 `bun run polish:check` deliberately exits nonzero with
 `polish_assets_pending`. The construction renderer does not consume the recipe,
 and `polish-2d` / `polish-3d` remain planned. See

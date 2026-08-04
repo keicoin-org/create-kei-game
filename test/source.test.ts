@@ -188,6 +188,10 @@ describe('scaffolded source', () => {
     expect(written.planVersion).toBe(2)
     expect(written.intent.name).toBe(SCAFFOLD_PLAN.intent.name)
     expect(fs.writes.get(`/work/my-game/${PLAN_MARKDOWN_PATH}`)).toContain('## Capability packets')
+    const generatedReadme = fs.writes.get('/work/my-game/README.md')!
+    expect(generatedReadme).toContain('canonical source registry is')
+    expect(generatedReadme).toContain('`kei-mmo/content/sources.json`')
+    expect(generatedReadme).not.toContain('source registry live under `kei-mmo/polish/`')
     expect(calls).toEqual([])
   })
 

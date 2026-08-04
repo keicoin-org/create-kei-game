@@ -256,10 +256,11 @@ settlement path. The mock provisioner is a separate test fixture; production
 provisioning accepts an injected issuer context and contains no seed.
 
 The project also owns the version-1 contract for a future recordable first
-encounter. Its recipe, semantic action/effect timelines, quality tiers, asset
-requirements, and source registry live under \`kei-mmo/polish/\`. No production
-asset is admitted in this contract-only slice, and the primitive construction
-renderer is not wired to the recipe. Consequently \`bun run polish:check\`
+encounter. Its recipe, semantic action/effect timelines, quality tiers, and asset
+requirements live under \`kei-mmo/polish/\`; the canonical source registry is
+\`kei-mmo/content/sources.json\`. No production asset is admitted in this
+contract-only slice, and the primitive construction renderer is not wired to
+the recipe. Consequently \`bun run polish:check\`
 deliberately exits nonzero with \`polish_assets_pending\`; this is not criterion 9.
 
 \`src/server/persistence.ts\` stores only
