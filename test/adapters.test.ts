@@ -164,6 +164,8 @@ describe('the whole seam, wired up', () => {
       'src/economy/definitions.ts',
       'src/economy/player-trade.ts',
       'src/economy/provision.ts',
+      'src/client/restart-proof.ts',
+      'src/server/persistence.ts',
       'src/server/main.ts',
       'src/server/dev-server.mjs',
       'src/shared/simulation.ts',

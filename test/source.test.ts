@@ -158,7 +158,9 @@ describe('scaffolded source', () => {
         'src/shared/protocol.ts',
         'src/client/connection.ts',
         'src/client/headless.ts',
+        'src/client/restart-proof.ts',
         'src/server/main.ts',
+        'src/server/persistence.ts',
         'src/server/dev-server.mjs',
         'src/economy/definitions.ts',
         'src/economy/provision.ts',
@@ -198,7 +200,7 @@ describe('scaffolded source', () => {
     )
     expect(result.created).toBe(true)
     expect(forced.fs.entries.get('/work/my-game')).toEqual(['notes.txt'])
-    expect(forced.fs.writes.size).toBe(22)
+    expect(forced.fs.writes.size).toBe(24)
   })
 
   test('refuses to treat a file as a destination, including under force', async () => {

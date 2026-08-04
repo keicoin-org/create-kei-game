@@ -148,9 +148,12 @@ semantic name, blends groups by weight, and instantiates rigged characters from
 an `AssetContainer` so skeletons are not accidentally shared. The networking
 packet names the fixed-tick accumulator, exact versioned messages, server-assigned
 identity, sequence-numbered direction input, whole-world construction snapshots,
-and the per-socket token bucket. Prediction/reconciliation, delta compression,
-interest management, persistence and a deployment-specific room owner remain
-separate work; the available packet does not promise them.
+and the per-socket token bucket. The generated baseline also uses a protocol-v2
+opaque resume capability and a versioned \`bun:sqlite\` WAL store for only
+position and minimal server-authored XP/level; its restart proof exercises three
+clean lifecycles and forged-state refusal. Prediction/reconciliation, delta
+compression, chunk streaming, account recovery, Kei balances/items/trade, and a
+deployment-specific room owner remain separate work.
 
 ### The economy packet is the published player-custodied API
 

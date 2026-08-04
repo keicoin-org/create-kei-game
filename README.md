@@ -189,8 +189,10 @@ salvage-run/
     ├── economy/definitions.ts     # exact currency and item declarations
     ├── economy/provision.ts       # separate injected issuer provisioning
     ├── economy/player-trade.ts    # seller offer + buyer exact acceptance
+    ├── client/restart-proof.ts    # three-lifecycle durability/forgery proof
     ├── server/dev-server.mjs      # loopback WebSocket + static server
     ├── server/main.ts             # authoritative fixed-tick shard
+    ├── server/persistence.ts      # versioned bun:sqlite character store
     ├── shared/protocol.ts         # exact versioned messages and refusals
     ├── shared/simulation.ts
     └── shared/cutscene.ts        # the player, with the cut-scenes; imports nothing
@@ -205,16 +207,23 @@ path for browser and headless clients. `bun run headless -- <socket-url>` opens
 two server-assigned players, moves each once, proves each observes the other,
 and proves stale and authority-forging messages do not mutate the world.
 
-That closes the generated-project shape of SPEC §11.3 criteria 3, 4, and 6: a
-real client connects, two clients see each other move, and a private mock chain
-proves a player-custodied open-transfer currency with a one-way issuer-desk
-promise, an item, mismatch refusal, and atomic trade. Open transfer permits the
-player trade; one-way means the issuer may sell GOLD but does not promise to buy
-it back. The game server has no Kei account or economic message path. It does **not**
-close persistence/forged-state survival across restart (5), socket-to-wallet
-proof of control, harness deletion as an end-to-end product gate (8), or
-presentation polish (9). Deleting this harness does not affect the generated
-project's dependencies or runtime.
+`bun run restart-proof` creates a temporary WAL database, moves and progresses a
+server-assigned character, cleanly restarts the server twice, resumes the exact
+identity and state, and proves malformed/random/duplicate tokens and forged
+position/progression/economic fields cannot alter memory or disk. Resume tokens
+remain in browser localStorage or headless memory; SQLite contains only their
+hashes, position, XP, level, and update time.
+
+That closes the generated-project shape of SPEC §11.3 criteria 3–6: a real
+client connects, two clients see each other move, and server-authored character
+position/progression survive restart. A separate private mock chain proves a
+player-custodied open-transfer currency with a one-way issuer-desk promise, an
+item, mismatch refusal, and atomic trade. The game server has no Kei import,
+account, wallet, balance, item, or settlement path; SQLite has no economic state.
+It does **not** close socket-to-wallet proof of control, the broader end-to-end
+product gate (8), or presentation polish (9). There is no account recovery,
+chunk streaming, or multi-writer store. Deleting this harness does not affect
+the generated project's dependencies, runtime, restart proof, or economy proof.
 
 When the planner clones a reference project instead, the clone arrives with
 those same two plan files written into it, including the reason it was chosen

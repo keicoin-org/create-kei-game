@@ -174,7 +174,7 @@ async function expectCrossOriginRefused(directory: string, socketUrl: string): P
   }
   const response = JSON.parse(probe.stdout) as { readonly code?: unknown; readonly message?: unknown }
   expect(response.code).toBe(4003)
-  expect(response.message).toEqual({ v: 1, type: 'refused', code: 'origin_refused' })
+  expect(response.message).toEqual({ v: 2, type: 'refused', code: 'origin_refused' })
 }
 
 async function startAndProbe(directory: string): Promise<void> {
@@ -231,7 +231,7 @@ async function startAndProbe(directory: string): Promise<void> {
               typeof record.socketUrl === 'string' &&
               typeof record.host === 'string' &&
               typeof record.port === 'number' &&
-              record.protocol === 1
+              record.protocol === 2
             ) {
               clearTimeout(timeout)
               resolve({
@@ -266,7 +266,7 @@ async function startAndProbe(directory: string): Promise<void> {
 
     expect(ready.host).toBe('127.0.0.1')
     expect(ready.port).toBeGreaterThan(0)
-    expect(ready.protocol).toBe(1)
+    expect(ready.protocol).toBe(2)
     expect(new URL(ready.url).hostname).toBe('127.0.0.1')
     expect(new URL(ready.socketUrl).hostname).toBe('127.0.0.1')
     bound = { host: ready.host, port: ready.port }
@@ -304,11 +304,11 @@ async function startAndProbe(directory: string): Promise<void> {
         root: 'dist',
         entry: 'client/main.js',
         socketPath: '/game',
-        protocol: 1,
+        protocol: 2,
       })
 
       const wrongProtocol = new URL(ready.socketUrl)
-      wrongProtocol.searchParams.set('protocol', '2')
+      wrongProtocol.searchParams.set('protocol', '1')
       const mismatch = await new Promise<{ readonly message: Record<string, unknown>; readonly closeCode: number }>(
         (resolve, reject) => {
           const socket = new WebSocket(wrongProtocol)
@@ -331,7 +331,7 @@ async function startAndProbe(directory: string): Promise<void> {
           })
         },
       )
-      expect(mismatch.message).toEqual({ v: 1, type: 'refused', code: 'protocol_mismatch' })
+      expect(mismatch.message).toEqual({ v: 2, type: 'refused', code: 'protocol_mismatch' })
       expect(mismatch.closeCode).toBe(4001)
 
       await expectCrossOriginRefused(directory, ready.socketUrl)
@@ -344,7 +344,7 @@ async function startAndProbe(directory: string): Promise<void> {
         .find((line) => line.event === 'shared_encounter')
       expect(evidence).toMatchObject({
         event: 'shared_encounter',
-        protocol: 1,
+        protocol: 2,
         staleInputRefused: true,
         authorityViolationRefused: true,
         rateLimited: true,
@@ -428,8 +428,10 @@ describe('generated projects install, build, and start without the harness', () 
         'src/economy/definitions.ts',
         'src/economy/player-trade.ts',
         'src/economy/provision.ts',
+        'src/client/restart-proof.ts',
         'src/server/dev-server.mjs',
         'src/server/main.ts',
+        'src/server/persistence.ts',
         'src/shared/simulation.ts',
         'src/shared/protocol.ts',
         'test/economy.test.ts',
@@ -445,6 +447,19 @@ describe('generated projects install, build, and start without the harness', () 
         expect(ownedSource).toContain('const firstX = Math.floor')
         expect(ownedSource).not.toContain('@babylonjs/core')
       }
+
+      const restartProof = await run(directory, 'restart_proof', ['run', 'restart-proof'])
+      const restartEvidence = restartProof
+        .split(/\r?\n/)
+        .filter((line) => line.trim().startsWith('{'))
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .find((line) => line.event === 'restart_proof')
+      expect(restartEvidence).toMatchObject({
+        event: 'restart_proof', protocol: 2, restoredExactly: true,
+        progressionAuthored: true, randomTokenRefused: true, malformedTokenRefused: true,
+        duplicateTokenRefused: true, forgeryRefused: true, forgeryNotPersisted: true,
+        plaintextTokenAbsent: true,
+      })
 
       const serverRuns = process.platform === 'win32' ? 10 : 1
       for (let run = 0; run < serverRuns; run += 1) await startAndProbe(directory)

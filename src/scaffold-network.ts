@@ -4,28 +4,32 @@ import type { WorkspaceFile } from './source.js'
 
 export const CONNECTION_PATH = 'src/client/connection.ts'
 export const HEADLESS_CLIENT_PATH = 'src/client/headless.ts'
+export const RESTART_PROOF_PATH = 'src/client/restart-proof.ts'
 export const SERVER_PATH = 'src/server/main.ts'
+export const PERSISTENCE_PATH = 'src/server/persistence.ts'
 export const PROTOCOL_PATH = 'src/shared/protocol.ts'
 export const DEV_SERVER_PATH = 'src/server/dev-server.mjs'
 export const HEADLESS_CLIENT_BUNDLE = 'headless/headless.js'
 export const DEV_SERVICE = 'kei-game-server'
-export const GAME_PROTOCOL_VERSION = 1
+export const GAME_PROTOCOL_VERSION = 2
 export const GAME_SOCKET_PATH = '/game'
 export const WEBSOCKET_PACKAGE = 'ws'
 export const WEBSOCKET_RANGE = '^8.18.3'
 
-export function networkProjectFiles(): readonly WorkspaceFile[] {
+export function networkProjectFiles(projectSlug: string): readonly WorkspaceFile[] {
   return Object.freeze([
     { path: PROTOCOL_PATH, contents: protocolSource() },
-    { path: CONNECTION_PATH, contents: connectionSource() },
+    { path: CONNECTION_PATH, contents: connectionSource(projectSlug) },
     { path: HEADLESS_CLIENT_PATH, contents: headlessSource() },
+    { path: RESTART_PROOF_PATH, contents: restartProofSource() },
     { path: SERVER_PATH, contents: serverSource() },
+    { path: PERSISTENCE_PATH, contents: persistenceSource() },
     { path: DEV_SERVER_PATH, contents: devServerSource() },
   ])
 }
 
 function protocolSource(): string {
-  return `import type { PlayerInput, WorldState } from './simulation.js'
+  return `import { levelForXp, type PlayerInput, type WorldState } from './simulation.js'
 
 export const PROTOCOL_VERSION = ${GAME_PROTOCOL_VERSION} as const
 export const GAME_PATH = '${GAME_SOCKET_PATH}'
@@ -34,6 +38,7 @@ export const MAX_MESSAGE_BYTES = 64 * 1024
 export interface HelloMessage {
   readonly v: typeof PROTOCOL_VERSION
   readonly type: 'hello'
+  readonly resumeToken?: string
 }
 
 export interface InputMessage extends PlayerInput {
@@ -47,6 +52,8 @@ export interface WelcomeMessage {
   readonly v: typeof PROTOCOL_VERSION
   readonly type: 'welcome'
   readonly playerId: string
+  /** Present only for a newly created character. Resume returns it once. */
+  readonly resumeToken?: string
   readonly snapshot: WorldState
 }
 
@@ -66,6 +73,8 @@ export type RefusalCode =
   | 'rate_limited'
   | 'origin_refused'
   | 'server_busy'
+  | 'resume_refused'
+  | 'resume_in_use'
 
 export interface RefusedMessage {
   readonly v: typeof PROTOCOL_VERSION
@@ -79,13 +88,16 @@ export type DecodeResult =
   | { readonly ok: false; readonly code: RefusalCode }
 
 const AUTHORITY_KEYS = new Set([
-  'position', 'x', 'y', 'z', 'tick', 'players', 'balance', 'inventory', 'currency',
+  'position', 'x', 'y', 'z', 'tick', 'players', 'xp', 'level', 'progression',
+  'balance', 'balances', 'currency', 'inventory', 'items', 'seed', 'walletSeed',
   'item', 'mint', 'transfer', 'settlement', 'settlementResult', 'playerId', 'state',
 ])
 const REFUSAL_CODES = new Set<RefusalCode>([
   'protocol_mismatch', 'invalid_message', 'authority_violation',
   'stale_input', 'session_order', 'rate_limited', 'origin_refused', 'server_busy',
+  'resume_refused', 'resume_in_use',
 ])
+const RESUME_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -120,8 +132,11 @@ export function decodeClientMessage(raw: string): DecodeResult {
   }
   if (value.v !== PROTOCOL_VERSION) return { ok: false, code: 'protocol_mismatch' }
   if (value.type === 'hello') {
-    return exact(value, ['v', 'type'])
-      ? { ok: true, message: { v: PROTOCOL_VERSION, type: 'hello' } }
+    if (exact(value, ['v', 'type'])) {
+      return { ok: true, message: { v: PROTOCOL_VERSION, type: 'hello' } }
+    }
+    return exact(value, ['v', 'type', 'resumeToken']) && typeof value.resumeToken === 'string'
+      ? { ok: true, message: { v: PROTOCOL_VERSION, type: 'hello', resumeToken: value.resumeToken } }
       : { ok: false, code: 'invalid_message' }
   }
   if (value.type === 'input') {
@@ -134,7 +149,8 @@ export function decodeClientMessage(raw: string): DecodeResult {
       !finiteAxis(value.moveX) ||
       !finiteAxis(value.moveY) ||
       !Number.isSafeInteger(value.buttons) ||
-      (value.buttons as number) < 0
+      (value.buttons as number) < 0 ||
+      (value.buttons as number) > 1
     ) {
       return { ok: false, code: 'invalid_message' }
     }
@@ -167,10 +183,13 @@ function worldOf(value: unknown): WorldState | null {
     const position = record(player)
     if (
       position === null ||
-      !exact(position, ['x', 'y', 'z']) ||
+      !exact(position, ['x', 'y', 'z', 'xp', 'level']) ||
       typeof position.x !== 'number' || !Number.isFinite(position.x) ||
       typeof position.y !== 'number' || !Number.isFinite(position.y) ||
-      typeof position.z !== 'number' || !Number.isFinite(position.z)
+      typeof position.z !== 'number' || !Number.isFinite(position.z) ||
+      !Number.isSafeInteger(position.xp) || (position.xp as number) < 0 ||
+      !Number.isSafeInteger(position.level) ||
+      position.level !== levelForXp(position.xp as number)
     ) return null
   }
   return candidate as unknown as WorldState
@@ -192,9 +211,15 @@ export function serverMessageOf(raw: string): ServerMessage | null {
     REFUSAL_CODES.has(value.code as RefusalCode)
   ) return value as unknown as RefusedMessage
   if (value.type === 'welcome' && typeof value.playerId === 'string') {
-    if (!exact(value, ['v', 'type', 'playerId', 'snapshot'])) return null
+    const resumed = exact(value, ['v', 'type', 'playerId', 'snapshot'])
+    const created = exact(value, ['v', 'type', 'playerId', 'resumeToken', 'snapshot']) &&
+      typeof value.resumeToken === 'string' && RESUME_TOKEN_PATTERN.test(value.resumeToken)
+    if (!resumed && !created) return null
     const snapshot = worldOf(value.snapshot)
-    return snapshot === null ? null : { v: PROTOCOL_VERSION, type: 'welcome', playerId: value.playerId, snapshot }
+    if (snapshot === null) return null
+    return created
+      ? { v: PROTOCOL_VERSION, type: 'welcome', playerId: value.playerId, resumeToken: value.resumeToken as string, snapshot }
+      : { v: PROTOCOL_VERSION, type: 'welcome', playerId: value.playerId, snapshot }
   }
   if (value.type === 'snapshot' && Number.isSafeInteger(value.ackSeq)) {
     if (!exact(value, ['v', 'type', 'ackSeq', 'world'])) return null
@@ -210,7 +235,7 @@ export function refused(code: RefusalCode): RefusedMessage {
 `
 }
 
-function connectionSource(): string {
+function connectionSource(projectSlug: string): string {
   return `import {
   GAME_PATH,
   PROTOCOL_VERSION,
@@ -219,6 +244,8 @@ function connectionSource(): string {
   type SnapshotMessage,
 } from '../shared/protocol.js'
 import type { PlayerInput, WorldState } from '../shared/simulation.js'
+
+export const RESUME_STORAGE_KEY = ${JSON.stringify(`kei-game:${projectSlug}:resume-token`)}
 
 export class GameConnectionError extends Error {
   constructor(readonly code: string, message: string) {
@@ -229,6 +256,8 @@ export class GameConnectionError extends Error {
 
 export interface GameConnection {
   readonly playerId: string
+  /** The opaque server-issued capability. Keep it private; never log it. */
+  readonly resumeToken: string
   readonly world: () => WorldState
   readonly sendInput: (input: PlayerInput) => void
   readonly sendRaw: (value: unknown) => void
@@ -247,7 +276,7 @@ function socketUrl(value: string): string {
   return url.href
 }
 
-export function connectGame(value: string, timeoutMs = 5_000): Promise<GameConnection> {
+export function connectGame(value: string, resumeToken?: string, timeoutMs = 5_000): Promise<GameConnection> {
   return new Promise<GameConnection>((resolve, reject) => {
     const socket = new WebSocket(socketUrl(value))
     let current: WorldState | null = null
@@ -278,23 +307,34 @@ export function connectGame(value: string, timeoutMs = 5_000): Promise<GameConne
     }
 
     socket.addEventListener('open', () => {
-      socket.send(JSON.stringify({ v: PROTOCOL_VERSION, type: 'hello' }))
+      socket.send(JSON.stringify(resumeToken === undefined
+        ? { v: PROTOCOL_VERSION, type: 'hello' }
+        : { v: PROTOCOL_VERSION, type: 'hello', resumeToken }))
     })
     socket.addEventListener('message', (event) => {
       const message = serverMessageOf(String(event.data))
       if (message === null) {
-        const error = new GameConnectionError('invalid_server_message', 'The game server sent a message outside protocol v1.')
+        const error = new GameConnectionError('invalid_server_message', 'The game server sent a message outside protocol v2.')
         if (!settled) reject(error)
         failWaiters(error)
         socket.close()
         return
       }
       if (message.type === 'welcome' && !settled) {
+        const activeToken = message.resumeToken ?? resumeToken
+        if (activeToken === undefined) {
+          const error = new GameConnectionError('missing_resume_token', 'The game server did not return a token for a new character.')
+          reject(error)
+          failWaiters(error)
+          socket.close()
+          return
+        }
         settled = true
         clearTimeout(opening)
         current = message.snapshot
         const connection: GameConnection = {
           playerId: message.playerId,
+          resumeToken: activeToken,
           world: () => current as WorldState,
           sendInput: (input) => socket.send(JSON.stringify({ v: PROTOCOL_VERSION, type: 'input', ...input })),
           sendRaw: (raw) => socket.send(JSON.stringify(raw)),
@@ -340,6 +380,10 @@ export function connectGame(value: string, timeoutMs = 5_000): Promise<GameConne
         return
       }
       if (message.type === 'refused') {
+        if (!settled) {
+          clearTimeout(opening)
+          reject(new GameConnectionError(message.code, 'The game server refused this connection.'))
+        }
         for (const waiter of [...refusalWaiters]) {
           if (waiter.code !== message.code) continue
           clearTimeout(waiter.timer)
@@ -358,6 +402,256 @@ export function connectGame(value: string, timeoutMs = 5_000): Promise<GameConne
       if (!settled) reject(new GameConnectionError('connect_failed', 'The game server connection failed.'))
     })
   })
+}
+`
+}
+
+function restartProofSource(): string {
+  return `import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Database } from 'bun:sqlite'
+
+import { connectGame, GameConnectionError, type GameConnection } from './connection.js'
+
+const root = mkdtempSync(join(tmpdir(), 'kei-restart-proof-'))
+const databasePath = join(root, 'world.sqlite')
+
+interface RunningServer {
+  readonly child: ChildProcessWithoutNullStreams
+  readonly url: string
+  readonly socketUrl: string
+}
+
+interface ExitResult {
+  readonly code: number | null
+  readonly signal: NodeJS.Signals | null
+}
+
+async function waitForProcessExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<ExitResult | null> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return { code: child.exitCode, signal: child.signalCode }
+  }
+  return await new Promise((resolve) => {
+    let settled = false
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const finish = (result: ExitResult | null): void => {
+      if (settled) return
+      settled = true
+      if (timeout !== undefined) clearTimeout(timeout)
+      child.off('exit', onExit)
+      resolve(result)
+    }
+    const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      finish({ code, signal })
+    }
+    timeout = setTimeout(() => finish(null), timeoutMs)
+    child.once('exit', onExit)
+    // The process can exit between the fast-path check and listener
+    // registration. Recheck after subscribing and settle through the same
+    // idempotent path so a clean exit cannot become a false timeout.
+    if (child.exitCode !== null || child.signalCode !== null) {
+      finish({ code: child.exitCode, signal: child.signalCode })
+    }
+  })
+}
+
+async function terminateChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  try { child.kill('SIGTERM') } catch { /* It may have exited between checks. */ }
+  if (await waitForProcessExit(child, 5_000) !== null) return
+
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    const killed = spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+      encoding: 'utf8', timeout: 10_000, windowsHide: true,
+    })
+    if (killed.error !== undefined) throw new Error('restart proof taskkill failed: ' + killed.error.message)
+  } else {
+    try { child.kill('SIGKILL') } catch { /* It may have exited between checks. */ }
+  }
+  if (await waitForProcessExit(child, 5_000) === null) {
+    throw new Error('restart proof child did not exit after bounded termination')
+  }
+}
+
+function preservePrimary(primary: unknown, cleanup: unknown): unknown {
+  if (primary === null) return cleanup
+  if (primary instanceof Error) {
+    const cleanupMessage = cleanup instanceof Error ? cleanup.message : String(cleanup)
+    primary.message += ' (cleanup also failed: ' + cleanupMessage + ')'
+  }
+  return primary
+}
+
+async function startServer(): Promise<RunningServer> {
+  const child = spawn(process.execPath, ['src/server/dev-server.mjs'], {
+    cwd: process.cwd(), windowsHide: true,
+    env: { ...process.env, HOST: '127.0.0.1', PORT: '0', KEI_WORLD_DB: databasePath, NO_COLOR: '1' },
+  })
+  child.stdout.setEncoding('utf8')
+  child.stderr.setEncoding('utf8')
+  let stdout = ''
+  let stderr = ''
+  try {
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('restart proof server readiness timed out')), 45_000)
+      const inspect = (chunk: string): void => {
+        stdout += chunk
+        for (const line of stdout.split(/\\r?\\n/)) {
+          try {
+            const value = JSON.parse(line) as Record<string, unknown>
+            if (value.event === 'ready' && value.protocol === 2 && typeof value.url === 'string' && typeof value.socketUrl === 'string') {
+              clearTimeout(timeout)
+              resolve({ child, url: value.url, socketUrl: value.socketUrl })
+              return
+            }
+          } catch { /* Non-JSON output is not readiness. */ }
+        }
+      }
+      child.stdout.on('data', inspect)
+      child.stderr.on('data', (chunk: string) => { stderr += chunk })
+      child.once('exit', (code, signal) => {
+        clearTimeout(timeout)
+        reject(new Error('restart proof server exited before ready: ' + JSON.stringify({ code, signal, stderr })))
+      })
+    })
+  } catch (primary) {
+    try { await terminateChild(child) }
+    catch (cleanup) { throw preservePrimary(primary, cleanup) }
+    throw primary
+  }
+}
+
+async function stopServer(server: RunningServer): Promise<void> {
+  const response = await fetch(new URL('/__dev/stop', server.url), {
+    method: 'POST', signal: AbortSignal.timeout(10_000),
+  })
+  if (!response.ok) throw new Error('clean stop endpoint returned ' + response.status)
+  const exited = await waitForProcessExit(server.child, 10_000)
+  if (exited === null) throw new Error('clean server exit timed out')
+  if (exited.code !== 0) throw new Error('server exited ' + String(exited.code ?? exited.signal))
+}
+
+async function expectRefusal(action: Promise<unknown>, code: string): Promise<void> {
+  try {
+    await action
+  } catch (error) {
+    if (error instanceof GameConnectionError && error.code === code) return
+    throw error
+  }
+  throw new Error('expected refusal ' + code)
+}
+
+function exactCharacter(connection: GameConnection, expected: { readonly playerId: string; readonly x: number; readonly y: number; readonly z: number; readonly xp: number; readonly level: number }): void {
+  const player = connection.world().players[connection.playerId]
+  if (
+    connection.playerId !== expected.playerId || player === undefined ||
+    player.x !== expected.x || player.y !== expected.y || player.z !== expected.z ||
+    player.xp !== expected.xp || player.level !== expected.level
+  ) throw new Error('durable character did not restore exactly')
+}
+
+let server: RunningServer | null = null
+let failure: unknown = null
+let evidence: Record<string, unknown> | null = null
+try {
+  server = await startServer()
+  const first = await connectGame(server.socketUrl)
+  const second = await connectGame(server.socketUrl)
+  await second.waitForSnapshot((message) => message.world.players[first.playerId] !== undefined)
+  const initial = second.world().players[first.playerId]
+  if (initial === undefined) throw new Error('first character was not visible')
+  first.sendInput({ seq: 1, moveX: 1, moveY: 0, buttons: 0 })
+  await second.waitForSnapshot((message) => (message.world.players[first.playerId]?.x ?? initial.x) > initial.x)
+  first.sendInput({ seq: 2, moveX: 0, moveY: 0, buttons: 1 })
+  const progressed = await second.waitForSnapshot((message) => (message.world.players[first.playerId]?.xp ?? 0) > 0)
+  const authored = progressed.world.players[first.playerId]
+  if (authored === undefined) throw new Error('progressed character disappeared')
+  const expected = { playerId: first.playerId, ...authored }
+  const resumeToken = first.resumeToken
+  first.close()
+  second.close()
+  await stopServer(server)
+  server = null
+
+  server = await startServer()
+  const resumed = await connectGame(server.socketUrl, resumeToken)
+  exactCharacter(resumed, expected)
+  await expectRefusal(connectGame(server.socketUrl, resumeToken), 'resume_in_use')
+  await expectRefusal(connectGame(server.socketUrl, 'A'.repeat(43)), 'resume_refused')
+  await expectRefusal(connectGame(server.socketUrl, 'malformed'), 'resume_refused')
+
+  const beforeForgeryTick = resumed.world().tick
+  const refusal = resumed.waitForRefusal('authority_violation')
+  resumed.sendRaw({
+    v: 2, type: 'input', seq: 3, moveX: 0, moveY: 0, buttons: 0,
+    position: { x: 999, y: 999, z: 999 }, xp: 999999, level: 999,
+    progression: { xp: 999999 }, inventory: ['forged'], balance: 999999,
+  })
+  await refusal
+  const afterForgery = await resumed.waitForSnapshot((message) => message.world.tick > beforeForgeryTick)
+  const live = afterForgery.world.players[resumed.playerId]
+  if (live === undefined || live.x !== expected.x || live.y !== expected.y || live.z !== expected.z ||
+    live.xp !== expected.xp || live.level !== expected.level) {
+    throw new Error('forged state changed the live character')
+  }
+  resumed.close()
+  await stopServer(server)
+  server = null
+
+  server = await startServer()
+  const verified = await connectGame(server.socketUrl, resumeToken)
+  exactCharacter(verified, expected)
+
+  const database = new Database(databasePath, { readonly: true, strict: true })
+  const columnStatement = database.prepare('PRAGMA table_info(characters)')
+  const columns = columnStatement.all().map((row) => String((row as { name: unknown }).name))
+  columnStatement.finalize()
+  const forbidden = ['balance', 'currency', 'item', 'inventory', 'seed', 'resume_token']
+  if (columns.some((column) => forbidden.some((word) => column.toLowerCase().includes(word)))) {
+    throw new Error('world database contains a forbidden ownership column')
+  }
+  const countStatement = database.prepare('SELECT COUNT(*) AS count FROM characters')
+  const count = countStatement.get() as { count: number }
+  countStatement.finalize()
+  database.close(true)
+  if (count.count !== 2) throw new Error('refused resume attempts created durable characters')
+  const bytes = readFileSync(databasePath)
+  if (bytes.includes(Buffer.from(resumeToken, 'utf8'))) throw new Error('plaintext resume token reached SQLite')
+
+  verified.close()
+  await stopServer(server)
+  server = null
+  evidence = {
+    event: 'restart_proof', protocol: 2, playerId: expected.playerId,
+    restoredExactly: true, progressionAuthored: expected.xp > 0,
+    randomTokenRefused: true, malformedTokenRefused: true, duplicateTokenRefused: true,
+    forgeryRefused: true, forgeryNotPersisted: true, plaintextTokenAbsent: true,
+    durableCharacters: count.count,
+  }
+} catch (error) {
+  failure = error
+} finally {
+  let mayRemove = true
+  if (server !== null) {
+    try { await terminateChild(server.child) }
+    catch (cleanup) { failure = preservePrimary(failure, cleanup); mayRemove = false }
+  }
+  if (mayRemove) {
+    try { rmSync(root, { recursive: true, force: true }) }
+    catch (cleanup) { failure = preservePrimary(failure, cleanup) }
+  }
+}
+
+if (failure !== null) {
+  process.stderr.write(JSON.stringify({
+    event: 'error', code: failure instanceof GameConnectionError ? failure.code : 'restart_proof_failed',
+    message: failure instanceof Error ? failure.message : String(failure),
+  }) + '\\n')
+  process.exitCode = 1
+} else if (evidence !== null) {
+  process.stdout.write(JSON.stringify(evidence) + '\\n')
 }
 `
 }
@@ -407,7 +701,7 @@ try {
 
   const attacker = await connectGame(endpoint)
   const authorityRefusal = attacker.waitForRefusal('authority_violation')
-  attacker.sendRaw({ v: 1, type: 'teleport', position: { x: 999, y: 999, z: 999 } })
+  attacker.sendRaw({ v: 2, type: 'teleport', position: { x: 999, y: 999, z: 999 } })
   await authorityRefusal
   const afterAttack = await first.waitForSnapshot((message) => message.world.tick > stopped.world.tick)
   if (Object.values(afterAttack.world.players).some((player) => player.x === 999 || player.y === 999 || player.z === 999)) {
@@ -429,7 +723,7 @@ try {
 
   output({
     event: 'shared_encounter',
-    protocol: 1,
+    protocol: 2,
     players: [first.playerId, second.playerId],
     firstObservedBySecond: firstMoved.world.players[first.playerId],
     secondObservedByFirst: secondMoved.world.players[second.playerId],
@@ -449,6 +743,214 @@ try {
 `
 }
 
+function persistenceSource(): string {
+  return `import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { Database } from 'bun:sqlite'
+
+import { levelForXp, type PlayerState } from '../shared/simulation.js'
+
+export const WORLD_SCHEMA_VERSION = 1
+export const DEFAULT_WORLD_DB = '.kei-world/world.sqlite'
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/
+
+export interface CharacterRecord extends PlayerState {
+  readonly playerId: string
+  readonly updatedAt: number
+}
+
+export class PersistenceError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message)
+    this.name = 'PersistenceError'
+  }
+}
+
+/** Hash before lookup or storage. The plaintext token is never written to SQLite. */
+export function hashResumeToken(token: string): string | null {
+  if (!TOKEN_PATTERN.test(token)) return null
+  return createHash('sha256').update(token, 'utf8').digest('hex')
+}
+
+function rows(database: Database, sql: string): readonly unknown[] {
+  const statement = database.prepare(sql)
+  try { return statement.all() }
+  finally { statement.finalize() }
+}
+
+function row(database: Database, sql: string, binding?: string): unknown {
+  const statement = database.prepare(sql)
+  try { return binding === undefined ? statement.get() : statement.get(binding) }
+  finally { statement.finalize() }
+}
+
+function columnsOf(database: Database, table: string): readonly string[] {
+  return rows(database, 'PRAGMA table_info(' + table + ')')
+    .map((value) => String((value as { name: unknown }).name))
+}
+
+function exactColumns(database: Database, table: string, expected: readonly string[]): boolean {
+  const columns = columnsOf(database, table)
+  return columns.length === expected.length && columns.every((column, index) => column === expected[index])
+}
+
+function prepareSchema(database: Database): void {
+  const tables = rows(database,
+    \"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name\",
+  ).map((value) => String((value as { name: unknown }).name))
+
+  if (tables.length === 0) {
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      database.exec(\`CREATE TABLE world_metadata (
+        key TEXT PRIMARY KEY NOT NULL,
+        value TEXT NOT NULL
+      ) STRICT\`)
+      database.exec(\`CREATE TABLE characters (
+        player_id TEXT PRIMARY KEY NOT NULL,
+        resume_hash TEXT UNIQUE NOT NULL,
+        x REAL NOT NULL,
+        y REAL NOT NULL,
+        z REAL NOT NULL,
+        xp INTEGER NOT NULL CHECK (xp >= 0),
+        level INTEGER NOT NULL CHECK (level >= 1),
+        updated_at INTEGER NOT NULL
+      ) STRICT\`)
+      database.run('INSERT INTO world_metadata (key, value) VALUES (?, ?)', [
+        'schema_version', String(WORLD_SCHEMA_VERSION),
+      ])
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+    return
+  }
+
+  if (!tables.includes('world_metadata') || !tables.includes('characters')) {
+    throw new PersistenceError('schema_invalid', 'The world database is missing its versioned schema.')
+  }
+  const version = row(database, 'SELECT value FROM world_metadata WHERE key = ?', 'schema_version') as
+    | { value: unknown }
+    | null
+  if (version === null || version.value !== String(WORLD_SCHEMA_VERSION)) {
+    throw new PersistenceError('schema_version_unsupported', 'The world database schema version is not supported.')
+  }
+  if (
+    !exactColumns(database, 'world_metadata', ['key', 'value']) ||
+    !exactColumns(database, 'characters', ['player_id', 'resume_hash', 'x', 'y', 'z', 'xp', 'level', 'updated_at'])
+  ) {
+    throw new PersistenceError('schema_invalid', 'The world database schema does not match its declared version.')
+  }
+}
+
+function characterOf(row: unknown): CharacterRecord {
+  const value = row as {
+    player_id: string; x: number; y: number; z: number; xp: number; level: number; updated_at: number
+  }
+  if (!Number.isSafeInteger(value.xp) || value.xp < 0 || value.level !== levelForXp(value.xp)) {
+    throw new PersistenceError('character_invalid', 'A durable character has invalid progression.')
+  }
+  for (const axis of [value.x, value.y, value.z]) {
+    if (!Number.isFinite(axis)) throw new PersistenceError('character_invalid', 'A durable character has an invalid position.')
+  }
+  if (!Number.isSafeInteger(value.updated_at) || value.updated_at < 0) {
+    throw new PersistenceError('character_invalid', 'A durable character has an invalid update time.')
+  }
+  return {
+    playerId: value.player_id,
+    x: value.x,
+    y: value.y,
+    z: value.z,
+    xp: value.xp,
+    level: value.level,
+    updatedAt: value.updated_at,
+  }
+}
+
+export class CharacterStore {
+  readonly database: Database
+  #closed = false
+
+  constructor(readonly path = process.env.KEI_WORLD_DB ?? DEFAULT_WORLD_DB) {
+    mkdirSync(dirname(path), { recursive: true })
+    this.database = new Database(path, { create: true, strict: true })
+    this.database.exec('PRAGMA journal_mode = WAL')
+    this.database.exec('PRAGMA synchronous = FULL')
+    try {
+      prepareSchema(this.database)
+    } catch (error) {
+      this.database.close(true)
+      throw error
+    }
+  }
+
+  createCharacter(): { readonly character: CharacterRecord; readonly resumeToken: string } {
+    const resumeToken = randomBytes(32).toString('base64url')
+    const resumeHash = hashResumeToken(resumeToken)
+    if (resumeHash === null) throw new PersistenceError('token_generation_failed', 'Could not create a resume capability.')
+    const now = Date.now()
+    const character: CharacterRecord = {
+      playerId: randomUUID(), x: 0, y: 0, z: 0, xp: 0, level: levelForXp(0), updatedAt: now,
+    }
+    this.database.run(\`INSERT INTO characters
+      (player_id, resume_hash, x, y, z, xp, level, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)\`, [
+      character.playerId, resumeHash, character.x, character.y, character.z,
+      character.xp, character.level, character.updatedAt,
+    ])
+    return { character, resumeToken }
+  }
+
+  findByResumeToken(token: string): CharacterRecord | null {
+    const resumeHash = hashResumeToken(token)
+    if (resumeHash === null) return null
+    const found = row(this.database, \`SELECT player_id, x, y, z, xp, level, updated_at
+      FROM characters WHERE resume_hash = ?\`, resumeHash)
+    return found === null ? null : characterOf(found)
+  }
+
+  character(playerId: string): CharacterRecord | null {
+    const found = row(this.database, \`SELECT player_id, x, y, z, xp, level, updated_at
+      FROM characters WHERE player_id = ?\`, playerId)
+    return found === null ? null : characterOf(found)
+  }
+
+  saveDirty(characters: readonly CharacterRecord[]): void {
+    if (characters.length === 0) return
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      for (const character of characters) {
+        if (character.level !== levelForXp(character.xp)) {
+          throw new PersistenceError('character_invalid', 'The shard tried to persist invalid progression.')
+        }
+        const result = this.database.run(\`UPDATE characters
+          SET x = ?, y = ?, z = ?, xp = ?, level = ?, updated_at = ?
+          WHERE player_id = ?\`, [
+          character.x, character.y, character.z, character.xp, character.level,
+          character.updatedAt, character.playerId,
+        ])
+        if (result.changes !== 1) {
+          throw new PersistenceError('character_missing', 'The shard tried to save an unknown character.')
+        }
+      }
+      this.database.exec('COMMIT')
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  close(): void {
+    if (this.#closed) return
+    this.#closed = true
+    this.database.close(true)
+  }
+}
+`
+}
+
 function serverSource(): string {
   return `import {
   emptyWorld,
@@ -459,33 +961,74 @@ function serverSource(): string {
   type PlayerInput,
   type WorldState,
 } from '../shared/simulation.js'
+import { CharacterStore, type CharacterRecord } from './persistence.js'
+
+export type JoinResult =
+  | { readonly ok: true; readonly playerId: string; readonly resumeToken?: string }
+  | { readonly ok: false; readonly code: 'resume_refused' | 'resume_in_use' }
 
 export interface Shard {
   readonly state: WorldState
-  readonly join: (playerId: string) => void
+  readonly join: (resumeToken?: string) => JoinResult
   readonly leave: (playerId: string) => void
   readonly advance: (elapsedMs: number) => void
   readonly enqueue: (playerId: string, input: PlayerInput) => void
+  readonly character: (playerId: string) => CharacterRecord | null
+  readonly close: () => void
 }
 
-export function createShard(): Shard {
+export function createShard(store = new CharacterStore()): Shard {
   let state: WorldState = emptyWorld(false)
   let accumulator = 0
   let pending: Record<string, PlayerInput> = {}
+  const playerState = (character: CharacterRecord) => ({
+    x: character.x, y: character.y, z: character.z, xp: character.xp, level: character.level,
+  })
+
+  const save = (playerIds: readonly string[]): void => {
+    const now = Date.now()
+    store.saveDirty(playerIds.flatMap((playerId) => {
+      const player = state.players[playerId]
+      return player === undefined ? [] : [{ playerId, ...player, updatedAt: now }]
+    }))
+  }
 
   return {
     get state() { return state },
-    join(playerId) { state = joinWorld(state, playerId) },
+    join(resumeToken) {
+      if (resumeToken === undefined) {
+        const created = store.createCharacter()
+        state = joinWorld(state, created.character.playerId, playerState(created.character))
+        return { ok: true, playerId: created.character.playerId, resumeToken: created.resumeToken }
+      }
+      const restored = store.findByResumeToken(resumeToken)
+      if (restored === null) return { ok: false, code: 'resume_refused' }
+      if (state.players[restored.playerId] !== undefined) return { ok: false, code: 'resume_in_use' }
+      state = joinWorld(state, restored.playerId, playerState(restored))
+      return { ok: true, playerId: restored.playerId }
+    },
     leave(playerId) { state = leaveWorld(state, playerId); delete pending[playerId] },
     advance(elapsedMs) {
       accumulator += elapsedMs
       while (accumulator >= STEP_MS) {
+        const before = state
         state = step(state, pending, STEP_MS / 1000)
+        const dirty = Object.keys(pending).filter((playerId) => {
+          const prior = before.players[playerId]
+          const next = state.players[playerId]
+          return prior !== undefined && next !== undefined && (
+            prior.x !== next.x || prior.y !== next.y || prior.z !== next.z ||
+            prior.xp !== next.xp || prior.level !== next.level
+          )
+        })
         pending = {}
+        save(dirty)
         accumulator -= STEP_MS
       }
     },
     enqueue(playerId, input) { if (state.players[playerId] !== undefined) pending[playerId] = input },
+    character(playerId) { return store.character(playerId) },
+    close() { store.close() },
   }
 }
 `
@@ -493,7 +1036,6 @@ export function createShard(): Shard {
 
 function devServerSource(): string {
   return `#!/usr/bin/env bun
-import { randomUUID } from 'node:crypto'
 import { isIP } from 'node:net'
 import { stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
@@ -543,6 +1085,16 @@ const shard = createShard()
 const sessions = new Set()
 const http = createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', 'http://' + (request.headers.host ?? HOST))
+  if (url.pathname === '/__dev/stop') {
+    if (request.method !== 'POST') {
+      response.writeHead(405, { 'content-type': TYPES['.json'], allow: 'POST' })
+      response.end(JSON.stringify({ event: 'error', code: 'method_not_allowed' }))
+      return
+    }
+    response.writeHead(202, { 'content-type': TYPES['.json'], connection: 'close' })
+    response.end(JSON.stringify({ event: 'stopping' }), () => { void stop() })
+    return
+  }
   if (url.pathname === GAME_PATH) {
     response.writeHead(426, { 'content-type': TYPES['.json'] })
     response.end(JSON.stringify({ event: 'error', code: 'websocket_required', protocol: PROTOCOL_VERSION }))
@@ -617,7 +1169,7 @@ sockets.on('connection', (socket, request) => {
     socket.close(4004, 'server_busy')
     return
   }
-  const session = { socket, playerId: randomUUID(), welcomed: false, lastSeq: -1, tokens: 40, refilledAt: Date.now() }
+  const session = { socket, playerId: null, welcomed: false, lastSeq: -1, tokens: 40, refilledAt: Date.now() }
   sessions.add(session)
   const helloTimeout = setTimeout(() => {
     if (session.welcomed) return
@@ -644,30 +1196,38 @@ sockets.on('connection', (socket, request) => {
     const decoded = decodeClientMessage(raw)
     if (!decoded.ok) {
       send(session, refused(decoded.code))
-      if (decoded.code !== 'stale_input' && decoded.code !== 'rate_limited') {
-        socket.close(decoded.code === 'protocol_mismatch' ? 4001 : decoded.code === 'authority_violation' ? 4003 : 4002, decoded.code)
+      if (decoded.code !== 'stale_input' && decoded.code !== 'rate_limited' && decoded.code !== 'authority_violation') {
+        socket.close(decoded.code === 'protocol_mismatch' ? 4001 : 4002, decoded.code)
       }
       return
     }
     const message = decoded.message
     if (message.type === 'hello') {
       if (session.welcomed) { send(session, refused('session_order')); socket.close(4002, 'session_order'); return }
+      const joined = shard.join(message.resumeToken)
+      if (!joined.ok) {
+        send(session, refused(joined.code))
+        socket.close(4009, joined.code)
+        return
+      }
       session.welcomed = true
+      session.playerId = joined.playerId
       clearTimeout(helloTimeout)
-      shard.join(session.playerId)
-      send(session, { v: PROTOCOL_VERSION, type: 'welcome', playerId: session.playerId, snapshot: shard.state })
+      send(session, joined.resumeToken === undefined
+        ? { v: PROTOCOL_VERSION, type: 'welcome', playerId: joined.playerId, snapshot: shard.state }
+        : { v: PROTOCOL_VERSION, type: 'welcome', playerId: joined.playerId, resumeToken: joined.resumeToken, snapshot: shard.state })
       for (const peer of sessions) if (peer.welcomed) snapshot(peer)
       return
     }
     if (!session.welcomed) { send(session, refused('session_order')); socket.close(4002, 'session_order'); return }
     if (message.seq <= session.lastSeq) { send(session, refused('stale_input')); return }
     session.lastSeq = message.seq
-    shard.enqueue(session.playerId, message)
+    if (session.playerId !== null) shard.enqueue(session.playerId, message)
   })
   socket.on('close', () => {
     clearTimeout(helloTimeout)
     sessions.delete(session)
-    if (session.welcomed) {
+    if (session.welcomed && session.playerId !== null) {
       shard.leave(session.playerId)
       for (const peer of sessions) if (peer.welcomed) snapshot(peer)
     }
@@ -683,13 +1243,20 @@ const tick = setInterval(() => {
 }, STEP_MS)
 
 http.on('error', (error) => fail('listen_failed', String(error && error.message ? error.message : error)))
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
+let stopping = false
+async function stop() {
+  if (stopping) return
+  stopping = true
   clearInterval(tick)
+  shard.close()
   for (const session of sessions) session.socket.close(1001, 'server stopping')
-  sockets.close()
-  http.close(() => process.exit(0))
+  await new Promise((resolve) => sockets.close(resolve))
+  const httpClosed = new Promise((resolve) => http.close(resolve))
   http.closeAllConnections?.()
-})
+  await httpClosed
+  process.exit(0)
+}
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void stop() })
 
 http.listen(PORT, HOST, () => {
   const address = http.address()

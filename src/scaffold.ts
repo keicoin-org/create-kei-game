@@ -12,7 +12,7 @@
  * them imports this harness, and
  * deleting the harness from the machine changes nothing about them.
  *
- * What is deliberately *not* here: persistence, client
+ * What is deliberately *not* here: account recovery, client
  * prediction/reconciliation, interest management, and finished art. The Kei
  * slice is a mock-chain proof owned by the generated project; it does not bind
  * a socket identity to a wallet or make the game server a custodian.
@@ -33,6 +33,7 @@ import {
   GAME_SOCKET_PATH,
   HEADLESS_CLIENT_BUNDLE,
   HEADLESS_CLIENT_PATH,
+  RESTART_PROOF_PATH,
   networkProjectFiles,
   SERVER_PATH,
   WEBSOCKET_PACKAGE,
@@ -72,6 +73,7 @@ export {
   GAME_SOCKET_PATH,
   HEADLESS_CLIENT_BUNDLE,
   HEADLESS_CLIENT_PATH,
+  RESTART_PROOF_PATH,
   SERVER_PATH,
 } from './scaffold-network.js'
 
@@ -98,13 +100,13 @@ export function projectFiles(
   return Object.freeze([
     { path: 'package.json', contents: manifest(project, solid, contentFiles.length > 0) },
     { path: 'README.md', contents: readme(project, plan) },
-    { path: '.gitignore', contents: 'node_modules/\ndist/\n*.sqlite*\n.DS_Store\n' },
+    { path: '.gitignore', contents: 'node_modules/\ndist/\n.kei-world/\n*.sqlite*\n.DS_Store\n' },
     { path: 'tsconfig.json', contents: tsconfig() },
     { path: PAGE_PATH, contents: page(project, solid) },
     { path: BUILD_SCRIPT_PATH, contents: buildScript() },
     { path: SIMULATION_PATH, contents: simulation() },
     { path: CLIENT_PATH, contents: solid ? client3d(project) : client2d(project) },
-    ...networkProjectFiles(),
+    ...networkProjectFiles(project.slug),
     ...economyProjectFiles(),
     ...contentFiles,
   ])
@@ -122,6 +124,7 @@ function manifest(project: ProjectIdentity, solid: boolean, withContent: boolean
       build: `bun run ${BUILD_SCRIPT_PATH}`,
       dev: `bun run ${DEV_SERVER_PATH}`,
       headless: `bun run ${OUTPUT_DIRECTORY}/${HEADLESS_CLIENT_BUNDLE}`,
+      'restart-proof': `bun run ${RESTART_PROOF_PATH}`,
       'economy:check': `bun test ${ECONOMY_TEST_PATH}`,
       ...(withContent ? { 'content:check': `node ${CONTENT_CHECK_PATH}` } : {}),
     },
@@ -209,6 +212,17 @@ bun run headless -- ws://127.0.0.1:${DEFAULT_DEV_PORT}${GAME_SOCKET_PATH}
 The headless client and browser both use \`${CONNECTION_PATH}\`. A successful
 connection receives a versioned authoritative snapshot before reporting success.
 
+Prove a character survives clean server restarts without keeping a token on disk:
+
+\`\`\`sh
+bun run restart-proof
+\`\`\`
+
+The browser keeps its opaque resume capability under a project-namespaced
+\`localStorage\` key. Press **E** to request the fixed server-authored progression
+interaction. Losing the token starts a new character; account recovery is not
+part of this construction slice.
+
 \`bun run build\` produces the same bundle without serving it, and prints one JSON
 line of its own.
 
@@ -216,15 +230,15 @@ line of its own.
 
 ${draws}
 
-\`${SIMULATION_PATH}\` is the fixed-step \`step()\` both sides import, and the
-client already runs it on an accumulator, so the frame rate and the simulation
-rate are separate from the first commit.
+\`${SIMULATION_PATH}\` is the pure fixed-step rule set. The authoritative server
+runs its accumulator; browsers only render accepted snapshots, so frame rate and
+simulation rate are separate without giving the renderer authority.
 
 \`${SERVER_PATH}\` owns the tick and world. \`${DEV_SERVER_PATH}\` exposes it over a
 versioned loopback WebSocket; browsers render every server-assigned player, and
 the generated headless scenario proves two clients observe each other's movement.
-Stale input and attempts to author position or economic state are refused
-without changing the world.
+Stale input and attempts to author position, progression, or economic state are
+refused without changing memory, disk, or player-custodied assets.
 
 The project also owns a player-custodied Kei proof. Run \`bun run economy:check\`:
 it creates one private \`Kei.mock()\` chain, provisions open-transfer,
@@ -237,9 +251,12 @@ The authoritative game server has no Kei import, key, balance, inventory, or
 settlement path. The mock provisioner is a separate test fixture; production
 provisioning accepts an injected issuer context and contains no seed.
 
-There is no restart persistence, socket-to-wallet proof of control,
-prediction/reconciliation, or interest management yet. Those remain separate
-plan steps.
+\`src/server/persistence.ts\` stores only
+hashed resume capabilities, position, XP, level, and update time in the versioned
+WAL database at \`.kei-world/world.sqlite\` (override with \`KEI_WORLD_DB\`). It
+stores no Kei balance, item, wallet seed, or plaintext token. Account recovery,
+socket-to-wallet proof of control, chunk streaming, prediction/reconciliation,
+and interest management remain separate work.
 
 ## The plan
 
@@ -258,7 +275,7 @@ your repository, not a contract.
 |---|---|
 | \`src/shared/\` | The simulation and versioned snapshot protocol. Imported by both sides. |
 | \`src/client/\` | Rendering plus one shared browser/headless connection path. Owns no authority. |
-| \`src/server/\` | The authoritative fixed tick and loopback game/static server. No persistence, Kei import, or custody. |
+| \`src/server/\` | Authoritative tick plus versioned SQLite character persistence. No Kei import, wallet, balance, item, or settlement path. |
 | \`src/economy/\` | Currency/item declarations, separate issuer provisioning, and player-signed atomic trade helpers. |
 | \`${ECONOMY_TEST_PATH}\` | The private mock-chain custody, mismatch, and settlement proof. |
 | \`${DEV_SERVER_PATH}\` | The Bun WebSocket and static development server. |
@@ -487,6 +504,8 @@ export interface PlayerState {
   readonly x: number
   readonly y: number
   readonly z: number
+  readonly xp: number
+  readonly level: number
 }
 
 export interface WorldState {
@@ -502,18 +521,29 @@ export const LOCAL_PLAYER = 'local'
 
 /** Metres per second. A placeholder, and the first number the plan will argue with. */
 export const MOVE_SPEED = 4
+export const INTERACT_BUTTON = 1
+export const XP_PER_INTERACTION = 10
+export const XP_PER_LEVEL = 10
 
-export function emptyWorld(withLocal = true): WorldState {
-  return { tick: 0, players: withLocal ? { [LOCAL_PLAYER]: { x: 0, y: 0, z: 0 } } : {} }
+/** Progression is derived by the server; clients never submit XP or levels. */
+export function levelForXp(xp: number): number {
+  return Math.floor(xp / XP_PER_LEVEL) + 1
 }
 
-/** Add one server-assigned player without mutating a prior snapshot. */
-export function joinWorld(state: WorldState, playerId: string): WorldState {
+export function emptyWorld(withLocal = true): WorldState {
+  return { tick: 0, players: withLocal ? { [LOCAL_PLAYER]: { x: 0, y: 0, z: 0, xp: 0, level: 1 } } : {} }
+}
+
+/** Add one server-assigned or durably resumed player without mutating a prior snapshot. */
+export function joinWorld(state: WorldState, playerId: string, restored?: PlayerState): WorldState {
   if (state.players[playerId] !== undefined) return state
   const slot = Object.keys(state.players).length
   return {
     ...state,
-    players: { ...state.players, [playerId]: { x: slot * 1.5, y: 0, z: 0 } },
+    players: {
+      ...state.players,
+      [playerId]: restored ?? { x: slot * 1.5, y: 0, z: 0, xp: 0, level: 1 },
+    },
   }
 }
 
@@ -544,10 +574,13 @@ export function step(
     }
     const length = Math.hypot(input.moveX, input.moveY)
     const scale = length > 1 ? 1 / length : 1
+    const xp = player.xp + ((input.buttons & INTERACT_BUTTON) !== 0 ? XP_PER_INTERACTION : 0)
     players[id] = {
       x: player.x + input.moveX * scale * MOVE_SPEED * dtSeconds,
       y: player.y,
       z: player.z + input.moveY * scale * MOVE_SPEED * dtSeconds,
+      xp,
+      level: levelForXp(xp),
     }
   }
   return { tick: state.tick + 1, players }
@@ -566,8 +599,8 @@ function client3d(project: ProjectIdentity): string {
  * players, drawn from server-authored snapshots. The render loop never mutates
  * simulation state; it only projects the latest accepted snapshot.
  *
- * Assets, animation, prediction, reconciliation, and persistence remain
- * deferred. The boxes are intentionally construction geometry.
+ * Assets, animation, prediction, and reconciliation remain deferred. Durable
+ * identity/position/progression live behind the server, not in this renderer.
  *
  * This file is yours. It imports Babylon and the project's own simulation.
  */
@@ -583,7 +616,7 @@ import { CreateGround } from '@babylonjs/core/Meshes/Builders/groundBuilder.js'
 import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder.js'
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial.js'
 
-import { connectGame } from './connection.js'
+import { connectGame, RESUME_STORAGE_KEY } from './connection.js'
 import { emptyWorld, STEP_MS, type WorldState } from '../shared/simulation.js'
 
 export const TITLE = ${JSON.stringify(project.title)}
@@ -682,19 +715,30 @@ const status = document.getElementById('status')
 if (canvas instanceof HTMLCanvasElement) {
   let networked = false
   let shown = -1
+  let ownPlayerId: string | undefined
   const client = start(canvas, (world) => {
     // The dirty check, from the first line of HUD code: writing textContent
     // every frame is layout work every frame.
     if (status === null || world.tick === shown) return
     shown = world.tick
-    status.textContent = Object.keys(world.players).length + ' players · ' + (networked ? 'connected' : 'offline') + ' · tick ' + world.tick
+    const own = ownPlayerId === undefined ? undefined : world.players[ownPlayerId]
+    status.textContent = Object.keys(world.players).length + ' players · ' + (networked ? 'connected' : 'offline') +
+      ' · level ' + (own?.level ?? 1) + ' · XP ' + (own?.xp ?? 0) + ' · tick ' + world.tick
   })
-  void connectGame(window.location.href).then((connection) => {
+  let savedToken: string | undefined
+  try { savedToken = localStorage.getItem(RESUME_STORAGE_KEY) ?? undefined } catch { /* storage can be disabled */ }
+  void connectGame(window.location.href, savedToken).then((connection) => {
     networked = true
+    ownPlayerId = connection.playerId
+    try { localStorage.setItem(RESUME_STORAGE_KEY, connection.resumeToken) } catch { /* the live session still works */ }
     connection.onSnapshot((world) => client.replaceWorld(world))
     const keys = new Set<string>()
     let sequence = 0
-    const onKeyDown = (event: KeyboardEvent): void => { keys.add(event.code) }
+    let interact = false
+    const onKeyDown = (event: KeyboardEvent): void => {
+      keys.add(event.code)
+      if (event.code === 'KeyE' && !event.repeat) interact = true
+    }
     const onKeyUp = (event: KeyboardEvent): void => { keys.delete(event.code) }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
@@ -703,8 +747,9 @@ if (canvas instanceof HTMLCanvasElement) {
         seq: sequence += 1,
         moveX: Number(keys.has('KeyD') || keys.has('ArrowRight')) - Number(keys.has('KeyA') || keys.has('ArrowLeft')),
         moveY: Number(keys.has('KeyS') || keys.has('ArrowDown')) - Number(keys.has('KeyW') || keys.has('ArrowUp')),
-        buttons: 0,
+        buttons: Number(interact),
       })
+      interact = false
     }, STEP_MS)
     window.addEventListener('beforeunload', () => {
       clearInterval(input)
@@ -736,7 +781,7 @@ function client2d(project: ProjectIdentity): string {
  * simulation modules.
  */
 
-import { connectGame } from './connection.js'
+import { connectGame, RESUME_STORAGE_KEY } from './connection.js'
 import { emptyWorld, STEP_MS, type WorldState } from '../shared/simulation.js'
 
 export const TITLE = ${JSON.stringify(project.title)}
@@ -843,17 +888,28 @@ const status = document.getElementById('status')
 if (canvas instanceof HTMLCanvasElement) {
   let networked = false
   let shown = -1
+  let ownPlayerId: string | undefined
   const client = start(canvas, (world) => {
     if (status === null || world.tick === shown) return
     shown = world.tick
-    status.textContent = Object.keys(world.players).length + ' players · ' + (networked ? 'connected' : 'offline') + ' · tick ' + world.tick
+    const own = ownPlayerId === undefined ? undefined : world.players[ownPlayerId]
+    status.textContent = Object.keys(world.players).length + ' players · ' + (networked ? 'connected' : 'offline') +
+      ' · level ' + (own?.level ?? 1) + ' · XP ' + (own?.xp ?? 0) + ' · tick ' + world.tick
   })
-  void connectGame(window.location.href).then((connection) => {
+  let savedToken: string | undefined
+  try { savedToken = localStorage.getItem(RESUME_STORAGE_KEY) ?? undefined } catch { /* storage can be disabled */ }
+  void connectGame(window.location.href, savedToken).then((connection) => {
     networked = true
+    ownPlayerId = connection.playerId
+    try { localStorage.setItem(RESUME_STORAGE_KEY, connection.resumeToken) } catch { /* the live session still works */ }
     connection.onSnapshot((world) => client.replaceWorld(world))
     const keys = new Set<string>()
     let sequence = 0
-    const onKeyDown = (event: KeyboardEvent): void => { keys.add(event.code) }
+    let interact = false
+    const onKeyDown = (event: KeyboardEvent): void => {
+      keys.add(event.code)
+      if (event.code === 'KeyE' && !event.repeat) interact = true
+    }
     const onKeyUp = (event: KeyboardEvent): void => { keys.delete(event.code) }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
@@ -862,8 +918,9 @@ if (canvas instanceof HTMLCanvasElement) {
         seq: sequence += 1,
         moveX: Number(keys.has('KeyD') || keys.has('ArrowRight')) - Number(keys.has('KeyA') || keys.has('ArrowLeft')),
         moveY: Number(keys.has('KeyS') || keys.has('ArrowDown')) - Number(keys.has('KeyW') || keys.has('ArrowUp')),
-        buttons: 0,
+        buttons: Number(interact),
       })
+      interact = false
     }, STEP_MS)
     window.addEventListener('beforeunload', () => {
       clearInterval(input)
