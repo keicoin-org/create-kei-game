@@ -104,7 +104,7 @@ function exact(value: RecordValue, keys: readonly string[]): boolean {
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index])
 }
 function id(value: unknown): value is string { return typeof value === 'string' && ID.test(value) && value.length <= 80 }
-function hash(value: unknown): value is string { return typeof value === 'string' && SHA256.test(value) }
+function hash(value: unknown): value is string { return typeof value === 'string' && SHA256.test(value) && !/^0{64}$/.test(value) }
 export function safePolishPath(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 240 && safeRelativePath(value) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)
 }
@@ -125,7 +125,7 @@ function parseAction(value: unknown): ActionRecipe | null {
   if (!['before-contact', 'never'].includes(String(value.interrupt)) || !['on-refusal', 'before-contact'].includes(String(value.cancel))) return null
   if (!Array.isArray(value.events) || value.events.some((event) => !SEMANTIC_EVENTS.includes(event as SemanticEvent))) return null
   if (new Set(value.events).size !== value.events.length) return null
-  for (const required of ['anticipation', 'contact', 'recovery'] as const) if (!value.events.includes(required)) return null
+  for (const required of SEMANTIC_EVENTS) if (!value.events.includes(required)) return null
   if (!record(value.cueOverrides) || !exact(value.cueOverrides, ['anticipation', 'contact'])) return null
   if (!SEMANTIC_CUES.includes(value.cueOverrides.anticipation as SemanticCue) || !SEMANTIC_CUES.includes(value.cueOverrides.contact as SemanticCue)) return null
   return Object.freeze({ ...value, events: Object.freeze([...value.events]), cueOverrides: Object.freeze({ ...value.cueOverrides }) }) as unknown as ActionRecipe
@@ -142,6 +142,7 @@ export function parsePolishRecipe(value: unknown): PolishRecipeV1 | null {
   if (!Array.isArray(value.actions) || value.actions.length < 2 || value.actions.length > 12) return null
   const actions = value.actions.map(parseAction); if (actions.some((action) => action === null)) return null
   if (new Set(actions.map((action) => action!.id)).size !== actions.length) return null
+  if (!['interact', 'strike'].every((kind) => actions.some((action) => action!.kind === kind))) return null
   if (!record(value.cues) || !exact(value.cues, SEMANTIC_CUES)) return null
   const cues = {} as Record<SemanticCue, readonly string[]>
   for (const cue of SEMANTIC_CUES) {
@@ -192,9 +193,9 @@ export function parsePolishSourceManifest(value: unknown): PolishSourceManifestV
   for (const raw of value.assets) {
     if (!record(raw) || !exact(raw, ['id', 'canonicalUrl', 'provider', 'providerAssetVersion', 'acquisitionMode', 'acquiredAt', 'sha256', 'licence', 'attribution', 'rawRedistribution', 'processedOutputs'])) return null
     if (!id(raw.id) || !safeHttpsUrl(raw.canonicalUrl) || !['kenney', 'quaternius', 'poly-haven', 'local-user'].includes(String(raw.provider))) return null
-    if (typeof raw.providerAssetVersion !== 'string' || raw.providerAssetVersion.trim() === '' || raw.providerAssetVersion.length > 120) return null
+    if (typeof raw.providerAssetVersion !== 'string' || raw.providerAssetVersion.trim() === '' || raw.providerAssetVersion.length > 120 || /^(latest|current)$/i.test(raw.providerAssetVersion.trim())) return null
     if (!['download', 'api', 'local-user'].includes(String(raw.acquisitionMode))) return null
-    if (typeof raw.acquiredAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(raw.acquiredAt) || Number.isNaN(Date.parse(raw.acquiredAt))) return null
+    if (typeof raw.acquiredAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(raw.acquiredAt) || Number.isNaN(Date.parse(raw.acquiredAt)) || new Date(raw.acquiredAt).toISOString() !== raw.acquiredAt) return null
     if (!hash(raw.sha256) || !record(raw.licence) || !exact(raw.licence, ['id', 'referenceUrl', 'filePath'])) return null
     if (typeof raw.licence.id !== 'string' || raw.licence.id.trim() === '' || !safeHttpsUrl(raw.licence.referenceUrl) || !safePolishPath(raw.licence.filePath)) return null
     if (typeof raw.attribution !== 'string' || raw.attribution.trim() === '' || raw.attribution.length > 500) return null

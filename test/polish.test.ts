@@ -48,6 +48,10 @@ describe('PolishRecipeV1', () => {
     const duplicate = structuredClone(original.actions)
     duplicate[1].id = duplicate[0].id
     expect(parsePolishRecipe({ ...original, actions: duplicate })).toBeNull()
+    expect(parsePolishRecipe({ ...original, actions: original.actions.map((action: any) => ({ ...action, kind: 'strike' })) })).toBeNull()
+    const missingEvent = structuredClone(original.actions)
+    missingEvent[0].events = missingEvent[0].events.filter((event: string) => event !== 'refusal')
+    expect(parsePolishRecipe({ ...original, actions: missingEvent })).toBeNull()
 
     const qualityProfiles = structuredClone(original.qualityProfiles)
     qualityProfiles.low.maxParticles = qualityProfiles.high.maxParticles + 1
@@ -74,6 +78,9 @@ describe('polish source admission', () => {
     ['credential URL', source({ canonicalUrl: 'https://token@kenney.nl/assets/example-pack' })],
     ['unpinned URL', source({ canonicalUrl: 'https://kenney.nl/assets/example-pack?latest=1' })],
     ['missing hash', source({ sha256: '' })],
+    ['placeholder zero hash', source({ sha256: '0'.repeat(64) })],
+    ['unpinned provider version', source({ providerAssetVersion: 'latest' })],
+    ['impossible acquisition date', source({ acquiredAt: '2026-02-31T12:00:00.000Z' })],
     ['missing processed hash', source({ processedOutputs: [{ path: 'assets/polish/hero.png', sha256: '' }] })],
     ['missing licence id', source({ licence: { id: '', referenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', filePath: 'assets/licenses/hero.txt' } })],
     ['unsafe licence path', source({ licence: { id: 'CC0-1.0', referenceUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', filePath: '../license.txt' } })],
