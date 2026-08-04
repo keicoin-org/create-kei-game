@@ -47,7 +47,7 @@ const rpc = mockRpcHandler({ node })
 // longer exist — they go with the chain they belong to. Point this at a real
 // node and the file matters as much as the chain does: keep it.
 const orders = `${root}.kei/dev-orders.ndjson`
-await rm(orders, { force: true })
+if (node instanceof MockNode) await rm(orders, { force: true })
 
 const game = await startGame({
   // Set GAME_SEED in .env to keep the same issuer across restarts. It is the
