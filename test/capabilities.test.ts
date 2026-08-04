@@ -79,6 +79,25 @@ describe('the capability catalog', () => {
     }
   })
 
+  test('every packet declares a status, core packets are available, and the rest say why not', () => {
+    for (const packet of CAPABILITY_PACKETS) {
+      expect(['available', 'planned', 'absent']).toContain(packet.status)
+      // A core packet that is not implemented would be a plan citing vapour.
+      if (packet.core) expect(packet.status).toBe('available')
+      if (packet.status !== 'available') {
+        expect(packet.statusReason).toBeString()
+        expect(packet.statusReason!.split(' ').length).toBeGreaterThan(8)
+      }
+    }
+  })
+
+  test('the external generators are declared planned or absent, never available', () => {
+    expect(capabilityById('content-3d-model-generation')?.status).toBe('planned')
+    expect(capabilityById('content-3d-motion-capture')?.status).toBe('planned')
+    expect(capabilityById('content-3d-sfx-generation')?.status).toBe('planned')
+    expect(capabilityById('content-3d-voice-acting')?.status).toBe('absent')
+  })
+
   test('the economy packet is honest about there being no bundled SDK', () => {
     const packet = capabilityById('economy-kei')!
     expect(packet.tools.join(' ')).toContain('bundles no Kei SDK')
@@ -122,5 +141,33 @@ describe('selection', () => {
     expect(flat.selected.map(({ packet }) => packet.id)).toContain('shaders')
     // …but never the 3D-only full-screen chain.
     expect(flat.selected.map(({ packet }) => packet.id)).not.toContain('post-processing')
+  })
+
+  test('a planned packet is never selected, even when the intent begs for it', () => {
+    const selection = selectCapabilities('3d', 'full mocap and motion capture everywhere, generated models too')
+    const ids = selection.selected.map(({ packet }) => packet.id)
+    expect(ids).not.toContain('content-3d-motion-capture')
+    expect(ids).not.toContain('content-3d-model-generation')
+
+    const mocap = selection.deferred.find(({ id }) => id === 'content-3d-motion-capture')
+    expect(mocap?.reason).toContain('mentions "mocap"')
+    expect(mocap?.reason).toContain('planned')
+  })
+
+  test('planned and absent packets appear in every matching plan\'s deferrals, naming their status', () => {
+    const quiet = selectCapabilities('3d', 'nothing special at all')
+    const byId = new Map(quiet.deferred.map((entry) => [entry.id, entry.reason]))
+    expect(byId.get('content-3d-model-generation')).toContain('Declared planned')
+    expect(byId.get('content-3d-voice-acting')).toContain('Declared absent')
+  })
+
+  test('the 3D content core lands in every 3D plan and is deferred from 2D ones', () => {
+    const solid = selectCapabilities('3d', '')
+    expect(solid.selected.map(({ packet }) => packet.id)).toContain('content-3d-props')
+    expect(solid.selected.map(({ packet }) => packet.id)).toContain('content-3d-motion')
+
+    const flat = selectCapabilities('2d', '')
+    expect(flat.selected.map(({ packet }) => packet.id)).not.toContain('content-3d-props')
+    expect(flat.deferred.map(({ id }) => id)).toContain('content-3d-props')
   })
 })

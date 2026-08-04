@@ -92,7 +92,7 @@ Commands first receive an acknowledgement:
 A session opened from an intent then receives the plan, once, before any event:
 
 ```json
-{"v":1,"type":"plan","id":"game-1","plan":{"planVersion":1,"intent":{"...":"..."},"engine":{"...":"..."},"reference":{"strategy":"scaffold","considered":[]},"capabilities":[],"constraints":[],"acceptance":[],"steps":[]}}
+{"v":1,"type":"plan","id":"game-1","plan":{"planVersion":2,"intent":{"...":"..."},"engine":{"...":"..."},"reference":{"strategy":"scaffold","considered":[]},"capabilities":[],"constraints":[],"acceptance":[],"steps":[]}}
 ```
 
 That is the same document the model is given and the same one the CLI writes to

@@ -236,3 +236,89 @@ describe('the plan', () => {
     expect(() => planMmo(parseMmoIntent({ name: 'g' }))).toThrow()
   })
 })
+
+describe('the content section', () => {
+  test('every 3D plan carries it; no 2D plan does', () => {
+    const solid = planFor({ name: 'S', dimension: '3d', gameplay: 'Questing' })
+    expect(solid.content).toBeDefined()
+    expect(solid.content!.contentVersion).toBe(1)
+    expect(solid.content!.workflows.length).toBe(4)
+
+    const flat = planFor({ name: 'F', dimension: '2d', gameplay: 'Questing' })
+    expect(flat.content).toBeUndefined()
+  })
+
+  test('style changes the selections: a different setting picks a different kit', () => {
+    const choiceFor = (gameplay: string, area: string) =>
+      planFor({ name: 'X', dimension: '3d', gameplay }).content!.selections.find(
+        (selection) => selection.area === area,
+      )?.choice
+
+    const sciFi = choiceFor('Crews salvage derelict stations in orbit.', 'props')
+    const historical = choiceFor('Viking crews raid a medieval coast.', 'props')
+    const neutral = choiceFor('Players trade and build together.', 'props')
+    expect(sciFi).toContain('kit-science-fiction')
+    expect(historical).toContain('kit-historical')
+    expect(neutral).toContain('kit-neutral')
+    expect(new Set([sciFi, historical, neutral]).size).toBe(3)
+  })
+
+  test('the finish changes the material selection the same way', () => {
+    const grounded = planFor({ name: 'X', dimension: '3d', gameplay: 'Questing' })
+    const stylized = planFor({ name: 'X', dimension: '3d', gameplay: 'Questing', art: 'Cel-shaded toon look' })
+    const material = (plan: typeof grounded) =>
+      plan.content!.selections.find((selection) => selection.area === 'materials')!.choice
+    expect(material(grounded)).toContain('MeshStandardMaterial')
+    expect(material(stylized)).toContain('MeshToonMaterial')
+  })
+
+  test('fantasy dressing appears only when the brief asks for fantasy', () => {
+    const plain = planFor({ name: 'X', dimension: '3d', gameplay: 'Players explore and trade together.' })
+    expect(plain.content!.style.setting).toBe('unspecified')
+    expect(JSON.stringify(plain.content).toLowerCase()).not.toContain('fantasy-')
+
+    const asked = planFor({ name: 'X', dimension: '3d', gameplay: 'A fantasy world of mages and dragons.' })
+    expect(asked.content!.style.setting).toBe('fantasy')
+    expect(asked.content!.selections.find((selection) => selection.area === 'props')!.choice).toContain('kit-fantasy')
+  })
+
+  test('every selection cites an available capability the plan actually holds, with a cost', () => {
+    const plan = planFor({ name: 'X', dimension: '3d', gameplay: 'Questing with a story intro and ambient music.' })
+    const present = new Set(plan.capabilities.map(({ id }) => id))
+    for (const selection of plan.content!.selections) {
+      expect(present.has(selection.capability)).toBeTrue()
+      expect(selection.cost).not.toBe('')
+      expect(selection.reason).not.toBe('')
+    }
+    // Audio and cut-scene selections arrived because the intent asked.
+    expect(plan.content!.selections.map(({ area }) => area)).toEqual([
+      'props', 'materials', 'motion', 'audio', 'cutscene',
+    ])
+  })
+
+  test('a quiet intent keeps the content floor and leaves audio and cut-scenes deferred', () => {
+    const plan = planFor({ name: 'X', dimension: '3d', gameplay: 'Players mine and haul.' })
+    expect(plan.content!.selections.map(({ area }) => area)).toEqual(['props', 'materials', 'motion'])
+    expect(plan.deferred.find(({ id }) => id === 'content-3d-cutscenes')?.reason).toContain('Nothing in the intent')
+  })
+
+  test('generators repeat the capability records: planned and absent, with reasons', () => {
+    const generators = planFor({ name: 'X', dimension: '3d', gameplay: 'Questing' }).content!.generators
+    const byId = new Map(generators.map((generator) => [generator.id, generator]))
+    expect(byId.get('model-generation')?.status).toBe('planned')
+    expect(byId.get('motion-capture')?.status).toBe('planned')
+    expect(byId.get('sfx-generation')?.status).toBe('planned')
+    expect(byId.get('voice-acting')?.status).toBe('absent')
+    for (const generator of generators) {
+      expect(generator.reason.split(' ').length).toBeGreaterThan(8)
+      expect(generator.capability.startsWith('content-3d-')).toBeTrue()
+    }
+  })
+
+  test('the 3D build order gains the content step and 2D never sees it', () => {
+    const solid = planFor({ name: 'S', dimension: '3d', gameplay: 'Questing' })
+    expect(solid.steps.map(({ id }) => id)).toContain('content-3d')
+    const flat = planFor({ name: 'F', dimension: '2d', gameplay: 'Questing' })
+    expect(flat.steps.map(({ id }) => id)).not.toContain('content-3d')
+  })
+})

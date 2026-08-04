@@ -56,7 +56,7 @@ bun run src/index.ts -- "Salvage Run" --agent --json --plan-only \
 ```
 
 ```json
-{ "ok": true, "status": "planned", "plan": { "planVersion": 1, "...": "..." } }
+{ "ok": true, "status": "planned", "plan": { "planVersion": 2, "...": "..." } }
 ```
 
 Required inputs collapse to `name` and `gameplay`. See [Intent, planner, and
@@ -205,7 +205,7 @@ platform. Serialized on one line, with the plan elided here for length:
       "network": "",
       "economy": ""
     },
-    "plan": { "planVersion": 1, "engine": { "...": "..." }, "reference": { "strategy": "scaffold", "considered": [] } },
+    "plan": { "planVersion": 2, "engine": { "...": "..." }, "reference": { "strategy": "scaffold", "considered": [] } },
     "selection": { "kind": "blank" },
     "baseDirectory": "/workspace",
     "destination": "./salvage-run",

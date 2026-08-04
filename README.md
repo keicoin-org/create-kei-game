@@ -87,7 +87,9 @@ shapes, and failure handling.
 |---|---|---|
 | 2D or 3D | Stated, or inferred from signals across every goal | `plan.engine.rationale` |
 | Reference project or scaffold | Every candidate scored; cloning needs a clear win | `plan.reference.rationale` and `plan.reference.considered` |
-| Which capability packets apply | Core packets always; optional ones on an intent signal | each packet's `reason`, and `plan.deferred` |
+| Which capability packets apply | Core packets always; optional ones on an intent signal; only `available` ones ever | each packet's `reason`, and `plan.deferred` |
+| The 3D style | Setting and finish read from the brief; nothing assumed, fantasy least of all | `plan.content.style` |
+| The 3D content selections | Prop kit, materials, motion set, audio palette, cut-scene pipeline — chosen by style, each with its cost | `plan.content.selections` |
 | What is non-negotiable | Fixed rules plus one the dimension implies | `plan.constraints` |
 | When it is done | Criteria with a concrete way to check each | `plan.acceptance` |
 | What order to build in | Steps, each naming the packets it draws on | `plan.steps` |
@@ -98,8 +100,40 @@ how the developer will know it worked — for animation, shaders, post-processin
 2D and 3D rendering, networking and session authority, persistence and world
 streaming, Kei economies, UI, audio, content, testing, and deployment.
 
+Every packet also declares a **status** — `available`, `planned`, or `absent` —
+and a plan may only cite available ones. The external content generators
+(text-to-3D models, ARDY-style motion capture, SFX generation) are `planned`;
+voice acting is `absent`; each appears in a 3D plan's deferrals naming its
+status rather than being implied as delivered.
+
 See [Intent, planner, and plan](docs/mmo-plan.md) for the schemas, the scoring
 rules, and what "concrete" is held to mean.
+
+## The 3D content pipelines
+
+A 3D plan carries four executable content pipelines — models and props,
+rigging and animation, SFX and audio, and directed cut-scenes — as explicit,
+versioned records the harness actually runs at scaffold time:
+
+- **Style-aware selection.** The brief's setting (science fiction,
+  contemporary, historical, fantasy, or unspecified) and finish (grounded or
+  stylized) pick the prop kit, materials, and cue palette. An unspecified
+  brief gets neutral previs content; no genre — fantasy included — ever leaks
+  in uninvited.
+- **An admission gate.** Every asset is a record in
+  `kei-mmo/content/manifest.json`; a declared generator output with no bytes
+  on disk blocks admission as `generator_output_missing` instead of becoming
+  a broken reference. The same gate ships inside the project as
+  `kei-mmo/content/check.mjs`.
+- **A motion ready gate.** Clips sit behind an ARDY-compatible adapter seam;
+  ready is a strict triple (status, current version, payload present), and a
+  scene referencing a clip that is not ready is never emitted.
+- **A staged cut-scene flow.** Plan → stage → beats → rehearsal → assembly,
+  every stage pure and bounded, the assembled document byte-deterministic and
+  played by a project-owned module with no harness dependency.
+
+See [Content pipelines](docs/content-pipelines.md) for the records, the gate
+codes, the bounds, and exactly which generators are `planned` or `absent`.
 
 ## Shared engine boundary
 
@@ -137,17 +171,24 @@ salvage-run/
 ├── README.md
 ├── kei-mmo/
 │   ├── PLAN.md
-│   └── plan.json
+│   ├── plan.json
+│   └── content/                  # 3D plans only
+│       ├── manifest.json         # every asset as a versioned, admitted record
+│       ├── pipelines.json        # the workflow records and generator statuses
+│       ├── check.mjs             # the project's own admission gate (plain node)
+│       └── cutscenes/            # assembled scenes, when the brief asked for them
 ├── package.json
 └── src/
     ├── client/main.ts
     ├── server/main.ts
-    └── shared/simulation.ts
+    ├── shared/simulation.ts
+    └── shared/cutscene.ts        # the player, with the cut-scenes; imports nothing
 ```
 
 When the planner clones a reference project instead, the clone arrives with
 those same two plan files written into it, including the reason it was chosen
-and the known cost of starting there.
+and the known cost of starting there. Content files are never written into a
+clone — an existing codebase is not implicitly rewritten.
 
 ## Command reference
 
@@ -217,7 +258,9 @@ bun run check
 
 The non-executing library entry points are `create-kei-mmo/intent`,
 `create-kei-mmo/capabilities`, `create-kei-mmo/references`,
-`create-kei-mmo/plan`, `create-kei-mmo/planner`, `create-kei-mmo/source`,
+`create-kei-mmo/plan`, `create-kei-mmo/planner`, `create-kei-mmo/style`,
+`create-kei-mmo/content`, `create-kei-mmo/content-project`,
+`create-kei-mmo/motion`, `create-kei-mmo/cutscene`, `create-kei-mmo/source`,
 `create-kei-mmo/providers`, `create-kei-mmo/harness`, `create-kei-mmo/agent`,
 `create-kei-mmo/runtime`, `create-kei-mmo/runtime-protocol`,
 `create-kei-mmo/provider-transport`, `create-kei-mmo/tools`, and

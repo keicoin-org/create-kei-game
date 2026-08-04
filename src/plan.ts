@@ -11,10 +11,18 @@
  */
 
 import type { CapabilityDomain, CapabilityMethod, DeferredCapability } from './capabilities.js'
+import type { ContentWorkflow } from './content.js'
 import type { MmoDimension, MmoIntent } from './intent.js'
 import { INTENT_GOAL_FIELDS } from './intent.js'
+import type { StyleProfile } from './style.js'
 
-export const MMO_PLAN_VERSION = 1 as const
+/**
+ * Version 2 added the optional `content` section: the style profile, the 3D
+ * content selections with their costs, the generator declarations with their
+ * honest statuses, and the versioned pipeline workflows. 2D plans carry no
+ * content section and are otherwise unchanged from version 1.
+ */
+export const MMO_PLAN_VERSION = 2 as const
 
 /**
  * What the plan is allowed to occupy inside a system instruction. The whole
@@ -79,6 +87,42 @@ export interface PlanStep {
   readonly outcome: string
 }
 
+export const CONTENT_PLAN_VERSION = 1 as const
+
+export type ContentArea = 'props' | 'materials' | 'motion' | 'audio' | 'cutscene'
+
+/** One content decision: what was chosen, on whose authority, and its cost. */
+export interface ContentSelection {
+  readonly area: ContentArea
+  readonly choice: string
+  /** The capability packet whose methods carry this choice out. */
+  readonly capability: string
+  readonly reason: string
+  /** The cost of the choice, stated so it can be argued with. */
+  readonly cost: string
+}
+
+/**
+ * An external generator this plan is *not* promising. Each one names the
+ * capability record that specifies it and repeats that record's status, so a
+ * reader never has to infer what "the pipeline supports generation" means.
+ */
+export interface GeneratorDeclaration {
+  readonly id: string
+  readonly capability: string
+  readonly status: 'planned' | 'absent'
+  readonly reason: string
+}
+
+/** The 3D content section. Present exactly when the plan is 3D. */
+export interface ContentPlan {
+  readonly contentVersion: typeof CONTENT_PLAN_VERSION
+  readonly style: StyleProfile
+  readonly selections: readonly ContentSelection[]
+  readonly generators: readonly GeneratorDeclaration[]
+  readonly workflows: readonly ContentWorkflow[]
+}
+
 /** A capability packet as it appears in a plan: the packet, plus why it is here. */
 export interface PlanCapability {
   readonly id: string
@@ -105,6 +149,8 @@ export interface ImplementationPlan {
   readonly steps: readonly PlanStep[]
   /** What was filled in for the goals nobody stated. */
   readonly assumptions: readonly string[]
+  /** The 3D content pipelines. Absent on a 2D plan, by design. */
+  readonly content?: ContentPlan
 }
 
 function bullets(lines: readonly string[], indent: string): string {
@@ -175,6 +221,10 @@ Candidates considered:
 
 ${plan.reference.considered.map((entry) => `- \`${entry.id}\` (score ${entry.score}) — ${entry.verdict}`).join('\n')}`)
 
+  if (plan.content) {
+    sections.push(contentMarkdown(plan.content))
+  }
+
   sections.push(`## Constraints
 
 ${plan.constraints.map((constraint) => `- **${constraint.statement}**\n  ${constraint.because}`).join('\n')}`)
@@ -198,6 +248,26 @@ ${plan.deferred.map((entry) => `- \`${entry.id}\` — ${entry.reason}`).join('\n
   }
 
   return `${sections.join('\n\n')}\n`
+}
+
+function contentMarkdown(content: ContentPlan): string {
+  return `## Content pipelines (3D)
+
+Style: **${content.style.setting}**, **${content.style.finish}** finish.
+
+${bullets(content.style.rationale, '')}
+
+Selections, each with its cost:
+
+${content.selections.map((selection) => `- **${selection.area}** — ${selection.choice}\n  ${selection.reason}\n  Cost: ${selection.cost}`).join('\n')}
+
+External generators, stated honestly — none of these is promised:
+
+${content.generators.map((generator) => `- \`${generator.id}\` (**${generator.status}**, capability \`${generator.capability}\`) — ${generator.reason}`).join('\n')}
+
+Workflows, versioned and written into the project:
+
+${content.workflows.map((workflow) => `- \`${workflow.id}\` v${workflow.workflowVersion} — ${workflow.title}: ${workflow.stages.map((stage) => stage.title).join(' → ')}`).join('\n')}`
 }
 
 function capabilityMarkdown(capability: PlanCapability): string {
@@ -271,6 +341,20 @@ ${bullets(plan.engine.rationale, '  ')}`)
   ${referenceLine(plan.reference)}
 ${bullets(plan.reference.rationale, '  ')}`)
 
+  if (plan.content) {
+    parts.push(`CONTENT — the 3D pipelines
+  Style: ${plan.content.style.setting}, ${plan.content.style.finish} finish
+${bullets(plan.content.style.rationale, '  ')}
+  Selections:
+${plan.content.selections.map((selection) => `    - ${selection.area}: ${selection.choice} — cost: ${selection.cost}`).join('\n')}
+  External generators — declared, not promised:
+${plan.content.generators.map((generator) => `    - ${generator.id}: ${generator.status}`).join('\n')}
+  The content manifest is at kei-mmo/content/manifest.json and the pipeline
+  records at kei-mmo/content/pipelines.json. Assembled cut-scenes live in
+  kei-mmo/content/cutscenes/. Reference only admitted assets and ready clips;
+  the project's own check is \`node kei-mmo/content/check.mjs\`.`)
+  }
+
   parts.push(`CONSTRAINTS — these are not negotiable
 ${plan.constraints.map((constraint) => `  - ${constraint.statement}\n    (${constraint.because})`).join('\n')}`)
 
@@ -325,6 +409,14 @@ export function planSummary(plan: ImplementationPlan): string {
     '',
     `  Start from   ${referenceLine(plan.reference)}`,
     ...plan.reference.rationale.map((reason) => `               ${reason}`),
+    ...(plan.content
+      ? [
+          '',
+          `  Style        ${plan.content.style.setting}, ${plan.content.style.finish} finish`,
+          `  Content      ${plan.content.selections.map((selection) => selection.choice).join(', ')}`,
+          `               Generators: ${plan.content.generators.map((generator) => `${generator.id} (${generator.status})`).join(', ')}`,
+        ]
+      : []),
     '',
     `  Capabilities ${plan.capabilities.length} selected${plan.deferred.length > 0 ? `, ${plan.deferred.length} deferred` : ''}`,
     `               ${plan.capabilities.map((capability) => capability.id).join(', ')}`,

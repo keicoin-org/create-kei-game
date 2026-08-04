@@ -13,6 +13,7 @@
  * temporary directory, or git installed at all.
  */
 
+import { contentProjectFiles, CONTENT_CHECK_PATH } from './content-project.js'
 import { fail } from './errors.js'
 import { planJson, renderPlanMarkdown, type ImplementationPlan } from './plan.js'
 import { REFERENCE_PROJECTS, type ReferenceProject } from './references.js'
@@ -448,6 +449,11 @@ export function scaffoldWorkspace(
   project: ProjectIdentity,
   plan: ImplementationPlan,
 ): readonly WorkspaceFile[] {
+  // The 3D content pipeline runs for real, right here: manifest built,
+  // admission passed, the intro cut-scene rehearsed and assembled. A 2D plan
+  // gets an empty list and a scaffold identical to what it always was.
+  const contentFiles = contentProjectFiles(project, plan)
+
   const manifest = {
     name: project.slug,
     version: '0.0.0',
@@ -457,6 +463,7 @@ export function scaffoldWorkspace(
     scripts: {
       dev: 'echo "Wire this up in the first plan step." && exit 1',
       test: 'bun test',
+      ...(contentFiles.length > 0 ? { 'content:check': `node ${CONTENT_CHECK_PATH}` } : {}),
     },
   }
 
@@ -467,6 +474,7 @@ export function scaffoldWorkspace(
     { path: 'src/shared/simulation.ts', contents: simulation() },
     { path: 'src/client/main.ts', contents: client(project) },
     { path: 'src/server/main.ts', contents: server() },
+    ...contentFiles,
   ])
 }
 
@@ -504,6 +512,27 @@ your repository, not a contract.
 Renderer: ${plan.engine.renderer}
 
 Server: ${plan.engine.server}
+${contentReadme(plan)}`
+}
+
+function contentReadme(plan: ImplementationPlan): string {
+  if (plan.content === undefined) return ''
+  const style = plan.content.style
+  return `
+## Content
+
+Style: **${style.setting}**, ${style.finish} finish — read from what you described,
+recorded in the plan, and assumed nowhere else.
+
+| Path | What lives here |
+|---|---|
+| \`kei-mmo/content/manifest.json\` | Every asset as a versioned record: prop specs, the rig, motion clips${plan.content.selections.some((selection) => selection.area === 'audio') ? ', audio cues' : ''}. |
+| \`kei-mmo/content/pipelines.json\` | The pipeline workflows, and the external generators with their honest statuses. |
+| \`kei-mmo/content/check.mjs\` | Your admission gate: \`npm run content:check\` (or \`node kei-mmo/content/check.mjs\`). A declared file that is missing, unlicensed, or empty fails the check — so does a cut-scene referencing a clip that is not admitted. |
+${plan.content.selections.some((selection) => selection.area === 'cutscene') ? '| `kei-mmo/content/cutscenes/` | Assembled cut-scene documents. Played by `src/shared/cutscene.ts`, which is yours and imports nothing. |\n' : ''}
+Starter content is previs grade on purpose: primitive props, blocking clips,
+synthesized cue voices. Replace records as real assets arrive — the check
+script holds every replacement to the same bar.
 `
 }
 

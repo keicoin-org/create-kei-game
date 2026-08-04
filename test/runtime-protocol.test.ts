@@ -126,7 +126,7 @@ describe('versioned JSONL engine boundary', () => {
 
     const plans = output.filter((item): item is Extract<ProtocolOutput, { type: 'plan' }> => item.type === 'plan')
     expect(plans).toHaveLength(1)
-    expect(plans[0]!.plan.planVersion).toBe(1)
+    expect(plans[0]!.plan.planVersion).toBe(2)
     expect(plans[0]!.plan.intent.name).toBe('Wonderlands')
     expect(plans[0]!.plan.reference.strategy).toBe('clone')
     // The plan lands immediately after the session exists, before any event.

@@ -153,6 +153,11 @@ describe('scaffolded source', () => {
         'src/shared/simulation.ts',
         'src/client/main.ts',
         'src/server/main.ts',
+        // SCAFFOLD_PLAN is 3D, so the content pipeline lands with it. No
+        // cut-scene or player: nothing in that intent asked for one.
+        'kei-mmo/content/manifest.json',
+        'kei-mmo/content/pipelines.json',
+        'kei-mmo/content/check.mjs',
         PLAN_JSON_PATH,
         PLAN_MARKDOWN_PATH,
       ],
@@ -160,7 +165,7 @@ describe('scaffolded source', () => {
     })
     expect(JSON.parse(fs.writes.get('/work/my-game/package.json')!)).toMatchObject({ name: 'my-game', private: true })
     const written = JSON.parse(fs.writes.get(`/work/my-game/${PLAN_JSON_PATH}`)!)
-    expect(written.planVersion).toBe(1)
+    expect(written.planVersion).toBe(2)
     expect(written.intent.name).toBe(SCAFFOLD_PLAN.intent.name)
     expect(fs.writes.get(`/work/my-game/${PLAN_MARKDOWN_PATH}`)).toContain('## Capability packets')
     expect(calls).toEqual([])
@@ -182,7 +187,7 @@ describe('scaffolded source', () => {
     )
     expect(result.created).toBe(true)
     expect(forced.fs.entries.get('/work/my-game')).toEqual(['notes.txt'])
-    expect(forced.fs.writes.size).toBe(8)
+    expect(forced.fs.writes.size).toBe(11)
   })
 
   test('refuses to treat a file as a destination, including under force', async () => {

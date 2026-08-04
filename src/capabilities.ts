@@ -37,6 +37,15 @@ export type CapabilityDomain = (typeof CAPABILITY_DOMAINS)[number]
 /** `2d` and `3d` packets are mutually exclusive; `any` applies to both. */
 export type CapabilityDimension = '2d' | '3d' | 'any'
 
+/**
+ * What a packet actually is, per SPEC §11.3: `available` is implemented and
+ * exercised by a test; `planned` is specified and not implemented; `absent` is
+ * not offered, with the reason. Only `available` may ever enter a plan — the
+ * other two appear in the deferred list, naming their status, so the plan says
+ * out loud what it is not promising.
+ */
+export type CapabilityStatus = 'available' | 'planned' | 'absent'
+
 export interface CapabilityMethod {
   /** The call itself, spelled the way it is written in a source file. */
   readonly call: string
@@ -50,6 +59,9 @@ export interface CapabilityPacket {
   readonly title: string
   readonly summary: string
   readonly dimension: CapabilityDimension
+  readonly status: CapabilityStatus
+  /** Required whenever the status is not `available`: why not, honestly. */
+  readonly statusReason?: string
   /**
    * Whether every plan of the matching dimension gets this packet. When false,
    * one of `signals` has to appear in the intent, and the plan records both the
@@ -75,6 +87,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'A WebGL2 renderer driven by a fixed-step simulation clock, with instanced draw calls for the crowds an MMO puts on screen.',
     dimension: '3d',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -107,6 +120,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'A camera-transformed canvas that draws only the tiles and sprites inside the view rectangle, from one atlas.',
     dimension: '2d',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -138,6 +152,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'Named glTF clips driven by one mixer per character, cross-faded on state changes, updated from the same delta the renderer uses.',
     dimension: '3d',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -173,6 +188,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'Frame tables advanced by accumulated time, with per-state loops and a transition rule that does not restart a running state.',
     dimension: '2d',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -200,6 +216,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'Project-owned shading, either as a full ShaderMaterial or as a patch into three\'s built-in program, with the raw WebGL2 path for when neither fits.',
     dimension: 'any',
+    status: 'available',
     core: false,
     signals: [
       'shader', 'glsl', 'water', 'foliage', 'wind', 'dissolve', 'toon', 'cel', 'outline',
@@ -234,6 +251,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'A composer chain after the scene pass, with a measured frame cost and a way to switch the whole chain off.',
     dimension: '3d',
+    status: 'available',
     core: false,
     signals: [
       'bloom', 'glow', 'cinematic', 'atmosphere', 'atmospheric', 'post', 'hdr', 'tone',
@@ -272,6 +290,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'One server owns the simulation and every client predicts it. Inputs go up, snapshots come down, and a client that lies changes nothing.',
     dimension: 'any',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -311,6 +330,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'Chunks loaded and evicted around players, and character state written often enough that a crash costs one interval, not a session.',
     dimension: 'any',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -347,6 +367,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'A server-only ledger boundary with idempotent entries, two-phase trades, and supply that can be proved rather than hoped for.',
     dimension: 'any',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -385,6 +406,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'A DOM overlay that reads the same state the simulation writes, updated only when a value changes, and never measuring layout inside the frame.',
     dimension: 'any',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -415,6 +437,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'One audio graph resumed on a real gesture, with a voice cap and separate buses, positioned from the same transforms the renderer uses.',
     dimension: 'any',
+    status: 'available',
     core: false,
     signals: ['audio', 'sound', 'music', 'sfx', 'ambient', 'ambience', 'voice', 'soundtrack', 'score'],
     prerequisites: [
@@ -446,6 +469,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'Every asset listed in a manifest with a hash and a licence, loaded through one manager, compressed for the network before it ships.',
     dimension: 'any',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -481,6 +505,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'A seeded, fixed-step simulation that produces the same tick hash every run, plus socket and ledger tests that need no network.',
     dimension: 'any',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -510,6 +535,7 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
     summary:
       'A static client, a shard process that shuts down cleanly, health that reports tick lag, and configuration that is all environment references.',
     dimension: 'any',
+    status: 'available',
     core: true,
     signals: [],
     prerequisites: [
@@ -531,6 +557,267 @@ export const CAPABILITY_PACKETS: readonly CapabilityPacket[] = Object.freeze([
       'SIGTERM saves and exits without dropping a player mid-transaction.',
       '/healthz reports rising tick lag under load rather than reporting healthy.',
       'No credential value appears anywhere in the repository or the build output.',
+    ],
+  },
+  {
+    id: 'content-3d-props',
+    domain: 'content',
+    title: 'Props and models as versioned records',
+    summary:
+      'Set dressing specified as primitive-kitbash documents in a content manifest, admitted through a gate before any scene may reference them.',
+    dimension: '3d',
+    status: 'available',
+    core: true,
+    signals: [],
+    prerequisites: [
+      'The content manifest at kei-mmo/content/manifest.json, written by the harness and owned by the project.',
+      'A style profile already resolved, because the prop kit is chosen by setting and never by default.',
+      'The render-3d packet, since a prop spec is drawn with the same three primitives everything else uses.',
+    ],
+    tools: [
+      'the versioned prop-spec records in kei-mmo/content/manifest.json',
+      'three primitive geometries (BoxGeometry, CylinderGeometry, ConeGeometry, SphereGeometry)',
+      'node kei-mmo/content/check.mjs — the project-owned admission check, no harness required',
+    ],
+    methods: [
+      { call: "const manifest = JSON.parse(readFileSync('kei-mmo/content/manifest.json', 'utf8'))", does: 'Loads the manifest; every asset a scene uses is a record in it.' },
+      { call: 'const spec = manifest.assets.find((a) => a.id === id && a.kind === "prop-spec")?.data', does: 'Resolves a prop by id rather than trusting a caller-supplied shape.' },
+      { call: 'new THREE.BoxGeometry(part.size[0], part.size[1], part.size[2])', does: 'One primitive per part; cylinder and cone take (radiusTop, radiusBottom, height) from the same size triple.' },
+      { call: 'mesh.position.set(part.offset[0], part.offset[1], part.offset[2]); group.add(mesh)', does: 'Assembles the parts under one group so the prop moves as one object.' },
+      { call: "part.role === 'emissive' ? new THREE.MeshStandardMaterial({ emissive: 0xffffff }) : baseMaterial", does: 'The role field is the whole material contract: structure, accent, or emissive.' },
+      { call: 'node kei-mmo/content/check.mjs', does: 'Re-runs admission inside the project: a record whose file or document is wrong fails the build, not the player.' },
+    ],
+    acceptance: [
+      'Every prop a scene references resolves to an admitted manifest record.',
+      'The check script exits nonzero when a declared file asset is missing from disk.',
+      'A different declared style setting selects a visibly different prop kit.',
+    ],
+  },
+  {
+    id: 'content-3d-motion',
+    domain: 'animation',
+    title: 'Rig, clip records, and the motion ready gate',
+    summary:
+      'A blocking-grade rig with versioned keyframe clip documents behind an adapter seam, and a ready gate no unready clip can pass into a scene.',
+    dimension: '3d',
+    status: 'available',
+    core: true,
+    signals: [],
+    prerequisites: [
+      'The previs-biped rig definition, admitted in the content manifest like any other record.',
+      'Clip documents at the current clip version; a stale or foreign clip parses to null and is not ready.',
+      'The animation-3d packet for playback, because these clips drive the same mixer as glTF clips do.',
+    ],
+    tools: [
+      'the motion-clip records in kei-mmo/content/manifest.json',
+      'three (THREE.AnimationClip, THREE.VectorKeyframeTrack, THREE.AnimationMixer)',
+      'the harness ready gate (create-kei-mmo/motion motionReadyGate), run before any scene document is emitted',
+    ],
+    methods: [
+      { call: "new THREE.VectorKeyframeTrack(`${track.node}.position`, track.times, track.values.flat())", does: 'One keyframe track per clip track; rotation tracks target `.rotation` the same way.' },
+      { call: 'new THREE.AnimationClip(doc.id, doc.durationMs / 1000, tracks)', does: 'Builds a playable clip from the document, named by its id so lookups never use array order.' },
+      { call: 'mixer.clipAction(clip).setLoop(doc.loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)', does: 'The loop flag comes from the record; a one-shot clamps its last frame.' },
+      { call: 'isClipReady(record) === (record.status === "ready" && record.clip !== undefined && record.clipVersion === MOTION_CLIP_VERSION)', does: 'The ready triple, checked strictly: a claim of ready without a current-version payload fails closed.' },
+      { call: 'motionReadyGate(records, requiredClipIds)', does: 'Resolves every clip a scene needs at once, and returns every miss at once when any is not ready.' },
+    ],
+    acceptance: [
+      'A scene or cut-scene document referencing a clip that is not ready is never written to disk.',
+      'A clip whose version is not the one this build speaks is reported missing, not played.',
+      'Every authored clip validates against its rig: no track names a node the rig does not have.',
+    ],
+  },
+  {
+    id: 'content-3d-cutscenes',
+    domain: 'content',
+    title: 'Directed cut-scenes: plan, stage, beats, rehearsal, assembly',
+    summary:
+      'A deterministic staged pipeline that turns cast, props, and cues into a versioned cut-scene document the project plays with its own code.',
+    dimension: '3d',
+    status: 'available',
+    core: false,
+    signals: [
+      'cutscene', 'cut-scene', 'cut scene', 'cinematic', 'story', 'intro', 'opening',
+      'dialogue', 'narrative', 'quest', 'boss', 'trailer', 'scripted scene',
+    ],
+    prerequisites: [
+      'Admitted props and cues, and ready motion clips — rehearsal blocks everything else.',
+      'A style profile, because the scene title and set dressing follow the declared setting.',
+      'The player module src/shared/cutscene.ts, which the scaffold writes and the project owns outright.',
+    ],
+    tools: [
+      'the staged pipeline (create-kei-mmo/cutscene: planCutScene, stageCutScene, cutSceneBeats, rehearseCutScene, assembleCutScene) — harness-side',
+      'the assembled documents in kei-mmo/content/cutscenes/',
+      'the project-owned player in src/shared/cutscene.ts, with no harness dependency',
+    ],
+    methods: [
+      { call: 'const rehearsal = rehearseCutScene(plan, staged, beats, { clipRecords, admitted })', does: 'The checking pass: every missing clip, unadmitted cue, and out-of-bounds beat, reported at once.' },
+      { call: 'assembleCutScene(plan, staged, beats, rehearsal)', does: 'Refuses a failed rehearsal outright; the emitted document can only reference what is ready.' },
+      { call: 'stripUnready(beats, rehearsal)', does: 'The one honest repair: drop the unsatisfiable reference and let the actor hold, never ship it dangling.' },
+      { call: "advanceCutScene(doc, timeMs)", does: 'The project-side player: pure, returns the active beat, camera pose, actions, and due cues for a time.' },
+      { call: 'cutSceneDuration(doc) === doc.durationMs', does: 'Total duration is data in the document, so a caller can preallocate and never guess.' },
+    ],
+    acceptance: [
+      'Assembling twice from the same inputs produces byte-identical JSON.',
+      'Beat count and durations stay inside the published bounds, checked by rehearsal.',
+      'The scaffolded player advances the shipped cut-scene with the harness deleted from the machine.',
+    ],
+  },
+  {
+    id: 'content-3d-audio',
+    domain: 'audio',
+    title: 'Audio cues: records, placeholder voices, placement',
+    summary:
+      'Sound as versioned cue records — category, diegetic flag, a synthesized placeholder voice — placed on beats and world emitters only after admission.',
+    dimension: '3d',
+    status: 'available',
+    core: false,
+    signals: ['audio', 'sound', 'music', 'sfx', 'ambient', 'ambience', 'soundtrack', 'score', 'foley', 'voice'],
+    prerequisites: [
+      'The audio packet, because cues play through the same gesture-unlocked graph and buses.',
+      'A style profile: the cue palette follows the declared setting, and no setting means the neutral palette.',
+      'Admission for every cue a placement names; rehearsal refuses the rest.',
+    ],
+    tools: [
+      'the audio-cue records in kei-mmo/content/manifest.json',
+      'Web Audio (OscillatorNode, GainNode, AudioBufferSourceNode for the noise voice)',
+      'the cue placements carried on cut-scene beats',
+    ],
+    methods: [
+      { call: "const osc = audio.createOscillator(); osc.type = cue.synth.wave; osc.frequency.setValueAtTime(cue.synth.startHz, t0)", does: 'The placeholder voice: one oscillator per cue, typed by the record.' },
+      { call: 'osc.frequency.linearRampToValueAtTime(cue.synth.endHz, t0 + cue.synth.durationMs / 1000)', does: 'The pitch ramp that makes a blip read as a scanner rather than a beep.' },
+      { call: 'gain.gain.setValueAtTime(0, t0); gain.gain.linearRampToValueAtTime(cue.synth.gain, t0 + attack)', does: 'Attack and release from the record, so no cue starts or stops with a click.' },
+      { call: "cue.synth.wave === 'noise' ? noiseBufferSource(audio) : osc", does: 'The noise voice covers thuds and room tone; a looped one-second white buffer is enough at previs grade.' },
+      { call: 'placement.spatial ? positionalGainFor(distance, placement.spatial.radiusM) : 1', does: 'Diegetic cues fall off over their declared radius; score does not, because it is not in the world.' },
+    ],
+    acceptance: [
+      'Every placed cue names an admitted audio-cue record.',
+      'A plan with no audio in it produces beats with no cue placements, not dangling ids.',
+      'The declared setting changes which cue palette the manifest carries.',
+    ],
+  },
+  {
+    id: 'content-3d-model-generation',
+    domain: 'content',
+    title: 'Generated 3D models (external generator)',
+    summary:
+      'Text-to-3D or image-to-3D mesh generation feeding the same manifest and admission gate the primitive kits use — specified, and not implemented here.',
+    dimension: '3d',
+    status: 'planned',
+    statusReason:
+      'It needs an external generation service and a review pass; this harness bundles neither, and will not emit a mesh nothing here can inspect. The admission gate for its outputs is already real: a generated model-file record with no bytes on disk is blocked as generator_output_missing.',
+    core: false,
+    signals: ['text-to-3d', 'generate model', 'generated model', 'model generation', '3d generation', 'photogrammetry', 'scan'],
+    prerequisites: [
+      'An external mesh generator reachable from the harness, with its credential named by environment variable and never written to the project.',
+      'A review step, because a generated mesh ships with the game and nobody here has seen it.',
+      'The content manifest, where the output lands as a model-file record with provenance and a licence.',
+    ],
+    tools: [
+      'an external text-to-3D or image-to-3D service (none is bundled)',
+      'the model-file records and admission gate in kei-mmo/content/manifest.json',
+      'three GLTFLoader for the admitted output, exactly as the content-pipeline packet loads anything else',
+    ],
+    methods: [
+      { call: "manifest.assets.push({ id, kind: 'model-file', source: { kind: 'generated', generator }, path, licence })", does: 'The record shape a generator adapter must produce: provenance and licence, or admission refuses it.' },
+      { call: 'admitAssets(manifest, probe).blocked.find((v) => v.code === "generator_output_missing")', does: 'The gate that already exists: a declared output with no bytes blocks, it never becomes a scene reference.' },
+      { call: "loader.load(record.path, (gltf) => scene.add(gltf.scene))", does: 'Admitted output enters the scene through the ordinary loader path, nothing bespoke.' },
+    ],
+    acceptance: [
+      'Declaring a generated model without its file blocks admission with generator_output_missing.',
+      'No plan cites this packet while its status is planned; it appears in deferred, naming the status.',
+    ],
+  },
+  {
+    id: 'content-3d-motion-capture',
+    domain: 'animation',
+    title: 'Generated and captured motion (external service)',
+    summary:
+      'Text-to-motion generation or mocap import through the motion adapter seam, reported as clip records the ready gate already understands — specified, not implemented.',
+    dimension: '3d',
+    status: 'planned',
+    statusReason:
+      'It needs an external motion service (an ARDY-style text-to-motion generator, or a retargeting import). The adapter seam, record shape, and ready gate are implemented and tested; the service behind them is not, and no clip is promised from it.',
+    core: false,
+    signals: ['mocap', 'motion capture', 'text-to-motion', 'retarget', 'performance capture'],
+    prerequisites: [
+      'An external motion service reachable from the harness, its credential named by environment variable only.',
+      'A pinned seed on every generation request, because an unreproducible clip cannot be admitted twice.',
+      'The previs-biped rig or a declared richer rig for retargeting; a clip that names unknown nodes fails validation.',
+    ],
+    tools: [
+      'the MotionAdapter seam (create-kei-mmo/motion): ingest(request) → one record per requested clip',
+      'the motion-file records and admission gate for imported takes',
+      'the ready gate, which is what keeps a pending generation out of every scene',
+    ],
+    methods: [
+      { call: 'adapter.ingest({ clips: [{ id, prompt, durationMs, seed }] }, probe)', does: 'The request shape an ARDY-style generator drops into: prompt, duration, pinned seed, one explicit record back per clip.' },
+      { call: "records.every((r) => r.status === 'ready' || r.status === 'pending' || r.status === 'failed' || r.status === 'missing')", does: 'A report never omits a requested clip; silence is not a status.' },
+      { call: 'motionReadyGate(records, requiredIds).ok === false', does: 'A pending or failed generation blocks the scene that wanted it — degraded honestly, never referenced hopefully.' },
+    ],
+    acceptance: [
+      'A pending clip record blocks cut-scene assembly until an ingest reports it ready.',
+      'No plan cites this packet while its status is planned; it appears in deferred, naming the status.',
+    ],
+  },
+  {
+    id: 'content-3d-sfx-generation',
+    domain: 'audio',
+    title: 'Generated SFX and music (external generator)',
+    summary:
+      'Audio generation feeding audio-file records with provenance and a licence, behind the same admission gate the synthesized placeholders bypass honestly — specified, not implemented.',
+    dimension: '3d',
+    status: 'planned',
+    statusReason:
+      'It needs an external audio generation service; none is bundled, and the synthesized placeholder voices are deliberately not passed off as one. Produced files land as audio-file records, and the gate that blocks a missing one already runs.',
+    core: false,
+    signals: ['generate sound', 'sound generation', 'generated audio', 'audio generation', 'music generation', 'procedural music'],
+    prerequisites: [
+      'An external audio generator reachable from the harness, credential by environment-variable name only.',
+      'Licensing terms recorded per produced file, because admission refuses an unlicensed file outright.',
+      'The cue records whose placeholder voices the produced files replace, one for one.',
+    ],
+    tools: [
+      'an external SFX or music generation service (none is bundled)',
+      'the audio-file records and admission gate in kei-mmo/content/manifest.json',
+      'the cue placement rules from the content-3d-audio packet, unchanged',
+    ],
+    methods: [
+      { call: "manifest.assets.push({ id, kind: 'audio-file', source: { kind: 'generated', generator }, path: 'assets/audio/x.wav', licence })", does: 'The record a generator adapter must write; the placeholder synth stays until this admits.' },
+      { call: 'admitAssets(manifest, probe).blocked.find((v) => v.code === "generator_output_missing")', does: 'A declared render with no bytes blocks admission, exactly as models do.' },
+      { call: 'audio.decodeAudioData(await file.arrayBuffer())', does: 'Admitted audio decodes once into the same buffer cache the audio packet already specifies.' },
+    ],
+    acceptance: [
+      'Declaring a generated audio file without its bytes blocks admission with generator_output_missing.',
+      'No plan cites this packet while its status is planned; it appears in deferred, naming the status.',
+    ],
+  },
+  {
+    id: 'content-3d-voice-acting',
+    domain: 'audio',
+    title: 'Voice performance',
+    summary:
+      'Recorded or synthesized voice lines for characters and narration — not offered by this harness, for reasons no gate here can check away.',
+    dimension: '3d',
+    status: 'absent',
+    statusReason:
+      'Voice needs casting, consent, and licensing review that an offline gate cannot vouch for, and synthetic voices of real people are a line this harness does not go near. Record real performances and admit them as ordinary audio-file records with a licence.',
+    core: false,
+    signals: ['voice acting', 'voiceover', 'voice-over', 'voice lines', 'spoken dialogue', 'narration'],
+    prerequisites: [
+      'Performances recorded outside this harness, with the performer\'s consent and licence in hand.',
+      'The audio-file admission path, which is how a finished line enters the manifest.',
+    ],
+    tools: [
+      'no tool here — the decision is the point, and the audio-file records are the door back in',
+    ],
+    methods: [
+      { call: "manifest.assets.push({ id, kind: 'audio-file', source: { kind: 'imported', origin: 'studio session' }, path, licence })", does: 'A finished, licensed line enters as an import; admission checks the bytes and the licence like any other file.' },
+      { call: 'admitAssets(manifest, probe).blocked.find((v) => v.code === "missing_licence")', does: 'An unlicensed voice file is refused, which is the one check a harness can make.' },
+      { call: 'cuePlacement = { cueId, atMs, gain }', does: 'Placement of an admitted line uses the same beat machinery as every other cue.' },
+    ],
+    acceptance: [
+      'No plan cites this packet; it appears in deferred, naming the absent status and its reason.',
+      'An imported voice line without a licence is blocked at admission.',
     ],
   },
 ] as const satisfies readonly CapabilityPacket[])
@@ -562,6 +849,11 @@ export interface CapabilitySelection {
  * did not, the miss is recorded rather than dropped — "no audio goals were
  * given" is something the developer should be able to read back and disagree
  * with.
+ *
+ * Status is the binding rule on top: only an `available` packet may be
+ * selected. A `planned` or `absent` one is deferred with its status named —
+ * whether or not the intent asked for it — so the plan says what is not on
+ * offer instead of implying it quietly is.
  */
 export function selectCapabilities(
   dimension: '2d' | '3d',
@@ -579,6 +871,17 @@ export function selectCapabilities(
           reason: `Only applies to a ${packet.dimension.toUpperCase()} project, and this plan is ${dimension.toUpperCase()}.`,
         })
       }
+      continue
+    }
+    if (packet.status !== 'available') {
+      const asked = packet.signals.find((signal) => haystack.includes(signal))
+      const reason = packet.statusReason ?? 'No reason was recorded, which is itself a defect.'
+      deferred.push({
+        id: packet.id,
+        reason: asked === undefined
+          ? `Declared ${packet.status}: ${reason}`
+          : `The intent mentions "${asked}", but this method is ${packet.status}: ${reason}`,
+      })
       continue
     }
     if (packet.core) {

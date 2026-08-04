@@ -151,6 +151,9 @@ describe('the whole seam, wired up', () => {
       'README.md',
       PLAN_MARKDOWN_PATH,
       PLAN_JSON_PATH,
+      'kei-mmo/content/check.mjs',
+      'kei-mmo/content/manifest.json',
+      'kei-mmo/content/pipelines.json',
       'package.json',
       'src/client/main.ts',
       'src/server/main.ts',
@@ -161,7 +164,7 @@ describe('the whole seam, wired up', () => {
     expect(await readFile(join(prepared.directory, 'src', 'client', 'main.ts'), 'utf8')).toContain('My Game')
     expect(
       JSON.parse(await readFile(join(prepared.directory, ...PLAN_JSON_PATH.split('/')), 'utf8')).planVersion,
-    ).toBe(1)
+    ).toBe(2)
   })
 
   test('a directory with files in it stops a blank workspace, and --force writes in', async () => {
