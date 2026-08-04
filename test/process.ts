@@ -208,9 +208,15 @@ export function parseProcessTable(text: string, truncated = false): ProcessTable
   const children = new Map<number, number[]>()
   const parents = new Map<number, number>()
   const created = new Map<number, number>()
+  let malformed = false
   for (const line of text.split(/\r?\n/)) {
-    const triple = /^(\d+) (\d+) (\d+)$/.exec(line.trim())
-    if (triple === null) continue
+    const record = line.trim()
+    if (record === '') continue
+    const triple = /^(\d+) (\d+) (\d+)$/.exec(record)
+    if (triple === null) {
+      malformed = true
+      continue
+    }
     const pid = Number(triple[1])
     const parent = Number(triple[2])
     const createdAt = Number(triple[3])
@@ -224,6 +230,7 @@ export function parseProcessTable(text: string, truncated = false): ProcessTable
     else siblings.push(pid)
   }
   if (created.size === 0) throw new Error('the Windows process table contained no valid records')
+  if (malformed) throw new Error('the Windows process table contained an invalid record')
   return { children, parents, created }
 }
 
@@ -243,12 +250,20 @@ export function parseWmicProcessTable(text: string, truncated = false): ProcessT
   if (truncated) throw new Error('the Windows process table exceeded its bounded size')
   const triples: string[] = []
   const records = /CreationDate=([^\r\n]*)\s+ParentProcessId=(\d+)\s+ProcessId=(\d+)/g
+  let cursor = 0
   for (const match of text.matchAll(records)) {
+    if (text.slice(cursor, match.index).trim() !== '') {
+      throw new Error('the Windows process table contained an invalid record')
+    }
     const created = dmtfTimestampMs(match[1]!)
     if (created === undefined) {
       throw new Error('the Windows process table contained an invalid creation time')
     }
     triples.push(`${match[3]} ${match[2]} ${created}`)
+    cursor = match.index + match[0].length
+  }
+  if (text.slice(cursor).trim() !== '') {
+    throw new Error('the Windows process table contained an invalid record')
   }
   return parseProcessTable(triples.join('\n'))
 }

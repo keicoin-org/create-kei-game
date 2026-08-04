@@ -584,6 +584,8 @@ describe('Windows owned-tree ownership graph', () => {
       .toThrow('the Windows process table contained no valid records')
     expect(() => parseProcessTable('100 4 0'))
       .toThrow('the Windows process table contained an invalid record')
+    expect(() => parseProcessTable('100 4 1010\nmalformed owned row\n200 100 1500'))
+      .toThrow('the Windows process table contained an invalid record')
   })
 
   test('WMIC timestamps are normalized to epoch milliseconds without accepting malformed output', () => {
@@ -596,6 +598,15 @@ describe('Windows owned-tree ownership graph', () => {
     expect(table.created.get(200)).toBe(Date.UTC(2026, 7, 4, 16, 30, 45, 123))
     expect(() => parseWmicProcessTable('CreationDate=bad\nParentProcessId=1\nProcessId=2'))
       .toThrow('the Windows process table contained an invalid creation time')
+    expect(() => parseWmicProcessTable([
+      'CreationDate=20260804123045.123456-240',
+      'ParentProcessId=100',
+      'ProcessId=200',
+      'malformed owned record',
+      'CreationDate=20260804123046.123456-240',
+      'ParentProcessId=200',
+      'ProcessId=300',
+    ].join('\r\n'))).toThrow('the Windows process table contained an invalid record')
   })
 
   test('repeated snapshots reach late children through revalidated intermediaries and converge', () => {
