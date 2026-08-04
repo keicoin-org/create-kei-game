@@ -118,8 +118,11 @@ that observes clicks closes that hole.
 
 ## When there is a testnet
 
-Everything above runs against a mock node. When there is a public testnet, point
-at it and delete the mock:
+Everything above runs against a mock node. When there is a public testnet:
+
+- point this at a real endpoint and set `network: 'testnet'`
+- stop using `MockNode` and `mockRpcHandler`
+- keep the orders file; it is load-bearing on a persistent chain and should not be reset on restart
 
 ```ts
 // server/main.ts
