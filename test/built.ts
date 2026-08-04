@@ -8,14 +8,23 @@
  * Build at most once per process, and only when `dist/` is actually behind the
  * sources. In CI it never runs at all: the workflow does `bun run typecheck`
  * before `bun test`, and `tsc --build` has already emitted everything.
+ *
+ * Awaited at module scope rather than from `beforeAll`: Bun caps a hook at five
+ * seconds, so a real build there could only ever report an unnamed hook timeout
+ * while the `tsc` it started ran on. The deadline belongs to the bounded process
+ * harness, which kills the tree and names the phase.
  */
 
-import { spawnSync } from 'node:child_process'
 import { readdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { requireProcessSuccess, runProcess } from './process.js'
+
 const root = fileURLToPath(new URL('..', import.meta.url))
+
+/** Wide enough for a cold `tsc --build`; the harness kills the tree past it. */
+const BUILD_TIMEOUT_MS = 180_000
 
 /** Newest mtime under a directory, or 0 when it is not there. */
 function newestMtime(directory: string): number {
@@ -34,12 +43,9 @@ function newestMtime(directory: string): number {
   return newest
 }
 
-let done = false
+let started: Promise<void> | undefined
 
-export function ensureBuilt(): void {
-  if (done) return
-  done = true
-
+async function build(): Promise<void> {
   // `tsc --build` is itself incremental, so this only skips the process spawn —
   // which is the part that was costing the memory.
   if (newestMtime(join(root, 'dist')) > newestMtime(join(root, 'src'))) return
@@ -51,11 +57,18 @@ export function ensureBuilt(): void {
   // binary fails against a directory that is not there.
   rmSync(join(root, 'tsconfig.tsbuildinfo'), { force: true })
 
-  const built = spawnSync(process.execPath, ['run', 'build'], {
+  // The last synchronous spawn in the suite was this one, and it was the
+  // heaviest: a whole `tsc` held inside the test process. Through the bounded
+  // async harness the build cannot block the loop, its output cannot grow
+  // without limit, and a failure names its phase instead of dying as an
+  // unnamed hook.
+  requireProcessSuccess('test-build', await runProcess(process.execPath, ['run', 'build'], {
     cwd: root,
-    encoding: 'utf8',
-    timeout: 60_000,
-  })
-  if (built.error) throw built.error
-  if (built.status !== 0) throw new Error(`Test build failed: ${built.stderr}`)
+    timeoutMs: BUILD_TIMEOUT_MS,
+  }))
+}
+
+export async function ensureBuilt(): Promise<void> {
+  started ??= build()
+  await started
 }

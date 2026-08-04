@@ -1,15 +1,17 @@
 import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
 import {
   TERMINATION_BUDGET_MS,
   classifyOwnedDescendants,
+  nodeExecutable,
   ownedDescendants,
   parseProcessTable,
   parseWmicProcessTable,
   processFailureDiagnostic,
+  requireProcessExit,
   requireProcessSuccess,
   runProcess,
   safeOsMessage,
@@ -119,13 +121,6 @@ function readTreePids(recordPath: string): TreePids {
   return JSON.parse(readFileSync(recordPath, 'utf8')) as TreePids
 }
 
-function requireNode(): string {
-  const node = Bun.which('node')
-  expect(node).not.toBeNull()
-  if (node === null) throw new Error('Node.js executable is unavailable')
-  return node
-}
-
 describe('bounded process diagnostics', () => {
   test('an injected spawn error reports its safe OS fields instead of an undefined status assertion', () => {
     const error = Object.assign(
@@ -154,6 +149,43 @@ describe('bounded process diagnostics', () => {
     expect(diagnostic).not.toContain('request body')
     expect(diagnostic).not.toContain('generated secret')
     expect(() => requireProcessSuccess('runtime-cli', result)).toThrow(diagnostic)
+  })
+
+  test('the Node executable is resolved once to an absolute existing path', () => {
+    const node = nodeExecutable()
+    expect(isAbsolute(node)).toBeTrue()
+    expect(existsSync(node)).toBeTrue()
+    expect(nodeExecutable()).toBe(node)
+  })
+
+  test('expected nonzero exits keep strong diagnostics without leaking an OS path', async () => {
+    const refused = await runProcess(
+      nodeExecutable(),
+      ['-e', "process.stderr.write('generator_output_missing: text-to-3d');process.exit(1)"],
+      { cwd: process.cwd(), timeoutMs: 10_000 },
+    )
+    requireProcessExit('content-check', refused, 1)
+    expect(refused.stderr).toBe('generator_output_missing: text-to-3d')
+    expect(() => requireProcessSuccess('content-check', refused)).toThrow(
+      processFailureDiagnostic('content-check', refused),
+    )
+
+    const privateRoot = join(temporaryRoot(), 'expected-exit-private')
+    const statusless = {
+      status: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      error: Object.assign(new Error(`spawn ${join(privateRoot, 'missing-node.exe')} ENOENT`), {
+        code: 'ENOENT',
+      }),
+    } as const
+    const diagnostic = processFailureDiagnostic('content-check', statusless)
+    expect(() => requireProcessExit('content-check', statusless, 1)).toThrow(diagnostic)
+    expect(JSON.parse(diagnostic)).toMatchObject({ errorCode: 'ENOENT' })
+    expect(diagnostic).not.toContain(privateRoot)
+    expect(diagnostic).not.toContain('expected-exit-private')
+    expect(diagnostic).not.toContain('missing-node')
   })
 
   test('a missing executable is reported without its absolute path or private segments', async () => {
@@ -207,7 +239,7 @@ describe('bounded process diagnostics', () => {
   })
 
   test('the asynchronous harness bounds output and awaits a clean child close', async () => {
-    const node = requireNode()
+    const node = nodeExecutable()
 
     const result = await runProcess(
       node,
@@ -227,7 +259,7 @@ describe('bounded process diagnostics', () => {
   })
 
   test('a timeout kills the complete child process tree before it resolves', async () => {
-    const node = requireNode()
+    const node = nodeExecutable()
     const recordPath = join(temporaryRoot(), 'pids.json')
 
     const started = Date.now()
@@ -249,7 +281,7 @@ describe('bounded process diagnostics', () => {
   })
 
   test('a terminator that resolves without acting cannot settle while the tree lives', async () => {
-    const node = requireNode()
+    const node = nodeExecutable()
     const recordPath = join(temporaryRoot(), 'pids.json')
     const observed: { parentAlive?: boolean; descendantAlive?: boolean } = {}
 
@@ -286,7 +318,7 @@ describe('bounded process diagnostics', () => {
   })
 
   test('a terminator that kills only the parent and resolves cannot settle while its descendant lives', async () => {
-    const node = requireNode()
+    const node = nodeExecutable()
     const recordPath = join(temporaryRoot(), 'pids.json')
     const observed: { parentAlive?: boolean; descendantAlive?: boolean } = {}
 
@@ -328,7 +360,7 @@ describe('bounded process diagnostics', () => {
   })
 
   test('terminator rejection text and run sentinels never reach a diagnostic', async () => {
-    const node = requireNode()
+    const node = nodeExecutable()
     const recordPath = join(temporaryRoot(), 'pids.json')
     const rejectionSentinel = 'KEI_PRIVATE_REJECTION_9d41f7'
     const environmentSentinel = 'KEI_PRIVATE_ENV_9d41f7'
@@ -361,7 +393,7 @@ describe('bounded process diagnostics', () => {
   })
 
   test('a terminator that kills only the parent and hangs still loses its descendant to the fallback', async () => {
-    const node = requireNode()
+    const node = nodeExecutable()
     const recordPath = join(temporaryRoot(), 'pids.json')
     const observed: { parentAlive?: boolean; descendantAlive?: boolean; descendant?: number } = {}
 
@@ -407,7 +439,7 @@ describe('bounded process diagnostics', () => {
   })
 
   test('a rejected terminator reaches the same bounded fallback', async () => {
-    const node = requireNode()
+    const node = nodeExecutable()
     const recordPath = join(temporaryRoot(), 'pids.json')
 
     const started = Date.now()
