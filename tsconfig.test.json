@@ -1,0 +1,19 @@
+// The suite. Separate from `tsconfig.json` because it runs under Bun rather
+// than Node, and because `rootDir: "src"` there would refuse these files.
+//
+// `test/purchase.test.ts` imports `templates/shared/game.js` directly, which
+// pulls a template — holes and all — into this program too, so the placeholder
+// declarations are needed here as well as in `tsconfig.templates.json`.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": ["bun", "node"],
+    "noEmit": true
+  },
+  "include": [
+    "test",
+    "types/template-placeholders.d.ts"
+  ]
+}
