@@ -48,7 +48,10 @@ the action or has advanced far enough that the action can no longer land; an
 empty immediate read is never treated as a rejection. Back the file up the way
 you would back up a database. Losing it cannot make the game pay twice — that is
 what the ordering is for — but the wallets whose records it held can no longer
-buy, and telling them apart is exactly what the lost file was doing.
+buy, and telling them apart is exactly what the lost file was doing. It also
+records how far along the issuer's chain it has read, so a start reads the
+blocks written since the last one rather than all of them; lose it and the next
+start reads the whole chain to work that out again.
 
 **The browser holds a key and signs its own transactions.** There is no session
 and no login. The game server never sees a player's key and cannot move their

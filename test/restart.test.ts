@@ -125,8 +125,8 @@ const settle = (kei: Kei, node: MockNode): Promise<void> =>
 // ------------------------------------------------------------------ the journal
 
 interface Entry {
-  k: 'intent' | 'done' | 'void'
-  hash: string
+  k: 'intent' | 'done' | 'void' | 'mark'
+  hash?: string
   address?: string
   outcome?: LanternOutcome
 }
@@ -137,6 +137,9 @@ const lines = (path: string): string[] =>
     .filter((line) => line.trim() !== '')
 
 const entries = (path: string): Entry[] => lines(path).map((line) => JSON.parse(line) as Entry)
+
+/** What the game answered, without the marks that say how far it has read the chain. */
+const answered = (path: string): Entry[] => entries(path).filter((entry) => entry.k !== 'mark')
 
 /** Rewrite the log. `torn` is appended without its newline, the way a crash mid-append leaves it. */
 function rewrite(path: string, kept: string[], torn?: string): void {
@@ -497,6 +500,19 @@ describe('one wallet, two payments, and a log that lost its last line', () => {
         } finally {
           second.close()
         }
+
+        // And after another restart. The boot above wrote down what the chain
+        // showed for this wallet so that the next one does not have to read the
+        // chain from the beginning to find out — and the one thing that record
+        // must not do is lose an answer it could not attribute.
+        const third = await game.boot()
+        try {
+          await expect(third.buyLantern(kei.address, a.hash)).rejects.toThrow(/already been answered/)
+          await expect(third.buyLantern(kei.address, b.hash)).rejects.toThrow(/already been answered/)
+          expect(await holdings(kei, lanterns)).toEqual(settled)
+        } finally {
+          third.close()
+        }
       } finally {
         kei.close()
       }
@@ -560,7 +576,7 @@ describe('a crash at every boundary of one purchase', () => {
     async () => {
       const { game, kei, lanterns, item, hash } = await paidAndStopped('before-intent')
       try {
-        expect(lines(game.orders)).toEqual([])
+        expect(answered(game.orders)).toEqual([])
 
         const back = await game.boot()
         try {
