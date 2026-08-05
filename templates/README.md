@@ -141,7 +141,12 @@ const game = await startGame({ seed: process.env.GAME_SEED!, node: 'https://…'
 const kei = await Kei.start({ node: 'https://…', network: 'testnet' })
 ```
 
-Nothing else changes. That is the whole point of building against the mock.
+Your game does not change. That is the whole point of building against the mock —
+and it is worth being exact about which lines are the mock rather than the game,
+because the three above are not all of them. `MockNode.create()`, the
+`mockRpcHandler` beside it and the `/rpc` route that serves it all go with the
+in-memory chain; the browser talks to the real endpoint instead. What is left is
+the section below, and it is the one that can cost you a customer.
 
 ### If the orders file is lost
 
@@ -155,14 +160,38 @@ reposts a payment made before the loss is told:
 
 That refusal is the right answer rather than a bug. Delivering again mints a
 second lantern; refunding hands back the price of one the player is still
-holding. Only wallets the game had already answered are affected, and only for
-payments they had not yet redeemed — a wallet the game has never answered is
-unaffected, because there is nothing to confuse its payment with.
+holding. A wallet the game has never answered is unaffected — there is nothing to
+confuse its payment with.
 
-Recovering means settling those wallets by hand. The issuer's own account
-history is intact on the chain and shows every mint and every refund the game
-sent, so what a wallet was given is knowable even when which payment it was for
-is not.
+What it is not is limited to the payments that were in flight. The chain's count
+of answers only grows and the file's restarts at zero, so an affected wallet is
+refused on **every purchase it ever makes afterwards**, on every boot, for good.
+That is the difference between losing this file and losing a cache.
+
+#### Adopting the chain as a baseline
+
+`startGame` takes `adoptChainAsBaseline: true` for exactly one boot. It writes
+down, once, how many answers the chain shows for each wallet that this file
+cannot account for, and counts them from then on as though the entries were
+there. Those wallets can buy again.
+
+What it costs is not small, and `server/orders.ts` states it in full where the
+option is declared. The entries are gone, so the *hashes* they named are still
+unknown — every payment made before the loss becomes answerable a second time. A
+player who paid for a lantern, received it, and still holds the receipt can post
+that hash once more and be answered again. That is the double answer the whole
+file exists to prevent, and adopting a baseline is choosing to accept it for
+everything bought before the loss.
+
+So it is worth it when the wallets you are refusing outnumber the receipts
+anybody still holds, and not otherwise. Take the flag back out afterwards: it
+writes its decision to the log rather than keeping it in memory, so one boot is
+enough, and left in it would forgive the *next* loss without telling you.
+
+The alternative is settling those wallets by hand, which is always available: the
+issuer's account history is intact on the chain and shows every mint and every
+refund the game sent, so what a wallet was given is knowable even when which
+payment it was for is not.
 
 ## Shipping it
 
