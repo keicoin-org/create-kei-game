@@ -1,0 +1,27 @@
+// The generated game, checked here rather than in the developer's project.
+//
+// `templates/` is the product — `src/` is only the machinery that copies it —
+// so this is the config that guards the deliverable. It extends
+// `templates/tsconfig.json`, the config that ships *inside* the generated
+// project, so the options here cannot drift from the ones the developer will
+// run: change theirs and this changes with it.
+//
+// Only `include` differs, because the paths in theirs are relative to their
+// project root, plus `types/template-placeholders.d.ts` for the three
+// identifiers a template still has holes for.
+//
+// The imports resolve because `@babylonjs/core` and `kei-transaction` are
+// devDependencies of *this* package at the same ranges `templates/package.json`
+// declares — `kei-transaction` at the exact range the scaffolder writes, since
+// `src/index.ts` reads it from here. So the template is checked against the
+// versions a developer installs, and an SDK release that breaks the emitted
+// game breaks this build rather than their first `bun run dev`.
+{
+  "extends": "./templates/tsconfig.json",
+  "include": [
+    "templates/src",
+    "templates/server",
+    "templates/shared",
+    "types/template-placeholders.d.ts"
+  ]
+}

@@ -100,6 +100,11 @@ It has a harder one too: `bun test` writes the project out, imports both halves,
 and buys the item, so an SDK change that breaks the emitted code fails here
 rather than in somebody's brand-new project.
 
+`bun run typecheck` compiles the template as well as this package —
+`tsconfig.templates.json` extends the config the generated project ships with,
+against the same dependency versions it declares. `templates/` is the product,
+so a type error in it is a type error in what you shipped.
+
 The downloaded templates get a strict version of the same treatment. Renaming one
 has to find the project's name, its currency, and its README exactly where it
 expects them, and **fails loudly when it does not** — so a drift in either of

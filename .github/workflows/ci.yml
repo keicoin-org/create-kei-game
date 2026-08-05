@@ -1,12 +1,8 @@
-# The test suite, on every push and every pull request.
+# The test suite and the typecheck, on every push and every pull request.
 #
-# `bun test` only. There is deliberately no typecheck step: `tsconfig.json`
-# extends `../../tsconfig.base.json`, which does not exist in this repository —
-# it is a leftover from when this package lived inside the kei-transaction
-# monorepo — so `tsc --noEmit` fails with TS5083 before it looks at any source.
-# Adding a step that cannot pass would be worse than leaving the gap visible.
-# Restoring the typecheck means authoring a base config, which is a decision
-# about compiler options rather than a CI change.
+# Two jobs rather than two steps, because they fail for unrelated reasons and
+# each is worth seeing even when the other is red. `typecheck` is the shorter
+# of the two and usually answers first.
 #
 # The suite stands the generated project up and runs it against an in-memory
 # chain, so it is minutes rather than seconds and needs no network.
@@ -46,3 +42,22 @@ jobs:
       - run: bun install
 
       - run: bun test
+
+  # Three programs: this package, the suite, and — the one that did not exist
+  # until #56 — the game the package emits. `templates/` is what a developer
+  # runs, so a type error in it is a type error in the product, and it was
+  # invisible for as long as `tsconfig.json` said `"include": ["src"]`.
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - run: bun run typecheck

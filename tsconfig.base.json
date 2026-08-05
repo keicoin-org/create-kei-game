@@ -1,0 +1,25 @@
+// The options this package's own code is written against.
+//
+// `tsconfig.json` extended `../../tsconfig.base.json` for as long as this package
+// lived inside the kei-transaction monorepo, and kept extending it after the
+// split — so `tsc` failed with TS5083 before reading a line of source, and the
+// package had no typecheck at all. This is that file, authored here.
+//
+// The strictness matches `templates/tsconfig.json`, which is the config the
+// generated game ships with: the scaffolder should not hold itself to a lower
+// standard than the code it emits. What is *not* shared is the module system —
+// `src/` is Node ESM that emits to `dist/`, the generated game is bundled by
+// Bun — so that stays with each config that extends this one.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  }
+}
