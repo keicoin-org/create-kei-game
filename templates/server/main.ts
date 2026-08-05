@@ -107,7 +107,7 @@ const server = Bun.serve({
 })
 
 console.log(`
-  __PROJECT_TITLE__
+  __PROJECT_TITLE_TEMPLATE__
 
   play          ${server.url}
   node (mock)   ${server.url}rpc

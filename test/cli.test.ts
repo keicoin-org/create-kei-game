@@ -28,6 +28,7 @@ describe('parseArgs', () => {
     expect(options).toEqual({
       name: 'star-clicker',
       currency: 'Gems',
+      json: false,
       yes: true,
       force: true,
       help: false,
@@ -37,6 +38,7 @@ describe('parseArgs', () => {
 
   test('short flags', () => {
     expect(parseArgs(['-y']).yes).toBe(true)
+    expect(parseArgs(['--json']).json).toBe(true)
     expect(parseArgs(['-h']).help).toBe(true)
     expect(parseArgs(['-v']).version).toBe(true)
   })
@@ -76,5 +78,6 @@ describe('helpText', () => {
     expect(text).toContain('create-kei-game 9.9.9')
     expect(text).toContain(DEFAULT_CURRENCY)
     expect(text).toContain('npm create kei-game')
+    expect(text).toContain('--json')
   })
 })
