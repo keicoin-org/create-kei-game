@@ -8,7 +8,7 @@
  * for the rest, so the whole harness runs unattended.
  */
 
-import { fail } from './errors.js'
+import { HarnessError, fail } from './errors.js'
 import { DEFAULT_TEMPLATE, TEMPLATES } from './templates.js'
 
 export interface CliOptions {
@@ -33,9 +33,42 @@ export const DEFAULT_CURRENCY = 'Coins'
 
 const FLAGS = ['--template', '--currency', '--json', '--yes', '-y', '--force', '--help', '-h', '--version', '-v']
 
+/**
+ * A command line this could not read, carrying what it had read when it gave up.
+ *
+ * `--json` is the machine contract (SPEC §12), so the caller that failed still
+ * has to be answered in the format it asked for — and this parser is the only
+ * thing that knows whether it asked. A run that sets `--json` and then mistypes
+ * its third flag asked for JSON; `--currency --json`, where the token was taken
+ * as a value and rejected as one, never asked for anything.
+ *
+ * `parsed` is therefore what was established *before* the failing token, and
+ * nothing more. It is not a usable set of options — the run is over — it is the
+ * answer to one question: how to say so.
+ */
+export class CliError extends HarnessError {
+  constructor(
+    message: string,
+    readonly parsed: CliOptions,
+  ) {
+    super(message)
+  }
+}
+
 export function parseArgs(argv: readonly string[]): CliOptions {
   const options: CliOptions = { json: false, yes: false, force: false, help: false, version: false }
 
+  try {
+    read(argv, options)
+  } catch (error) {
+    if (error instanceof HarnessError) throw new CliError(error.message, { ...options })
+    throw error
+  }
+
+  return options
+}
+
+function read(argv: readonly string[], options: CliOptions): void {
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!
 
@@ -97,8 +130,6 @@ export function parseArgs(argv: readonly string[]): CliOptions {
       }
     }
   }
-
-  return options
 }
 
 export function helpText(version: string): string {
