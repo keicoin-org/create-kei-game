@@ -1,0 +1,15 @@
+# Installed dependencies. There was no ignore file here at all, so these showed
+# up as untracked and `git add -A` in this repository would commit them.
+node_modules/
+
+# Bun's lockfile. Not committed on purpose: see .github/workflows/ci.yml.
+bun.lock
+bun.lockb
+
+# Where the tests write the generated project out and run it. Every suite that
+# uses it removes its own directory afterwards; this covers the runs that fail
+# partway and leave one behind.
+.generated/
+
+# Built output, from `tsc`.
+dist/

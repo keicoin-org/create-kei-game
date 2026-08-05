@@ -223,6 +223,13 @@ const delivered = (item: string): Settled => ({ status: 'answered', outcome: { o
 
 // Laid down once and shared: a chain takes a moment to write, and the tests
 // below only ever read it and add to the end of it.
+//
+// Writing 360 blocks and signing every one of them is most of the runtime, which
+// is why the timeouts below are 300 s rather than 120 s: on this machine the
+// longest of them finishes at about 120 s, which is no headroom at all on a CI
+// runner or under any other load. None of these tests asserts anything about
+// elapsed time — what they measure is how many blocks get *read* — so the budget
+// is scaffolding, and it was the only thing making them fail.
 let short: Promise<Rig> | undefined
 let long: Promise<Rig> | undefined
 const shorter = (): Promise<Rig> => (short ??= rig('short', 120))
@@ -262,7 +269,7 @@ describe('the chain is read forward, not from the beginning', () => {
       expect(over120.blocks).toBeLessThanOrEqual(PAGE)
       expect(await (await longer()).length()).toBeGreaterThan(360)
     },
-    120_000,
+    300_000,
   )
 
   /** Leave an intent open, then measure the purchase that has to settle it. */
@@ -300,7 +307,7 @@ describe('the chain is read forward, not from the beginning', () => {
       expect(over120.blocks).toBeLessThanOrEqual(over120.calls * PAGE)
       expect(over120.calls).toBeLessThanOrEqual(4)
     },
-    120_000,
+    300_000,
   )
 })
 
@@ -328,6 +335,6 @@ describe('a chain longer than one request', () => {
         subject.kei.close()
       }
     },
-    120_000,
+    300_000,
   )
 })
