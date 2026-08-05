@@ -30,7 +30,7 @@ bun create kei-game star-clicker --currency "Gold Pieces"
 |---|---|
 | **`star-clicker`** | A 3D scene, a currency, and an item you buy for a fraction of a cent. Ten files, single-player. The default, and the one to read first. |
 | **`world-of-wonder`** | A multiplayer 3D RPG whose gold and items are on the chain — Babylon.js and Colyseus, with movement, combat, quests, a navmesh, a vendor, and a bag. Forked from [orion3dgames/t5c](https://github.com/orion3dgames/t5c). |
-| **`carpet-markets`** | A coin launchpad where whether a coin can be rugged is not a promise but the deed's transfer policy, chosen at launch and enforced by consensus. |
+| **`carpet-markets`** | A coin launchpad with no bonding curve and no house: a launcher is minted the whole supply, every trade is a player-written offer settled by consensus, and whether a market in a coin can exist at all is the coin's own transfer policy, chosen at launch and immutable after. |
 
 ```sh
 npm create kei-game my-mmo -- --template world-of-wonder --currency "Shards"
