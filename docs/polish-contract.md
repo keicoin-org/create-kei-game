@@ -24,6 +24,21 @@ authoritative snapshot. Sentinel and durable player progression change once,
 and only once, at contact. Refusal paths change neither. The generated client
 reducer makes duplicate and out-of-order snapshots presentation-idempotent.
 
+Socket lifetime does not own action authority. Disconnecting removes only the
+live player projection and pending movement; an accepted action continues to
+contact/recovery for the durable player id, and its cooldown remains in force
+after resume. Completed cooldown and action guards are pruned, including for a
+player who never reconnects, while the published event log remains bounded.
+
+A process restart is a separate, deliberately fail-closed boundary. This slice
+does not pretend to durably replay an in-flight semantic timeline: work that
+has not reached its transactional contact save is cancelled without reward.
+If contact was saved, XP survives exactly once and the first resume in the new
+shard receives a conservative wall-clock guard covering the maximum remaining
+recovery plus cooldown interval. Repeated restarts cannot shorten that guard;
+clock rollback only extends it. Presentation must never describe this restart
+cancellation rule as seamless in-flight action recovery.
+
 Recipe V1 describes the corresponding 25-35 second recordable route. The capture route must,
 in order, show local and labelled scripted-remote connection, approach,
 accepted interaction, accepted strike/contact, remote observation of that same

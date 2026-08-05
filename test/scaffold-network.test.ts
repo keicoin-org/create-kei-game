@@ -29,10 +29,14 @@ interface ProtocolModule {
 
 interface CharacterStoreLike {
   readonly database: Database
-  readonly createCharacter: () => { readonly character: Player & { readonly playerId: string }; readonly resumeToken: string }
-  readonly findByResumeToken: (token: string) => (Player & { readonly playerId: string }) | null
-  readonly character: (playerId: string) => (Player & { readonly playerId: string }) | null
+  readonly createCharacter: () => { readonly character: Player & { readonly playerId: string; readonly updatedAt: number }; readonly resumeToken: string }
+  readonly findByResumeToken: (token: string) => (Player & { readonly playerId: string; readonly updatedAt: number }) | null
+  readonly character: (playerId: string) => (Player & { readonly playerId: string; readonly updatedAt: number }) | null
   readonly saveDirty: (characters: readonly (Player & { readonly playerId: string; readonly updatedAt: number })[]) => void
+  readonly saveContact: (character: Player & { readonly playerId: string; readonly updatedAt: number }, blockUntil: number) => void
+  readonly actionGuard: (playerId: string) => number | null
+  readonly clearExpiredActionGuards: (now: number, protectedPlayerIds?: readonly string[]) => void
+  readonly actionGuardCount: () => number
   readonly close: () => void
 }
 
@@ -42,7 +46,7 @@ interface PersistenceModule {
 }
 
 interface ShardModule {
-  readonly createShard: (store: CharacterStoreLike) => {
+  readonly createShard: (store: CharacterStoreLike, now?: () => number) => {
     readonly state: {
       readonly tick: number
       readonly players: Readonly<Record<string, Player>>
@@ -50,6 +54,12 @@ interface ShardModule {
         readonly sentinel: { readonly interactions: number; readonly strikes: number }
         readonly events: readonly Record<string, unknown>[]
       }
+    }
+    readonly authorityCounts: {
+      readonly active: number
+      readonly cooldowns: number
+      readonly restartGuards: number
+      readonly durableGuards: number
     }
     readonly join: (token?: string) =>
       | { readonly ok: true; readonly playerId: string; readonly resumeToken?: string }
@@ -64,6 +74,7 @@ interface ShardModule {
       id: string,
       intent: { readonly actionVersion: 1; readonly kind: 'interact' | 'strike'; readonly targetId: 'training-sentinel' },
     ) => { readonly ok: true } | { readonly ok: false; readonly code: string }
+    readonly character: (id: string) => Player | null
     readonly close: () => void
   }
 }
@@ -241,10 +252,26 @@ describe('generated durable character store', () => {
       { ...created.character, playerId: 'missing', x: 9, updatedAt: Date.now() },
     ])).toThrow('unknown character')
     expect(store.character(created.character.playerId)).toMatchObject({ x: 4, xp: 10, level: 2 })
+    store.saveContact({
+      ...created.character, x: 4, xp: 20, level: 3, updatedAt: 1_000,
+    }, 1_300)
+    expect(store.character(created.character.playerId)).toMatchObject({ x: 4, xp: 20, level: 3 })
+    expect(store.actionGuard(created.character.playerId)).toBe(1_300)
+    expect(store.actionGuardCount()).toBe(1)
+    store.clearExpiredActionGuards(1_299)
+    expect(store.actionGuardCount()).toBe(1)
+    store.clearExpiredActionGuards(1_300, [created.character.playerId])
+    expect(store.actionGuardCount()).toBe(1)
+    store.clearExpiredActionGuards(1_300)
+    expect(store.actionGuardCount()).toBe(0)
     const columnStatement = store.database.prepare('PRAGMA table_info(characters)')
     const columns = columnStatement.all().map((row) => String((row as { name: unknown }).name))
     columnStatement.finalize()
     expect(columns).toEqual(['player_id', 'resume_hash', 'x', 'y', 'z', 'xp', 'level', 'updated_at'])
+    const guardColumnStatement = store.database.prepare('PRAGMA table_info(action_guards)')
+    const guardColumns = guardColumnStatement.all().map((row) => String((row as { name: unknown }).name))
+    guardColumnStatement.finalize()
+    expect(guardColumns).toEqual(['player_id', 'block_until'])
     const hashStatement = store.database.prepare('SELECT resume_hash FROM characters')
     const persisted = hashStatement.get() as { resume_hash: string }
     hashStatement.finalize()
@@ -290,7 +317,7 @@ describe('generated authoritative durable shard', () => {
     expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: false, code: 'action_busy' })
     shard.advance(100)
     expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: false, code: 'action_cooldown' })
-    shard.advance(200)
+    shard.advance(250)
 
     const strike = { actionVersion: 1 as const, kind: 'strike' as const, targetId: 'training-sentinel' as const }
     expect(shard.requestAction(joined.playerId, strike)).toEqual({ ok: true })
@@ -327,6 +354,89 @@ describe('generated authoritative durable shard', () => {
     expect(shard.state.players[joined.playerId]).toEqual(authored)
     expect(shard.join(joined.resumeToken)).toEqual({ ok: false, code: 'resume_in_use' })
     expect(shard.join('A'.repeat(43))).toEqual({ ok: false, code: 'resume_refused' })
+    shard.close()
+  })
+
+  test('keeps action authority across same-tick disconnect/resume and prunes abandoned guards', () => {
+    const path = join(root, 'disconnect-authority.sqlite')
+    let wallNow = 0
+    const shard = shardModule.createShard(new persistence.CharacterStore(path), () => wallNow)
+    const interact = { actionVersion: 1 as const, kind: 'interact' as const, targetId: 'training-sentinel' as const }
+    const joined = shard.join()
+    if (!joined.ok || joined.resumeToken === undefined) throw new Error('new character was not created')
+
+    expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: true })
+    shard.leave(joined.playerId)
+    expect(shard.join(joined.resumeToken)).toEqual({ ok: true, playerId: joined.playerId })
+    expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: false, code: 'action_busy' })
+    shard.advance(100)
+    expect(shard.state.players[joined.playerId]).toMatchObject({ xp: 10, level: 2 })
+    expect(shard.state.encounter.sentinel).toMatchObject({ interactions: 1, strikes: 0 })
+
+    shard.leave(joined.playerId)
+    expect(shard.join(joined.resumeToken)).toEqual({ ok: true, playerId: joined.playerId })
+    expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: false, code: 'action_busy' })
+    shard.advance(100)
+    shard.leave(joined.playerId)
+    expect(shard.join(joined.resumeToken)).toEqual({ ok: true, playerId: joined.playerId })
+    expect(shard.requestAction(joined.playerId, interact)).toEqual({ ok: false, code: 'action_cooldown' })
+    expect(shard.state.players[joined.playerId]).toMatchObject({ xp: 10, level: 2 })
+    expect(shard.state.encounter.events.map((event) => event.phase)).toEqual([
+      'anticipation', 'contact', 'recovery',
+    ])
+
+    shard.leave(joined.playerId)
+    for (let index = 0; index < 40; index += 1) {
+      const abandoned = shard.join()
+      if (!abandoned.ok) throw new Error('abandoned fixture was not created')
+      expect(shard.requestAction(abandoned.playerId, interact)).toEqual({ ok: true })
+      shard.leave(abandoned.playerId)
+    }
+    expect(shard.authorityCounts).toEqual({ active: 40, cooldowns: 1, restartGuards: 1, durableGuards: 1 })
+    shard.advance(200)
+    expect(shard.authorityCounts).toEqual({ active: 0, cooldowns: 40, restartGuards: 1, durableGuards: 41 })
+    wallNow = 300
+    shard.advance(250)
+    expect(shard.authorityCounts).toEqual({ active: 0, cooldowns: 0, restartGuards: 0, durableGuards: 0 })
+    expect(shard.state.encounter.events).toHaveLength(32)
+    expect(shard.character(joined.playerId)).toMatchObject({ xp: 10, level: 2 })
+    shard.close()
+  })
+
+  test('cancels pre-contact work and conservatively guards a durable contact across restart', () => {
+    const path = join(root, 'restart-action-authority.sqlite')
+    let wallNow = 10_000
+    const now = () => wallNow
+    const strike = { actionVersion: 1 as const, kind: 'strike' as const, targetId: 'training-sentinel' as const }
+
+    let shard = shardModule.createShard(new persistence.CharacterStore(path), now)
+    const beforeContact = shard.join()
+    if (!beforeContact.ok || beforeContact.resumeToken === undefined) throw new Error('new character was not created')
+    expect(shard.requestAction(beforeContact.playerId, strike)).toEqual({ ok: true })
+    shard.close()
+
+    shard = shardModule.createShard(new persistence.CharacterStore(path), now)
+    expect(shard.join(beforeContact.resumeToken)).toEqual({ ok: true, playerId: beforeContact.playerId })
+    expect(shard.character(beforeContact.playerId)).toMatchObject({ xp: 0, level: 1 })
+    expect(shard.requestAction(beforeContact.playerId, strike)).toEqual({ ok: true })
+    shard.advance(100)
+    expect(shard.character(beforeContact.playerId)).toMatchObject({ xp: 10, level: 2 })
+    shard.close()
+
+    shard = shardModule.createShard(new persistence.CharacterStore(path), now)
+    expect(shard.join(beforeContact.resumeToken)).toEqual({ ok: true, playerId: beforeContact.playerId })
+    expect(shard.authorityCounts.restartGuards).toBe(1)
+    expect(shard.requestAction(beforeContact.playerId, strike)).toEqual({ ok: false, code: 'action_cooldown' })
+    expect(shard.character(beforeContact.playerId)).toMatchObject({ xp: 10, level: 2 })
+    wallNow += 299
+    expect(shard.requestAction(beforeContact.playerId, strike)).toEqual({ ok: false, code: 'action_cooldown' })
+    wallNow += 1
+    shard.advance(50)
+    expect(shard.authorityCounts.restartGuards).toBe(0)
+    expect(shard.requestAction(beforeContact.playerId, strike)).toEqual({ ok: true })
+    shard.advance(350)
+    expect(shard.character(beforeContact.playerId)).toMatchObject({ xp: 20, level: 3 })
+    expect(shard.state.encounter.sentinel).toMatchObject({ interactions: 0, strikes: 1 })
     shard.close()
   })
 })

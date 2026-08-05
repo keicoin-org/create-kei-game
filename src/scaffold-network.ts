@@ -826,8 +826,22 @@ try {
   const columnStatement = database.prepare('PRAGMA table_info(characters)')
   const columns = columnStatement.all().map((row) => String((row as { name: unknown }).name))
   columnStatement.finalize()
+  const guardColumnStatement = database.prepare('PRAGMA table_info(action_guards)')
+  const guardColumns = guardColumnStatement.all().map((row) => String((row as { name: unknown }).name))
+  guardColumnStatement.finalize()
+  const tableStatement = database.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+  )
+  const tables = tableStatement.all().map((row) => String((row as { name: unknown }).name))
+  tableStatement.finalize()
   const forbidden = ['balance', 'currency', 'item', 'inventory', 'seed', 'resume_token']
-  if (columns.some((column) => forbidden.some((word) => column.toLowerCase().includes(word)))) {
+  if (
+    JSON.stringify(tables) !== JSON.stringify(['action_guards', 'characters', 'world_metadata']) ||
+    JSON.stringify(guardColumns) !== JSON.stringify(['player_id', 'block_until']) ||
+    [...tables, ...columns, ...guardColumns].some((name) =>
+      forbidden.some((word) => name.toLowerCase().includes(word)),
+    )
+  ) {
     throw new Error('world database contains a forbidden ownership column')
   }
   const countStatement = database.prepare('SELECT COUNT(*) AS count FROM characters')
@@ -876,7 +890,7 @@ if (failure !== null) {
 }
 
 function headlessSource(): string {
-  return `import { ACTION_VERSION, TRAINING_SENTINEL_ID, type ActionEvent } from '../shared/actions.js'
+  return `import { ACTION_COOLDOWN_TICKS, ACTION_VERSION, TRAINING_SENTINEL_ID, type ActionEvent } from '../shared/actions.js'
 import type { WorldState } from '../shared/simulation.js'
 import { createActionEventReducer } from './action-events.js'
 import { connectGame } from './connection.js'
@@ -890,6 +904,11 @@ if (endpoint === undefined) {
 const output = (value: unknown): void => process.stdout.write(JSON.stringify(value) + '\\n')
 const eventOf = (world: WorldState, actorId: string, kind: ActionEvent['kind'], phase: ActionEvent['phase']): ActionEvent | undefined =>
   world.encounter.events.find((event) => event.actorId === actorId && event.kind === kind && event.phase === phase)
+const waitForActionGuard = async (connection: Awaited<ReturnType<typeof connectGame>>): Promise<'action_busy' | 'action_cooldown'> =>
+  Promise.any([
+    connection.waitForRefusal('action_busy').then(() => 'action_busy' as const),
+    connection.waitForRefusal('action_cooldown').then(() => 'action_cooldown' as const),
+  ])
 
 try {
   const first = await connectGame(endpoint)
@@ -991,6 +1010,71 @@ try {
     afterContact.world.encounter.sentinel.strikes !== sentinelBeforeActions.strikes + 1
   ) throw new Error('a completed action applied contact progression more than once')
 
+  const reconnecting = await connectGame(endpoint)
+  await second.waitForSnapshot((message) => message.world.players[reconnecting.playerId] !== undefined)
+  const reconnectStart = second.world().encounter.sentinel
+  const reconnectContactWait = second.waitForSnapshot((message) =>
+    eventOf(message.world, reconnecting.playerId, 'interact', 'contact') !== undefined,
+  )
+  reconnecting.sendAction({
+    seq: 1, actionVersion: ACTION_VERSION, kind: 'interact', targetId: TRAINING_SENTINEL_ID,
+  })
+  const reconnectContact = await reconnectContactWait
+  const reconnectContactEvent = eventOf(reconnectContact.world, reconnecting.playerId, 'interact', 'contact')
+  if (
+    reconnectContactEvent === undefined ||
+    reconnectContact.world.players[reconnecting.playerId]?.xp !== 10 ||
+    reconnectContact.world.encounter.sentinel.interactions !== reconnectStart.interactions + 1
+  ) throw new Error('reconnect probe contact was not authored exactly once')
+
+  reconnecting.close()
+  await second.waitForSnapshot((message) => message.world.players[reconnecting.playerId] === undefined)
+  const duringRecovery = await connectGame(endpoint, reconnecting.resumeToken)
+  const recoveryAtResume = eventOf(duringRecovery.world(), reconnecting.playerId, 'interact', 'recovery')
+  let afterContactRefusal: 'action_busy' | 'action_cooldown' | 'window_elapsed' = 'window_elapsed'
+  if (
+    recoveryAtResume === undefined ||
+    duringRecovery.world().tick + 1 < recoveryAtResume.tick + ACTION_COOLDOWN_TICKS
+  ) {
+    const recoveryRefusal = waitForActionGuard(duringRecovery)
+    duringRecovery.sendAction({
+      seq: 2, actionVersion: ACTION_VERSION, kind: 'strike', targetId: TRAINING_SENTINEL_ID,
+    })
+    afterContactRefusal = await recoveryRefusal
+  }
+  const reconnectRecovery = await second.waitForSnapshot((message) =>
+    message.world.encounter.events.some((event) =>
+      event.actorId === reconnecting.playerId && event.kind === 'interact' && event.phase === 'recovery' &&
+      event.eventId > reconnectContactEvent.eventId,
+    ),
+  )
+  if (
+    reconnectRecovery.world.players[reconnecting.playerId]?.xp !== 10 ||
+    reconnectRecovery.world.encounter.sentinel.interactions !== reconnectStart.interactions + 1
+  ) throw new Error('disconnect/resume replayed contact progression during recovery')
+
+  duringRecovery.close()
+  await second.waitForSnapshot((message) => message.world.players[reconnecting.playerId] === undefined)
+  const duringCooldown = await connectGame(endpoint, reconnecting.resumeToken)
+  const cooldownRecovery = eventOf(duringCooldown.world(), reconnecting.playerId, 'interact', 'recovery')
+  let afterRecoveryRefusal: 'action_cooldown' | 'window_elapsed' = 'window_elapsed'
+  if (
+    cooldownRecovery !== undefined &&
+    duringCooldown.world().tick + 1 < cooldownRecovery.tick + ACTION_COOLDOWN_TICKS
+  ) {
+    const reconnectCooldownRefusal = duringCooldown.waitForRefusal('action_cooldown')
+    duringCooldown.sendAction({
+      seq: 3, actionVersion: ACTION_VERSION, kind: 'strike', targetId: TRAINING_SENTINEL_ID,
+    })
+    await reconnectCooldownRefusal
+    afterRecoveryRefusal = 'action_cooldown'
+  }
+  if (
+    duringCooldown.world().players[reconnecting.playerId]?.xp !== 10 ||
+    duringCooldown.world().encounter.sentinel.interactions !== reconnectStart.interactions + 1
+  ) throw new Error('disconnect/resume replayed contact progression during cooldown')
+  duringCooldown.close()
+
   const far = await connectGame(endpoint)
   let farPosition = far.world().players[far.playerId]
   if (farPosition === undefined) throw new Error('too-far probe player was missing')
@@ -1004,7 +1088,7 @@ try {
   if (Math.hypot(farPosition.x, farPosition.y, farPosition.z) <= 2) {
     throw new Error('the bounded too-far probe did not reach outside action range')
   }
-  const beforeFar = afterContact.world.encounter.sentinel
+  const beforeFar = second.world().encounter.sentinel
   const tooFarRefusal = far.waitForRefusal('action_too_far')
   far.sendAction({
     seq: 13, actionVersion: ACTION_VERSION, kind: 'interact', targetId: TRAINING_SENTINEL_ID,
@@ -1077,6 +1161,9 @@ try {
     busyPhaseRefusedWithoutMutation: true,
     duplicateAndOutOfOrderDeduped: true,
     noDoubleProgression: true,
+    reconnectWithoutDoubleProgression: true,
+    reconnectAfterContactRefusal: afterContactRefusal,
+    reconnectAfterRecoveryRefusal: afterRecoveryRefusal,
     forgedActionAuthorityRefused: true,
   })
 } catch (error) {
@@ -1098,7 +1185,7 @@ import { Database } from 'bun:sqlite'
 
 import { levelForXp, type PlayerState } from '../shared/simulation.js'
 
-export const WORLD_SCHEMA_VERSION = 1
+export const WORLD_SCHEMA_VERSION = 2
 export const DEFAULT_WORLD_DB = '.kei-world/world.sqlite'
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
@@ -1164,6 +1251,10 @@ function prepareSchema(database: Database): void {
         level INTEGER NOT NULL CHECK (level >= 1),
         updated_at INTEGER NOT NULL
       ) STRICT\`)
+      database.exec(\`CREATE TABLE action_guards (
+        player_id TEXT PRIMARY KEY NOT NULL REFERENCES characters(player_id) ON DELETE CASCADE,
+        block_until INTEGER NOT NULL CHECK (block_until >= 0)
+      ) STRICT\`)
       database.run('INSERT INTO world_metadata (key, value) VALUES (?, ?)', [
         'schema_version', String(WORLD_SCHEMA_VERSION),
       ])
@@ -1175,7 +1266,7 @@ function prepareSchema(database: Database): void {
     return
   }
 
-  if (!tables.includes('world_metadata') || !tables.includes('characters')) {
+  if (!tables.includes('world_metadata')) {
     throw new PersistenceError('schema_invalid', 'The world database is missing its versioned schema.')
   }
   const version = row(database, 'SELECT value FROM world_metadata WHERE key = ?', 'schema_version') as
@@ -1184,9 +1275,13 @@ function prepareSchema(database: Database): void {
   if (version === null || version.value !== String(WORLD_SCHEMA_VERSION)) {
     throw new PersistenceError('schema_version_unsupported', 'The world database schema version is not supported.')
   }
+  if (!tables.includes('characters') || !tables.includes('action_guards')) {
+    throw new PersistenceError('schema_invalid', 'The world database is missing its versioned schema.')
+  }
   if (
     !exactColumns(database, 'world_metadata', ['key', 'value']) ||
-    !exactColumns(database, 'characters', ['player_id', 'resume_hash', 'x', 'y', 'z', 'xp', 'level', 'updated_at'])
+    !exactColumns(database, 'characters', ['player_id', 'resume_hash', 'x', 'y', 'z', 'xp', 'level', 'updated_at']) ||
+    !exactColumns(database, 'action_guards', ['player_id', 'block_until'])
   ) {
     throw new PersistenceError('schema_invalid', 'The world database schema does not match its declared version.')
   }
@@ -1289,6 +1384,67 @@ export class CharacterStore {
     }
   }
 
+  saveContact(character: CharacterRecord, blockUntil: number): void {
+    if (character.level !== levelForXp(character.xp) || !Number.isSafeInteger(blockUntil) || blockUntil < 0) {
+      throw new PersistenceError('character_invalid', 'The shard tried to persist invalid contact authority.')
+    }
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const result = this.database.run(\`UPDATE characters
+        SET x = ?, y = ?, z = ?, xp = ?, level = ?, updated_at = ?
+        WHERE player_id = ?\`, [
+        character.x, character.y, character.z, character.xp, character.level,
+        character.updatedAt, character.playerId,
+      ])
+      if (result.changes !== 1) {
+        throw new PersistenceError('character_missing', 'The shard tried to save contact for an unknown character.')
+      }
+      this.database.run(\`INSERT INTO action_guards (player_id, block_until) VALUES (?, ?)
+        ON CONFLICT(player_id) DO UPDATE SET block_until = excluded.block_until\`, [character.playerId, blockUntil])
+      this.database.exec('COMMIT')
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  actionGuard(playerId: string): number | null {
+    const found = row(this.database, 'SELECT block_until FROM action_guards WHERE player_id = ?', playerId) as
+      | { block_until: unknown }
+      | null
+    if (found === null || typeof found.block_until !== 'number' ||
+      !Number.isSafeInteger(found.block_until) || found.block_until < 0) return null
+    return found.block_until
+  }
+
+  clearExpiredActionGuards(now: number, protectedPlayerIds: readonly string[] = []): void {
+    if (!Number.isSafeInteger(now) || now < 0) return
+    const protectedIds = new Set(protectedPlayerIds)
+    const statement = this.database.prepare('SELECT player_id FROM action_guards WHERE block_until <= ?')
+    let expired: readonly string[]
+    try {
+      expired = statement.all(now)
+        .map((value) => String((value as { player_id: unknown }).player_id))
+        .filter((playerId) => !protectedIds.has(playerId))
+    } finally {
+      statement.finalize()
+    }
+    if (expired.length === 0) return
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      for (const playerId of expired) this.database.run('DELETE FROM action_guards WHERE player_id = ?', playerId)
+      this.database.exec('COMMIT')
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  actionGuardCount(): number {
+    const found = row(this.database, 'SELECT COUNT(*) AS count FROM action_guards') as { count: number }
+    return found.count
+  }
+
   close(): void {
     if (this.#closed) return
     this.#closed = true
@@ -1334,6 +1490,12 @@ export type ActionResult =
 
 export interface Shard {
   readonly state: WorldState
+  readonly authorityCounts: {
+    readonly active: number
+    readonly cooldowns: number
+    readonly restartGuards: number
+    readonly durableGuards: number
+  }
   readonly join: (resumeToken?: string) => JoinResult
   readonly leave: (playerId: string) => void
   readonly advance: (elapsedMs: number) => void
@@ -1343,7 +1505,7 @@ export interface Shard {
   readonly close: () => void
 }
 
-export function createShard(store = new CharacterStore()): Shard {
+export function createShard(store = new CharacterStore(), now = Date.now): Shard {
   let state: WorldState = emptyWorld(false)
   let accumulator = 0
   let pending: Record<string, PlayerInput> = {}
@@ -1355,15 +1517,16 @@ export function createShard(store = new CharacterStore()): Shard {
     contactApplied: boolean
   }>()
   const cooldownUntil = new Map<string, number>()
+  const restartGuardUntil = new Map<string, number>()
   const playerState = (character: CharacterRecord) => ({
     x: character.x, y: character.y, z: character.z, xp: character.xp, level: character.level,
   })
 
   const save = (playerIds: readonly string[]): void => {
-    const now = Date.now()
+    const savedAt = now()
     store.saveDirty(playerIds.flatMap((playerId) => {
       const player = state.players[playerId]
-      return player === undefined ? [] : [{ playerId, ...player, updatedAt: now }]
+      return player === undefined ? [] : [{ playerId, ...player, updatedAt: savedAt }]
     }))
   }
 
@@ -1396,6 +1559,14 @@ export function createShard(store = new CharacterStore()): Shard {
 
   return {
     get state() { return state },
+    get authorityCounts() {
+      return {
+        active: active.size,
+        cooldowns: cooldownUntil.size,
+        restartGuards: restartGuardUntil.size,
+        durableGuards: store.actionGuardCount(),
+      }
+    },
     join(resumeToken) {
       if (resumeToken === undefined) {
         const created = store.createCharacter()
@@ -1405,14 +1576,14 @@ export function createShard(store = new CharacterStore()): Shard {
       const restored = store.findByResumeToken(resumeToken)
       if (restored === null) return { ok: false, code: 'resume_refused' }
       if (state.players[restored.playerId] !== undefined) return { ok: false, code: 'resume_in_use' }
+      const durableGuard = store.actionGuard(restored.playerId)
+      if (durableGuard !== null && durableGuard > now()) restartGuardUntil.set(restored.playerId, durableGuard)
       state = joinWorld(state, restored.playerId, playerState(restored))
       return { ok: true, playerId: restored.playerId }
     },
     leave(playerId) {
       state = leaveWorld(state, playerId)
       delete pending[playerId]
-      active.delete(playerId)
-      cooldownUntil.delete(playerId)
     },
     advance(elapsedMs) {
       accumulator += elapsedMs
@@ -1428,21 +1599,34 @@ export function createShard(store = new CharacterStore()): Shard {
           )
         }))
         pending = {}
+        const wallNow = now()
+        store.clearExpiredActionGuards(wallNow, [...active.keys(), ...cooldownUntil.keys()])
+        for (const [actorId, until] of restartGuardUntil) {
+          if (until <= wallNow) restartGuardUntil.delete(actorId)
+        }
+        for (const [actorId, until] of cooldownUntil) {
+          if (until <= state.tick) cooldownUntil.delete(actorId)
+        }
         for (const [actorId, action] of [...active]) {
           if (!action.contactApplied && state.tick >= action.contactTick) {
-            const player = state.players[actorId]
-            if (player === undefined) {
+            const connected = state.players[actorId]
+            const durable = connected ?? store.character(actorId)
+            if (durable === null) {
               active.delete(actorId)
               continue
             }
-            const xp = player.xp + XP_PER_ACTION_CONTACT
+            const xp = durable.xp + XP_PER_ACTION_CONTACT
+            const progressed = {
+              x: durable.x, y: durable.y, z: durable.z, xp, level: levelForXp(xp),
+            }
+            const durableBlockUntil = Math.ceil(
+              wallNow + (ACTION_RECOVERY_TICKS + ACTION_COOLDOWN_TICKS) * STEP_MS,
+            )
+            store.saveContact({ ...progressed, playerId: actorId, updatedAt: wallNow }, durableBlockUntil)
             const sentinel = state.encounter.sentinel
             state = {
               ...state,
-              players: {
-                ...state.players,
-                [actorId]: { ...player, xp, level: levelForXp(xp) },
-              },
+              players: connected === undefined ? state.players : { ...state.players, [actorId]: progressed },
               encounter: {
                 ...state.encounter,
                 sentinel: {
@@ -1453,7 +1637,7 @@ export function createShard(store = new CharacterStore()): Shard {
               },
             }
             action.contactApplied = true
-            dirty.add(actorId)
+            dirty.delete(actorId)
             appendEvent(actorId, action.kind, 'contact', 'applied')
           }
           if (action.contactApplied && state.tick >= action.recoveryTick) {
@@ -1474,6 +1658,7 @@ export function createShard(store = new CharacterStore()): Shard {
       }
       if (active.has(playerId)) return { ok: false, code: 'action_busy' }
       if ((cooldownUntil.get(playerId) ?? 0) > state.tick) return { ok: false, code: 'action_cooldown' }
+      if ((restartGuardUntil.get(playerId) ?? 0) > now()) return { ok: false, code: 'action_cooldown' }
       const sentinel = state.encounter.sentinel
       const distance = Math.hypot(player.x - sentinel.x, player.y - sentinel.y, player.z - sentinel.z)
       if (!Number.isFinite(distance) || distance > ACTION_RANGE) return { ok: false, code: 'action_too_far' }

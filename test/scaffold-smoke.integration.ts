@@ -63,6 +63,8 @@ async function run(directory: string, phase: string, args: readonly string[]): P
       status: result.status,
       signal: result.signal,
       osCode: diagnostic.errorCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
     })
   }
   return result.stdout
@@ -337,6 +339,7 @@ async function startAndProbe(directory: string): Promise<void> {
         busyPhaseRefusedWithoutMutation: true,
         duplicateAndOutOfOrderDeduped: true,
         noDoubleProgression: true,
+        reconnectWithoutDoubleProgression: true,
         forgedActionAuthorityRefused: true,
       })
       expect(evidence?.players).toBeArrayOfSize(2)

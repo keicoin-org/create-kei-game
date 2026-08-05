@@ -234,6 +234,13 @@ training sentinel; the server supplies actor, tick, monotonic event id, outcome,
 and contact, and applies sentinel/progression change exactly once at contact.
 The bounded semantic timeline travels in authoritative snapshots, while the
 client reducer prevents duplicate or older snapshots from replaying feedback.
+Disconnect/resume cannot clear an accepted action, recovery, or cooldown: those
+guards belong to the durable player id and expire under bounded shard cleanup,
+not socket cleanup. A process restart intentionally cancels work that had not
+reached contact. A contact already saved remains exactly once and causes a
+conservative restart guard for the remaining recovery/cooldown horizon, so a
+restart is not an action-rate bypass and is not claimed as seamless timeline
+recovery.
 
 They also receive a project-owned version-1 presentation contract:
 `kei-mmo/polish/` owns semantic interact/strike timings, effect and cue maps,
@@ -253,6 +260,9 @@ identity and state, and proves malformed/random/duplicate tokens and forged
 position/progression/economic fields cannot alter memory or disk. Resume tokens
 remain in browser localStorage or headless memory; SQLite contains only their
 hashes, position, XP, level, and update time.
+The world database also holds one bounded, expiring action-guard row for a
+contact whose recovery/cooldown horizon has not elapsed; contact progression
+and that guard commit in the same SQLite transaction.
 
 That closes the generated-project shape of SPEC §11.3 criteria 3–6: a real
 client connects, two clients see each other move, and server-authored character
