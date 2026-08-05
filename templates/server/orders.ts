@@ -54,6 +54,13 @@
  * is the point: a guess here either mints a second lantern or refunds one the
  * player kept.
  *
+ * It is also permanent, which is the part worth knowing before it happens. The
+ * chain's count only grows and this file's never catches up, so a game that has
+ * lost this file refuses every wallet it held records for on every boot from
+ * then on. `adoptChainAsBaseline` is the way back out, and it is deliberately a
+ * decision somebody makes rather than a thing that happens: it says what it
+ * costs and it writes down that it was taken.
+ *
  * The same startup read of the chain is what makes a payment survive a restart
  * at all. `Kei.server()` collects everything waiting before this file gets to
  * attach a handler, so the arrival of a payment made while the game was down is
@@ -136,6 +143,37 @@ export interface OrdersOptions {
    * refusal. What keeps it at one request is the `mark` — see `Mark`.
    */
   historyLimit?: number
+  /**
+   * Count the answers the chain shows and this file does not as already given.
+   *
+   * Off, and it should stay off. Turn it on for one boot when this game has
+   * genuinely lost `path` — a disk went, or `bun run dev` cleared it against a
+   * chain that outlived the process — and every wallet that has ever bought is
+   * being refused as `unattributable` with no way back. That refusal is correct
+   * and it is also permanent: the chain's count only grows and this file's never
+   * catches up, so without something like this the only remedy is editing the
+   * NDJSON by hand.
+   *
+   * What it does: the shortfall per address is written down once, as a
+   * `baseline` line, and counted from then on as though the missing entries were
+   * there. `attributable` stops refusing and those wallets can buy again.
+   *
+   * What it costs, because it is not small: the entries are still gone, so the
+   * *hashes* they named are still unknown here. Every payment they were about
+   * becomes answerable again. A player who paid for a lantern, received it, and
+   * still has the receipt can post that hash once more and be answered a second
+   * time — a second lantern, or a refund of money they spent and kept the item
+   * for. That is the double answer this whole file exists to prevent, and
+   * adopting a baseline is choosing to accept it for everything bought before
+   * the loss. It is worth that when the wallets refused outnumber the receipts
+   * anybody still holds, and not otherwise.
+   *
+   * It is written to `path` rather than held in memory, so it is adopted once
+   * and not on every boot. Take the flag back out afterwards: left on, it would
+   * forgive the *next* loss silently, and a silent version of this is worse than
+   * the refusal it replaces.
+   */
+  adoptChainAsBaseline?: boolean
 }
 
 type Intent = { k: 'intent'; issuer: string; hash: string; address: string; plan: Plan['kind']; amount: number; since: string }
@@ -167,7 +205,17 @@ type Mark = {
   /** Payments found between the two that nothing has answered yet. */
   paid: Payment[]
 }
-type Entry = Intent | Done | Void | Mark
+/**
+ * Answers the chain shows that this file cannot attribute, forgiven on purpose.
+ *
+ * Written only when `adoptChainAsBaseline` asks for it, and never derived from
+ * anything else. It is the record that somebody decided to serve these wallets
+ * again knowing what that costs — the option is where the cost is written down.
+ * A line here is as load-bearing as a `done`: delete it and every wallet on it
+ * goes back to being refused.
+ */
+type Baseline = { k: 'baseline'; issuer: string; adopted: Array<[string, number]> }
+type Entry = Intent | Done | Void | Mark | Baseline
 
 /** What an issuer block did for somebody, which is not which payment it did it for. */
 interface Answer {
@@ -214,6 +262,8 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
   const onChain = new Map<string, number>()
   /** Wallets whose answers can no longer be told apart. Never answered again by this process. */
   const clouded = new Set<string>()
+  /** Per address: chain answers this file has been told to stop refusing over. See `adoptChainAsBaseline`. */
+  const forgiven = new Map<string, number>()
   /** Wallets with an action whose fate is not known yet. Answered again once it is. */
   const unresolved = new Set<string>()
   /** Intents written and not yet closed, by payment hash. */
@@ -249,6 +299,10 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
       mark = entry.frontier
       for (const [address, count] of entry.answers) onChain.set(address, (onChain.get(address) ?? 0) + count)
       for (const payment of entry.paid) note(payment)
+      continue
+    }
+    if (entry.k === 'baseline') {
+      for (const [address, count] of entry.adopted) forgiven.set(address, (forgiven.get(address) ?? 0) + count)
       continue
     }
     if (entry.k === 'intent') {
@@ -305,6 +359,34 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
       continue
     }
     await closeIntent(intent)
+  }
+
+  // ------------------------------------------------------------ a lost journal
+
+  // Once, and only if asked. `catchUp` above has made `onChain` current and the
+  // intents above are resolved, so an address still short here is short because
+  // its entries are gone rather than because they had not been read yet.
+  if (options.adoptChainAsBaseline === true) adoptBaseline()
+
+  /**
+   * Write down the answers this file cannot account for, so it stops refusing
+   * the wallets that made them. See `adoptChainAsBaseline` for what that costs.
+   *
+   * Only the shortfall, so a boot with the flag still on after one that already
+   * adopted finds nothing left and writes nothing. `clouded` wallets are left
+   * alone: that is an intent this process could not resolve rather than a record
+   * that is missing, and it clears itself when the node answers again.
+   */
+  function adoptBaseline(): void {
+    const adopted: Array<[string, number]> = []
+    for (const [address, count] of onChain) {
+      if (clouded.has(address)) continue
+      const short = count - ((onFile.get(address) ?? 0) + (forgiven.get(address) ?? 0))
+      if (short > 0) adopted.push([address, short])
+    }
+    if (adopted.length === 0) return
+    for (const [address, count] of adopted) forgiven.set(address, (forgiven.get(address) ?? 0) + count)
+    append({ k: 'baseline', issuer, adopted })
   }
 
   // --------------------------------------------------------- asking the chain
@@ -585,9 +667,13 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
    * answer written down since the last read of the chain, which is every answer
    * this process has given. The chain's count is never the larger of the two
    * unless a record went missing.
+   *
+   * `forgiven` is a loss somebody looked at and decided to serve through anyway,
+   * counted here as though the entries were on file. It is empty unless a
+   * `baseline` line says otherwise — see `adoptChainAsBaseline`.
    */
   function attributable(address: string): boolean {
-    return (onChain.get(address) ?? 0) <= (onFile.get(address) ?? 0)
+    return (onChain.get(address) ?? 0) <= (onFile.get(address) ?? 0) + (forgiven.get(address) ?? 0)
   }
 
   // ------------------------------------------------------------- one at a time
@@ -776,6 +862,7 @@ function looksLikeEntry(entry: Entry): boolean {
     if (typeof entry.frontier !== 'string' || typeof entry.since !== 'string') return false
     return Array.isArray(entry.answers) && Array.isArray(entry.paid)
   }
+  if (entry.k === 'baseline') return Array.isArray(entry.adopted)
   if (typeof entry.hash !== 'string') return false
   if (entry.k === 'void') return true
   if (typeof entry.address !== 'string' || typeof entry.amount !== 'number') return false

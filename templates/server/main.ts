@@ -43,13 +43,28 @@ if (!bundle.success) {
 const node = await MockNode.create()
 const rpc = mockRpcHandler({ node })
 
+/**
+ * Whether the chain this run writes to dies with the process.
+ *
+ * It gates one line — the one below — and it is derived from the node rather
+ * than written by hand, so that swapping `MockNode.create()` above for a real
+ * endpoint turns it off by itself. That swap is the whole of the testnet
+ * migration in README.md, and a constant somebody has to remember to flip
+ * afterwards is the same bug with a longer fuse.
+ */
+const EPHEMERAL_CHAIN = node instanceof MockNode
+
 // `server/orders.ts` records which payments have been answered, so that a
-// restart can tell a player who asks again what they got the first time. This
-// chain is new every run, so last run's answers are about payments that no
-// longer exist — they go with the chain they belong to. Point this at a real
-// node and the file matters as much as the chain does: keep it.
+// restart can tell a player who asks again what they got the first time.
+//
+// On the mock, last run's answers are about payments on a chain that no longer
+// exists, so they go with it. Against a chain that outlives the process this
+// file is as load-bearing as the chain itself: the issuer's blocks still count
+// every lantern minted and every refund sent, and a file that does not match
+// them refuses every wallet it had records for — for good. So it is deleted
+// only where deleting it is free.
 const orders = `${root}.kei/dev-orders.ndjson`
-if (node instanceof MockNode) await rm(orders, { force: true })
+if (EPHEMERAL_CHAIN) await rm(orders, { force: true })
 
 const game = await startGame({
   // Set GAME_SEED in .env to keep the same issuer across restarts. It is the

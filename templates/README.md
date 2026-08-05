@@ -121,11 +121,9 @@ that observes clicks closes that hole.
 
 ## When there is a testnet
 
-Everything above runs against a mock node. When there is a public testnet:
-
-- point this at a real endpoint and set `network: 'testnet'`
-- stop using `MockNode` and `mockRpcHandler`
-- keep the orders file; it is load-bearing on a persistent chain and should not be reset on restart
+Everything above runs against a mock node. Your game does not change when you
+leave it. The lines that exist only to *be* the mock do, and all but one of them
+are in `server/main.ts`.
 
 ```ts
 // server/main.ts
@@ -137,7 +135,35 @@ const game = await startGame({ seed: process.env.GAME_SEED!, node: 'https://…'
 const kei = await Kei.start({ node: 'https://…', network: 'testnet' })
 ```
 
-Nothing else changes. That is the whole point of building against the mock.
+The rest of `server/main.ts` is the development chain, and it goes:
+
+| Line | What it is | On a real node |
+|---|---|---|
+| `await MockNode.create()` | The chain, in this process | Delete it. `node` is a URL now. |
+| `mockRpcHandler({ node })` and the `/rpc` route | The node's API, served to the browser | Delete both. The browser talks to the real endpoint. |
+| `EPHEMERAL_CHAIN` and the `rm` under it | Clears the orders file each run | Nothing to do: it reads `false` once `MockNode` is gone. Read the next section anyway. |
+
+### The orders file is not a cache
+
+`server/orders.ts` writes down which payment got which answer, and it is the only
+thing that can say. The chain cannot: a mint says who got a lantern and a refund
+says who got their money back, and neither names the payment it settled.
+
+On the mock that file is disposable, because the chain it describes is thrown
+away at the same moment. On a chain that outlives the process it is not. The
+issuer's blocks still count every lantern minted and every refund sent, so a game
+whose file holds fewer answers than its own chain shows has lost records — and
+every wallet it lost them for is refused, on that purchase and on every purchase
+it ever makes afterwards. Refusing is the safe direction; guessing either mints a
+second lantern or refunds one the player kept. It is also permanent, because the
+chain's count only grows.
+
+So: **back this file up the way you would back up a database**, and keep it
+beside the chain it belongs to. If you lose it anyway, `startGame` takes
+`adoptChainAsBaseline: true` for exactly one boot — it lets those wallets buy
+again, at the price of every payment made before the loss becoming answerable a
+second time. `server/orders.ts` states that trade in full. Take the flag back out
+afterwards.
 
 ## Shipping it
 
