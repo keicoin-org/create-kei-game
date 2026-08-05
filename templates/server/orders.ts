@@ -68,14 +68,59 @@
  * chain and never off the `done` lines beside it: a `done` that went missing is
  * exactly what that count is for, and deriving one from the other would make it
  * invisible.
+ *
+ * ## What is resident, and why that is a short list
+ *
+ * An answer is permanent — a payment from a year ago has to get its lantern
+ * back rather than a second one — so the *record* of it is kept forever. That is
+ * not the same as keeping it in memory forever, and this file used to do both:
+ * every answer and every payment stayed in a `Map` for the life of the process
+ * and was reloaded from the first line of the log at every restart. Steady-state
+ * memory and startup time were proportional to lifetime sales, which is a shape
+ * the developer inherits without having written it (SPEC §12).
+ *
+ * Three mechanisms replace that, and each one names what bounds it:
+ *
+ *   1. **An index, so history can be addressed** (`server/answers.ts`). Payment
+ *      hash to the byte offset of its `done` line, on the disk. What is resident
+ *      is `RESIDENT_ANSWERS` of them; a hash that is not is read back rather than
+ *      treated as unanswered. Bounded by a constant.
+ *   2. **A checkpoint, so a restart is not a re-read.** A `check` line folds
+ *      everything before it — where the chain read had got to, the counts that
+ *      still matter, the payments still owed an answer, the intents still open —
+ *      so boot reads the log back to the last one rather than back to the start.
+ *      Bounded by `checkpointBytes`.
+ *   3. **Folding the per-wallet counts.** `onFile` and `onChain` exist to catch
+ *      this file going missing, and a wallet whose two counts *agree* says the
+ *      same thing whether it is remembered or forgotten: `0 <= 0` and `3 <= 3`
+ *      are both "attributable". So a checkpoint keeps only the wallets whose
+ *      counts disagree — an answer in flight, or a record genuinely lost — and
+ *      drops the rest. Bounded by concurrent purchases plus real losses, and a
+ *      deployment where that number is large is one where this file has already
+ *      lost records and is refusing purchases about it.
+ *
+ * Two things are still allowed to grow, and both are named rather than hidden.
+ * `outstanding` holds payments this game has received and not answered: that
+ * entry is the only thing that lets such a payment still be redeemed, so it
+ * cannot be dropped, and it is bounded by *unredeemed* payments rather than by
+ * lifetime sales — at roughly 120 bytes each, a hundred thousand of them is
+ * about 12MB. `clouded` holds wallets this game has refused for good, and
+ * forgetting one is how a wallet gets answered twice; a game with many of them
+ * is a game with a lost log.
+ *
+ * The log itself still grows, on the disk, and is never compacted — the index
+ * addresses lines inside it, so moving them would strand every offset. That is
+ * the intended shape: history belongs on the disk and this file's job was to
+ * stop carrying all of it in memory.
  */
 
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 import { KEI_DECIMALS, addressFromPublicKey, type Block, type Kei } from 'kei-transaction'
 
 import type { LanternOutcome } from '../shared/game.js'
+import { openAnswers } from './answers.js'
 
 export interface Payment {
   /** The hash `kei.pay()` handed the player: the send block they signed. */
@@ -136,6 +181,13 @@ export interface OrdersOptions {
    * refusal. What keeps it at one request is the `mark` — see `Mark`.
    */
   historyLimit?: number
+  /**
+   * How many bytes to append before folding them into a `check`. The checkpoint
+   * is what a restart reads back to, so this is the knob that trades a longer
+   * boot against more frequent fsyncs. Tests set it low to make the folding
+   * visible; nothing else should need to.
+   */
+  checkpointBytes?: number
 }
 
 type Intent = { k: 'intent'; issuer: string; hash: string; address: string; plan: Plan['kind']; amount: number; since: string }
@@ -167,7 +219,41 @@ type Mark = {
   /** Payments found between the two that nothing has answered yet. */
   paid: Payment[]
 }
-type Entry = Intent | Done | Void | Mark
+/**
+ * Everything before this line, in one line.
+ *
+ * The log is append-only and every restart used to read all of it, so startup
+ * cost grew with lifetime sales. A checkpoint is the fold that stops it: it
+ * states the running totals as of the moment it was written, and boot replays
+ * only what came after. Nothing here is a new fact — every field is derivable
+ * by reading the log from its first line, which is exactly what
+ * `recountFromLog` does when the chain has to be recounted from its first block.
+ *
+ * What it deliberately does *not* carry is the answers themselves. Those are
+ * addressed by `server/answers.ts` and read back one at a time, because a
+ * checkpoint listing every answer ever given would be the original problem
+ * written to disk once per checkpoint instead of once per boot.
+ */
+type Check = {
+  k: 'check'
+  issuer: string
+  /** Where the chain read had reached. Replaces the marks folded into this line. */
+  frontier: string
+  /**
+   * `[address, onFile, onChain]` for wallets whose two counts disagree, and only
+   * those. A wallet that agrees with itself is dropped: `attributable` asks
+   * whether the chain shows more answers than the file does, and `0 <= 0` is the
+   * same answer as `3 <= 3`. Keeping the disagreements is keeping the losses.
+   */
+  counts: Array<[address: string, onFile: number, onChain: number]>
+  /** Payments on file with nothing answering them yet. */
+  outstanding: Payment[]
+  /** Wallets refused for good, which no amount of forgetting makes answerable. */
+  clouded: string[]
+  /** Intents written and not closed. */
+  intents: Intent[]
+}
+type Entry = Intent | Done | Void | Mark | Check
 
 /** What an issuer block did for somebody, which is not which payment it did it for. */
 interface Answer {
@@ -197,16 +283,48 @@ type Reading = Evidence | { state: 'pending' }
 /** The `link` of a block that links to nothing. */
 const NOTHING = '0'.repeat(64)
 
+/**
+ * Answers held in memory. A hash past this is read off the disk, which is one
+ * `pread` of the index and one of the line it names.
+ *
+ * It is a cache size and nothing rests on it: correctness is the same at 1 as
+ * at a million, and the only thing that changes is how often a repost costs two
+ * reads. Chosen so that the wallets currently playing fit comfortably.
+ */
+const RESIDENT_ANSWERS = 2_048
+
+/** Bytes appended between checkpoints, and so roughly the most a restart reads back. */
+const CHECKPOINT_BYTES = 256 * 1_024
+
+/**
+ * How far back to look for the last checkpoint before giving up and reading the
+ * whole log. A checkpoint every `CHECKPOINT_EVERY` lines of a few hundred bytes
+ * puts one every few hundred kilobytes, so this is a wide margin rather than a
+ * limit anything is expected to reach.
+ */
+const CHECKPOINT_SEARCH_BYTES = 8 * 1_024 * 1_024
+
 export async function openOrders(options: OrdersOptions): Promise<Orders> {
   const { kei, item, path } = options
   const node = kei.client.node
   const issuer = kei.address
   const historyLimit = options.historyLimit ?? 200
+  const checkpointBytes = options.checkpointBytes ?? CHECKPOINT_BYTES
 
-  /** Payment hash to the answer it got. The only thing that attributes one. */
-  const answers = new Map<string, LanternOutcome>()
-  /** Payment hash to the payment, whether it arrived live or was read off the chain. */
-  const seen = new Map<string, Payment>()
+  /**
+   * The answers this process has looked at lately, newest last.
+   *
+   * Every one of them is also on the disk — this is a cache in front of
+   * `server/answers.ts`, never the only copy — so evicting the oldest costs a
+   * read and nothing else. That is the whole difference from the `Map` this
+   * replaced, which was the only copy and so could never evict anything.
+   */
+  const recent = new Map<string, { outcome: LanternOutcome; payment: Payment }>()
+  /**
+   * Payments with nothing answering them yet. Answering one moves it into
+   * `recent` and the index, so this holds the owed rather than the settled.
+   */
+  const outstanding = new Map<string, Payment>()
   const waiting = new Map<string, Array<(payment: Payment) => void>>()
 
   /** Per address: answers on file, and answers on the chain. Equal, or records were lost. */
@@ -225,51 +343,211 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
     counts.set(address, (counts.get(address) ?? 0) + 1)
   }
 
-  const note = (payment: Payment): void => {
-    if (seen.has(payment.hash)) return
-    seen.set(payment.hash, payment)
-    for (const arrived of waiting.get(payment.hash) ?? []) arrived(payment)
-    waiting.delete(payment.hash)
-  }
-
   // ------------------------------------------------------------------ the file
 
   mkdirSync(dirname(path), { recursive: true })
 
-  // Intents with no `done` or `void` after them: answers in flight when the
-  // process died, or ones it could never resolve before it did.
-  for (const entry of readEntries(path)) {
-    // Entries name their issuer, so two games sharing a directory — or one game
-    // restarted on a new seed — do not read each other's answers.
-    if (entry.issuer !== issuer) continue
-    if (entry.k === 'mark') {
-      // A read that started at the first block of the chain replaces what the
-      // marks before it counted rather than adding to them.
-      if (entry.since === NOTHING) onChain.clear()
-      mark = entry.frontier
-      for (const [address, count] of entry.answers) onChain.set(address, (onChain.get(address) ?? 0) + count)
-      for (const payment of entry.paid) note(payment)
-      continue
+  /**
+   * Where every answer is, for the answers this process is not holding.
+   *
+   * Opened before anything else reads the log, because the question every
+   * replay below asks first is "has this hash been answered already?" and this
+   * is what knows. Opening it replays whatever the log gained since the index
+   * last committed, so from here on a miss means never answered rather than not
+   * indexed yet.
+   */
+  const answers = openAnswers(path, function* (from: number) {
+    for (const [entry, at] of entriesFrom(path, from)) {
+      if (entry.issuer === issuer && entry.k === 'done') yield [entry.hash, at]
     }
-    if (entry.k === 'intent') {
-      openIntents.set(entry.hash, entry)
-      continue
+  })
+
+  /** The `done` line this hash got, read back off the disk. */
+  const onDisk = (hash: string): { outcome: LanternOutcome; payment: Payment } | undefined => {
+    const at = answers.offsetOf(hash)
+    if (at === undefined) return undefined
+    const entry = entryAt(path, at)
+    if (entry?.k !== 'done' || entry.issuer !== issuer || entry.hash !== hash) {
+      // The index pointed at something that is not this hash's answer, which
+      // means the log it was built against is not the log beside it. Refusing
+      // to guess is the same rule the rest of this file follows.
+      throw new Error(
+        `server/orders.ts: the index beside ${path} points at offset ${at} for payment ${hash.slice(0, 12)}…, and that ` +
+          'is not where that answer is. Delete the ".index" file beside the log and start again — it is a cache of the ' +
+          'log and is rebuilt from it, so nothing is lost by deleting it.',
+      )
     }
-    openIntents.delete(entry.hash)
-    if (entry.k !== 'done') continue
-    answers.set(entry.hash, entry.outcome)
-    bump(onFile, entry.address)
-    // A payment with an answer on file never needs looking up on the node below:
-    // its own entry says who made it and for how much.
-    note({ hash: entry.hash, from: entry.address, amount: entry.amount })
+    return { outcome: entry.outcome, payment: { hash, from: entry.address, amount: entry.amount } }
   }
 
+  /** Hold an answer, dropping the oldest held once there are more than `RESIDENT_ANSWERS`. */
+  const hold = (hash: string, held: { outcome: LanternOutcome; payment: Payment }): typeof held => {
+    recent.delete(hash)
+    recent.set(hash, held)
+    // `Map` iterates in insertion order and `delete` above re-inserts on every
+    // read, so the first key is the least recently used one.
+    if (recent.size > RESIDENT_ANSWERS) recent.delete(first(recent.keys())!)
+    return held
+  }
+
+  /** What this hash was answered with, from memory or from the disk. */
+  const answerFor = (hash: string): LanternOutcome | undefined => {
+    const held = recent.get(hash)
+    if (held) return hold(hash, held).outcome
+    const stored = onDisk(hash)
+    return stored ? hold(hash, stored).outcome : undefined
+  }
+
+  /** The payment behind a hash, answered or not. */
+  const paymentFor = (hash: string): Payment | undefined => {
+    const owed = outstanding.get(hash)
+    if (owed) return owed
+    const held = recent.get(hash)
+    if (held) return hold(hash, held).payment
+    const stored = onDisk(hash)
+    return stored ? hold(hash, stored).payment : undefined
+  }
+
+  const note = (payment: Payment): void => {
+    if (outstanding.has(payment.hash) || recent.has(payment.hash)) return
+    // A payment that already has an answer is not owed one, and re-noting it
+    // would put it back among the payments this process is still carrying.
+    if (answers.offsetOf(payment.hash) !== undefined) return
+    outstanding.set(payment.hash, payment)
+    for (const arrived of waiting.get(payment.hash) ?? []) arrived(payment)
+    waiting.delete(payment.hash)
+  }
+
+  /** A payment that now has an answer: held rather than owed, and addressable on the disk. */
+  const answered = (payment: Payment, outcome: LanternOutcome, at: number | undefined): void => {
+    outstanding.delete(payment.hash)
+    hold(payment.hash, { outcome, payment })
+    if (at !== undefined) answers.record(payment.hash, at)
+  }
+
+  /**
+   * Replay one stretch of the log into memory.
+   *
+   * Called from two places for two reasons: at boot from the last checkpoint,
+   * which is the ordinary path, and from the first line by `recountFromLog`
+   * when the chain has to be recounted from its first block and the folded
+   * counts can no longer be trusted. Both are this same replay, which is the
+   * point — a checkpoint is a fold of it and never a source of anything else.
+   */
+  const replay = (from: number): void => {
+    for (const [entry, at] of entriesFrom(path, from)) {
+      // Entries name their issuer, so two games sharing a directory — or one
+      // game restarted on a new seed — do not read each other's answers.
+      if (entry.issuer !== issuer) continue
+      // A checkpoint reached by a replay that started before it is one whose
+      // folded counts are exactly what that replay is rebuilding from scratch.
+      if (entry.k === 'check') continue
+      if (entry.k === 'mark') {
+        // A read that started at the first block of the chain replaces what the
+        // marks before it counted rather than adding to them.
+        if (entry.since === NOTHING) onChain.clear()
+        mark = entry.frontier
+        for (const [address, count] of entry.answers) onChain.set(address, (onChain.get(address) ?? 0) + count)
+        for (const payment of entry.paid) note(payment)
+        continue
+      }
+      if (entry.k === 'intent') {
+        openIntents.set(entry.hash, entry)
+        continue
+      }
+      openIntents.delete(entry.hash)
+      if (entry.k !== 'done') continue
+      bump(onFile, entry.address)
+      // A payment with an answer on file needs neither looking up on the node
+      // nor carrying here: its own line says who made it and for how much, and
+      // the index says where that line is.
+      answered({ hash: entry.hash, from: entry.address, amount: entry.amount }, entry.outcome, at)
+    }
+  }
+
+  /**
+   * Boot from the last checkpoint rather than from the first line.
+   *
+   * This is the whole of the startup cost. Everything before that line was
+   * folded into it when it was written, so what is read here is bounded by
+   * `checkpointBytes` and not by how many lanterns this game has ever sold.
+   */
+  const resume = lastCheckpoint(path, issuer)
+  if (resume.check) {
+    mark = resume.check.frontier
+    for (const [address, file, chain] of resume.check.counts) {
+      if (file > 0) onFile.set(address, file)
+      if (chain > 0) onChain.set(address, chain)
+    }
+    for (const payment of resume.check.outstanding) note(payment)
+    for (const address of resume.check.clouded) clouded.add(address)
+    for (const intent of resume.check.intents) openIntents.set(intent.hash, intent)
+  }
+  replay(resume.after)
+
   const file = openSync(path, 'a')
-  const append = (entry: Entry): void => {
-    writeSync(file, `${JSON.stringify(entry)}\n`)
+  /** Bytes of the log, so a `done` can say where it was written. Appends go to the end, always. */
+  let logLength = sizeOf(path)
+  /** Bytes written since the last `check`, which is what decides when the next one is due. */
+  let sinceCheck = logLength - resume.after
+
+  /** Where the line was written, so that a `done` can be found again without reading the log. */
+  const append = (entry: Entry): number => {
+    const at = logLength
+    const line = `${JSON.stringify(entry)}\n`
+    writeSync(file, line)
     // The crash that matters is the one between answering a player and that
     // player asking again, so the line reaches the disk before either can happen.
     fsyncSync(file)
+    logLength += Buffer.byteLength(line)
+    sinceCheck += Buffer.byteLength(line)
+    return at
+  }
+
+  /**
+   * Fold everything written so far into one line, if enough has been written to
+   * be worth folding.
+   *
+   * The order is the whole of the crash story. The `check` reaches the disk
+   * first and the index is told it covers the log second, so a crash between
+   * them leaves a checkpoint that is true and an index that under-claims — and
+   * an index that under-claims is repaired by replaying the log from where it
+   * left off, which is what opening it does. The other order would leave an
+   * index claiming to cover lines a crash took, and a hash whose answer is not
+   * in an index that says it is complete reads as never answered.
+   *
+   * Called only from inside the mutex, so nothing is half-settled while the
+   * counts it writes down are being read.
+   */
+  const checkpoint = (): void => {
+    if (sinceCheck < checkpointBytes) return
+
+    // Wallets whose two counts agree say the same thing forgotten as remembered
+    // — `attributable` compares them, and `0 <= 0` is `3 <= 3`. What is kept is
+    // every disagreement: an answer still in flight, or a record genuinely lost.
+    const counts: Check['counts'] = []
+    for (const address of new Set([...onFile.keys(), ...onChain.keys()])) {
+      const file = onFile.get(address) ?? 0
+      const chain = onChain.get(address) ?? 0
+      if (file === chain) {
+        onFile.delete(address)
+        onChain.delete(address)
+        continue
+      }
+      counts.push([address, file, chain])
+    }
+
+    append({
+      k: 'check',
+      issuer,
+      frontier: mark,
+      counts,
+      outstanding: [...outstanding.values()],
+      clouded: [...clouded],
+      intents: [...openIntents.values()],
+    })
+    answers.commit(logLength)
+    sinceCheck = 0
   }
 
   // ----------------------------------------------------------------- the chain
@@ -374,7 +652,7 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
       // is a new chain every run. Read it from the first block and count from
       // nothing, which is what the first run does anyway.
       since = NOTHING
-      onChain.clear()
+      recountFromLog()
       window = await chainSince(NOTHING, frontier)
       if (!window) {
         throw new Error(
@@ -411,12 +689,15 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
 
       // Already known, from a mark before this one or from arriving live. It
       // still goes on this mark if nothing has answered it, because the mark is
-      // about to move past the block that says it was ever made.
-      const known = seen.get(block.link)
+      // about to move past the block that says it was ever made. One that has
+      // been answered is on the disk and addressed by the index, so putting it
+      // on the mark would be carrying it forward for nothing.
+      const known = outstanding.get(block.link)
       if (known) {
-        if (!answers.has(known.hash)) paid.push(known)
+        paid.push(known)
         continue
       }
+      if (answers.offsetOf(block.link) !== undefined) continue
 
       const arrived = BigInt(block.balance) - (await balanceBefore(block.previous, blocks[index + 1]))
       if (arrived <= 0n) continue
