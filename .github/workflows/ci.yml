@@ -17,6 +17,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # So a branch can be checked without opening a pull request for it, and so a
+  # run that failed for a reason outside the commit — a bad SDK release, a runner
+  # hiccup — can be repeated without an empty push.
+  workflow_dispatch:
 
 # A second push to a branch makes the first run irrelevant.
 concurrency:
