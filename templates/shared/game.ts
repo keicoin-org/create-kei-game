@@ -63,6 +63,14 @@ export interface LanternOrder {
   hash: string
 }
 
+/** What the browser posts when batching clicks into an earn request. */
+export interface EarnOrder {
+  address: string
+  clicks: number
+  /** Reuse this value for retries to avoid duplicate claims on uncertain responses. */
+  idempotencyKey?: string
+}
+
 /** A refund is an outcome rather than an error: the money moved either way. */
 export type LanternOutcome =
   | { outcome: 'delivered'; item: string }

@@ -35,7 +35,7 @@ export interface Game {
   address: string
   catalogue(): Catalogue
   /** Pay for clicks. Returns the proof the player claims with. */
-  earn(address: string, clicks: number): Promise<ClaimBundle>
+  earn(address: string, clicks: number, idempotencyKey?: string): Promise<ClaimBundle>
   /**
    * Deliver the lantern for one payment, named by the hash `kei.pay()` gave the
    * player. Calling it twice with the same hash returns the first answer rather
@@ -59,6 +59,8 @@ const PAYMENT_WAIT_MS = 10_000
 
 /** Which payment got which answer, so a restart is not amnesia. Kept out of git by `.gitignore`. */
 const ORDERS_PATH = '.kei/orders.ndjson'
+/** Keep successful claims alive briefly for retry safety after ambiguous transport. */
+const EARN_IDEMPOTENCY_TTL_MS = 5 * 60_000
 
 export async function startGame(options: GameOptions): Promise<Game> {
   const kei = await Kei.server({
@@ -106,6 +108,49 @@ export async function startGame(options: GameOptions): Promise<Game> {
   })
 
   const lastEarn = new Map<string, number>()
+  const earnInFlight = new Map<string, { address: string; clicks: number; promise: Promise<ClaimBundle> }>()
+  const earnCompleted = new Map<string, { address: string; clicks: number; bundle: ClaimBundle; expiresAt: number }>()
+
+  const pruneEarnCompleted = (): void => {
+    const now = Date.now()
+    for (const [idempotencyKey, value] of earnCompleted.entries()) {
+      if (value.expiresAt <= now) earnCompleted.delete(idempotencyKey)
+    }
+  }
+
+  const validateEarnKey = (idempotencyKey: string): string => {
+    const key = idempotencyKey.trim()
+    if (!key) throw new GameError('That earn request is missing an idempotency key.')
+    if (!/^[A-Za-z0-9._-]+$/.test(key) || key.length > 64) {
+      throw new GameError('The idempotency key must be letters, digits, ".", "_", or "-".')
+    }
+    return key
+  }
+
+  const performEarn = async (address: string, clicks: number): Promise<ClaimBundle> => {
+    const now = Date.now()
+    const since = now - (lastEarn.get(address) ?? now - 1_000)
+    lastEarn.set(address, now)
+
+    // The browser counts the clicks, because in single-player nothing else
+    // sees them. That is a real trust hole, and this is a ceiling rather than
+    // a fix: it makes the hole worth a few coins instead of the whole supply.
+    // Put a Colyseus room in the middle and the clicks become observed.
+    const allowed = Math.max(1, Math.ceil((since / 1_000) * CLICK_RATE_CAP) + CLICK_RATE_CAP)
+    const counted = Math.min(Math.floor(clicks), allowed)
+    if (!(counted > 0)) throw new GameError(`That was zero clicks. Got ${clicks}.`)
+
+    const owned = await lanterns.balanceOf(address)
+
+    // One issuer block, and the player writes their own claim against it from
+    // their own account. With one player this is a batch of one and the code
+    // is identical Ã¢â‚¬â€ which is the useful part, because nothing has to be
+    // rewritten when there are a thousand of them claiming at once. Minting
+    // to each player in turn would instead make this account's chain a global
+    // write lock, and the queue behind it would become the game.
+    const drop = await currency.commit([{ to: address, amount: counted * perClickFor(owned) }])
+    return drop.proofFor(address)
+  }
 
   /**
    * Selling the lantern: the player signs the payment, the issuer signs the
@@ -197,29 +242,52 @@ export async function startGame(options: GameOptions): Promise<Game> {
       }
     },
 
-    async earn(address, clicks) {
+    async earn(address, clicks, idempotencyKey) {
+      pruneEarnCompleted()
+      const key = idempotencyKey === undefined ? undefined : validateEarnKey(idempotencyKey)
+      if (key === undefined) return performEarn(address, clicks)
+
+      const completed = earnCompleted.get(key)
+      if (completed !== undefined) {
+        if (completed.address !== address) {
+          throw new GameError('That idempotency key was used from a different wallet.')
+        }
+        if (completed.clicks !== clicks) {
+          throw new GameError('That idempotency key was already used for a different number of clicks.')
+        }
+        return completed.bundle
+      }
+
+      const inFlightOrder = earnInFlight.get(key)
+      if (inFlightOrder !== undefined) {
+        if (inFlightOrder.address !== address) {
+          throw new GameError('That idempotency key is in use by a different wallet.')
+        }
+        if (inFlightOrder.clicks !== clicks) {
+          throw new GameError('That idempotency key was already used for a different number of clicks.')
+        }
+        return inFlightOrder.promise
+      }
+
+      const order = (async () => {
+        try {
+          return await performEarn(address, clicks)
+        } finally {
+          earnInFlight.delete(key)
+        }
+      })()
+      earnInFlight.set(key, { address, clicks, promise: order })
+
+      const bundle = await order
       const now = Date.now()
-      const since = now - (lastEarn.get(address) ?? now - 1_000)
-      lastEarn.set(address, now)
+      earnCompleted.set(key, {
+        address,
+        clicks,
+        bundle,
+        expiresAt: now + EARN_IDEMPOTENCY_TTL_MS,
+      })
+      return bundle
 
-      // The browser counts the clicks, because in single-player nothing else
-      // sees them. That is a real trust hole, and this is a ceiling rather than
-      // a fix: it makes the hole worth a few coins instead of the whole supply.
-      // Put a Colyseus room in the middle and the clicks become observed.
-      const allowed = Math.max(1, Math.ceil((since / 1_000) * CLICK_RATE_CAP) + CLICK_RATE_CAP)
-      const counted = Math.min(Math.floor(clicks), allowed)
-      if (!(counted > 0)) throw new GameError('That was zero clicks.')
-
-      const owned = await lanterns.balanceOf(address)
-
-      // One issuer block, and the player writes their own claim against it from
-      // their own account. With one player this is a batch of one and the code
-      // is identical — which is the useful part, because nothing has to be
-      // rewritten when there are a thousand of them claiming at once. Minting
-      // to each player in turn would instead make this account's chain a global
-      // write lock, and the queue behind it would become the game.
-      const drop = await currency.commit([{ to: address, amount: counted * perClickFor(owned) }])
-      return drop.proofFor(address)
     },
 
     async buyLantern(address, hash) {
@@ -251,3 +319,4 @@ export async function startGame(options: GameOptions): Promise<Game> {
     },
   }
 }
+
