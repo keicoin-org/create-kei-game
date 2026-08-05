@@ -40,6 +40,9 @@
     "templates"
   ],
   "sideEffects": false,
+  "scripts": {
+    "test": "bun test"
+  },
   "engines": {
     "node": ">=20"
   },

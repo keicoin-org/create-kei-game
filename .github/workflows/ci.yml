@@ -1,0 +1,48 @@
+# The test suite, on every push and every pull request.
+#
+# `bun test` only. There is deliberately no typecheck step: `tsconfig.json`
+# extends `../../tsconfig.base.json`, which does not exist in this repository —
+# it is a leftover from when this package lived inside the kei-transaction
+# monorepo — so `tsc --noEmit` fails with TS5083 before it looks at any source.
+# Adding a step that cannot pass would be worse than leaving the gap visible.
+# Restoring the typecheck means authoring a base config, which is a decision
+# about compiler options rather than a CI change.
+#
+# The suite stands the generated project up and runs it against an in-memory
+# chain, so it is minutes rather than seconds and needs no network.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # So a branch can be checked without opening a pull request for it, and so a
+  # run that failed for a reason outside the commit — a bad SDK release, a runner
+  # hiccup — can be repeated without an empty push.
+  workflow_dispatch:
+
+# A second push to a branch makes the first run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # No lockfile is committed, so this resolves the declared ranges. That is
+      # the point for this package: it is a scaffolder shipped alongside a moving
+      # SDK, and it should fail here when the SDK it emits code against changes
+      # under it rather than in somebody's new project.
+      - run: bun install
+
+      - run: bun test
