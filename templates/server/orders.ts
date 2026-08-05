@@ -59,6 +59,15 @@
  * attach a handler, so the arrival of a payment made while the game was down is
  * never announced to anyone. It is on the chain, though, which is where this
  * looks.
+ *
+ * That read is bounded by writing down where it got to. A `mark` names the last
+ * block of the issuer's chain this file has read, and what was on it up to
+ * there, so the next read starts from the mark rather than from the beginning —
+ * and a game that has answered a million purchases starts as quickly as one
+ * that has answered none. What a mark says was on the chain is counted off the
+ * chain and never off the `done` lines beside it: a `done` that went missing is
+ * exactly what that count is for, and deriving one from the other would make it
+ * invisible.
  */
 
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
@@ -121,9 +130,10 @@ export interface OrdersOptions {
   /** Where answers are appended. */
   path: string
   /**
-   * How much of the issuer's chain to read at startup. All of it, or startup
-   * fails: a partial read cannot tell a record this file lost from one written
-   * before the window began.
+   * How many blocks of the issuer's chain to ask the node for in one request.
+   * Not a ceiling: a read that has not reached the block it is looking for asks
+   * again for twice as many, so a long chain costs requests rather than a
+   * refusal. What keeps it at one request is the `mark` — see `Mark`.
    */
   historyLimit?: number
 }
@@ -131,7 +141,33 @@ export interface OrdersOptions {
 type Intent = { k: 'intent'; issuer: string; hash: string; address: string; plan: Plan['kind']; amount: number; since: string }
 type Done = { k: 'done'; issuer: string; hash: string; address: string; amount: number; outcome: LanternOutcome }
 type Void = { k: 'void'; issuer: string; hash: string }
-type Entry = Intent | Done | Void
+/**
+ * How far along the issuer's chain this file has read, and what it found there.
+ *
+ * The chain is read for two things — the answers this issuer has written to
+ * each wallet, and the payments that reached it while nothing was listening —
+ * and both are running totals over a chain that only grows at the end. So each
+ * read starts where the last one stopped and this is the line that says where
+ * that was.
+ *
+ * `answers` is counted off the blocks and not off the `done` lines in this same
+ * file. That is the whole point: a `done` that went missing is what the count
+ * is compared against, so a mark that derived one from the other would forget
+ * the loss at the first restart and answer a payment that already has an answer.
+ */
+type Mark = {
+  k: 'mark'
+  issuer: string
+  /** The newest block read. Everything up to and including it is counted here or in a mark before it. */
+  frontier: string
+  /** The mark this one continues from. `NOTHING` for a read that started at the first block of the chain. */
+  since: string
+  /** Answers found between the two, per address. */
+  answers: Array<[string, number]>
+  /** Payments found between the two that nothing has answered yet. */
+  paid: Payment[]
+}
+type Entry = Intent | Done | Void | Mark
 
 /** What an issuer block did for somebody, which is not which payment it did it for. */
 interface Answer {
@@ -165,7 +201,7 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
   const { kei, item, path } = options
   const node = kei.client.node
   const issuer = kei.address
-  const historyLimit = options.historyLimit ?? 100_000
+  const historyLimit = options.historyLimit ?? 200
 
   /** Payment hash to the answer it got. The only thing that attributes one. */
   const answers = new Map<string, LanternOutcome>()
@@ -182,6 +218,8 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
   const unresolved = new Set<string>()
   /** Intents written and not yet closed, by payment hash. */
   const openIntents = new Map<string, Intent>()
+  /** The last block of the issuer's chain that has been read. The first one, until a mark says otherwise. */
+  let mark = NOTHING
 
   const bump = (counts: Map<string, number>, address: string): void => {
     counts.set(address, (counts.get(address) ?? 0) + 1)
@@ -204,6 +242,15 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
     // Entries name their issuer, so two games sharing a directory — or one game
     // restarted on a new seed — do not read each other's answers.
     if (entry.issuer !== issuer) continue
+    if (entry.k === 'mark') {
+      // A read that started at the first block of the chain replaces what the
+      // marks before it counted rather than adding to them.
+      if (entry.since === NOTHING) onChain.clear()
+      mark = entry.frontier
+      for (const [address, count] of entry.answers) onChain.set(address, (onChain.get(address) ?? 0) + count)
+      for (const payment of entry.paid) note(payment)
+      continue
+    }
     if (entry.k === 'intent') {
       openIntents.set(entry.hash, entry)
       continue
@@ -237,13 +284,14 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
     note({ hash: receive.link, from, amount })
   })
 
+  // The chain up to here has been read and counted, and the mark says so on the
+  // disk. Settling an intent below can put a block on it — `fence` does — and
+  // that block is after the mark, so the next read is the one that counts it.
+  // What must never happen is counting one of them twice.
+  await catchUp()
+
   // -------------------------------------------------------- answers in flight
 
-  // Settled first, and before the chain is counted, because settling one can
-  // write to the chain: it fences off an action that may still be in flight, and
-  // that action can land in between. Counting afterwards counts what is actually
-  // there rather than what was there a moment before the door was shut.
-  //
   // More than one intent can be open at once: an action nobody could resolve
   // leaves its own open and the game goes on serving other wallets. Each is
   // settled over its own window and told apart by the wallet it names. Two open
@@ -256,77 +304,155 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
       clouded.add(intent.address)
       continue
     }
-    await closeIntent(intent, { count: 'later' })
-  }
-
-  // ----------------------------------------------------------------- the chain
-
-  // Read before the history, so that a block landing between the two leaves the
-  // history long rather than the frontier unaccounted for. It is the one hash on
-  // the chain no `previous` field names, and an intent that got no further than
-  // its own fsync recorded exactly it.
-  const history = await node.accountHistory(issuer, { limit: historyLimit })
-  const oldest = history[history.length - 1]
-  if (oldest && !/^0+$/.test(oldest.previous)) {
-    throw new Error(
-      `server/orders.ts read ${history.length} blocks of the issuer's chain and did not reach the start of it. ` +
-        'It needs all of it: a partial read cannot tell an answer this file lost from one written before the ' +
-        'window began, and answering on that basis is how one payment gets answered twice. Raise historyLimit ' +
-        'past the length of the chain, or move this record to a store that does not re-derive itself at boot.',
-    )
-  }
-
-  // One pass, newest first, for the two things the chain is read for: how many
-  // answers this issuer has written to each wallet, and which payments reached
-  // it while nothing was listening.
-  for (let index = 0; index < history.length; index++) {
-    const block = history[index]
-    if (!block) continue
-
-    const answer = answerIn(block, item)
-    if (answer) {
-      bump(onChain, answer.address)
-      continue
-    }
-
-    if (block.type !== 'state') continue
-    if (block.subtype !== 'receive' && block.subtype !== 'open') continue
-    if (seen.has(block.link)) continue
-
-    // What arrived is this block's balance less its predecessor's. The whole
-    // chain is here and it came back in order, so the predecessor is the next
-    // entry along — or nothing at all, at the very first block.
-    const before = /^0+$/.test(block.previous) ? 0n : BigInt(history[index + 1]?.balance ?? '0')
-    const arrived = BigInt(block.balance) - before
-    if (arrived <= 0n) continue
-
-    // An asset receive collects a token rather than Kei and cannot pay for
-    // anything. `link` on one is an operation, not a send anybody signed.
-    const send = await node.blockInfo(block.link)
-    if (send?.type !== 'state' || send.subtype !== 'send') continue
-    note({ hash: block.link, from: send.account, amount: keiFromRaw(arrived) })
+    await closeIntent(intent)
   }
 
   // --------------------------------------------------------- asking the chain
 
-  /** The issuer's chain, or nothing at all if the node would not answer for it. */
-  async function readChain(): Promise<{ frontier: string | undefined; recent: Block[] } | undefined> {
-    try {
-      const info = await node.accountInfo(issuer)
-      return { frontier: info?.frontier, recent: await node.accountHistory(issuer, { limit: historyLimit }) }
-    } catch {
-      return undefined
+  /**
+   * The blocks written on top of `since`, newest first — an intent's window, or
+   * everything the mark has not accounted for. `NOTHING` asks for the whole
+   * chain, because the first block of one is built on nothing.
+   *
+   * The read asks for `historyLimit` blocks and doubles until `since` is in what
+   * came back, so the length of the chain costs requests rather than a refusal.
+   *
+   * `undefined` is the answer that has to stay distinct from an empty window:
+   * the block is not on this chain, so the window is not empty, it is
+   * unreadable, and nothing can be claimed about it.
+   */
+  async function chainSince(since: string, frontier: string | undefined): Promise<Block[] | undefined> {
+    let read = -1
+    for (let limit = historyLimit; ; limit *= 2) {
+      const history = await node.accountHistory(issuer, { limit })
+      const at = history.findIndex((block) => builtOn(block, since))
+      if (at !== -1) return history.slice(0, at + 1)
+      // Nothing is built on it and it is the tip of the chain, so the window is
+      // genuinely empty — which is not the same as nothing being able to arrive in it.
+      if (frontier === since) return []
+      const oldest = history[history.length - 1]
+      // The first block of the chain came back and `since` is not on it, or the
+      // node has stopped giving more however much is asked for.
+      if (!oldest || /^0+$/.test(oldest.previous) || history.length === read) return undefined
+      read = history.length
     }
+  }
+
+  /**
+   * The balance a receive was built on, so that what arrived is the difference.
+   *
+   * The window came back in order, so the predecessor is the next entry along —
+   * except at the oldest block in it, which is built on one the read stopped
+   * before. That one is fetched by name rather than guessed at, because a guess
+   * here is a refund for more than was paid.
+   */
+  async function balanceBefore(hash: string, predecessor: Block | undefined): Promise<bigint> {
+    if (/^0+$/.test(hash)) return 0n
+    if (predecessor) return BigInt(predecessor.balance)
+    const block = await node.blockInfo(hash)
+    if (!block) throw new Error(`server/orders.ts could not read block ${hash} of the issuer's own chain.`)
+    return BigInt(block.balance)
+  }
+
+  /**
+   * Read the chain from the mark to its tip, count what is on it, and move the
+   * mark. One short read however long the chain is, because everything before
+   * the mark was counted by the marks before it.
+   *
+   * The frontier is read first and nothing newer than it is counted, so a block
+   * landing between the two reads is left for the next one rather than counted
+   * here and marked as unread.
+   */
+  async function catchUp(): Promise<void> {
+    const frontier = (await node.accountInfo(issuer))?.frontier
+    if (frontier === undefined || frontier === mark) return
+
+    let since = mark
+    let window = await chainSince(since, frontier)
+    if (!window) {
+      // A mark this chain has never heard of says nothing about it — a mock node
+      // is a new chain every run. Read it from the first block and count from
+      // nothing, which is what the first run does anyway.
+      since = NOTHING
+      onChain.clear()
+      window = await chainSince(NOTHING, frontier)
+      if (!window) {
+        throw new Error(
+          `server/orders.ts asked the node for ${historyLimit} blocks of the issuer's chain and more, and did not ` +
+            'reach the start of it. The first read needs all of it: a partial one cannot tell an answer this file ' +
+            'lost from one written before the window began, and answering on that basis is how one payment gets ' +
+            `answered twice. Every read after it starts at the last mark in ${path}, so keeping that file across a ` +
+            'restart is what stops this happening again.',
+        )
+      }
+    }
+
+    const at = window.findIndex((block) => block.previous === frontier)
+    const blocks = at === -1 ? window : window.slice(at + 1)
+
+    // One pass, newest first, for the two things the chain is read for: how many
+    // answers this issuer has written to each wallet, and which payments reached
+    // it while nothing was listening.
+    const counted = new Map<string, number>()
+    const paid: Payment[] = []
+    for (let index = 0; index < blocks.length; index++) {
+      const block = blocks[index]
+      if (!block) continue
+
+      const answer = answerIn(block, item)
+      if (answer) {
+        bump(onChain, answer.address)
+        bump(counted, answer.address)
+        continue
+      }
+
+      if (block.type !== 'state') continue
+      if (block.subtype !== 'receive' && block.subtype !== 'open') continue
+
+      // Already known, from a mark before this one or from arriving live. It
+      // still goes on this mark if nothing has answered it, because the mark is
+      // about to move past the block that says it was ever made.
+      const known = seen.get(block.link)
+      if (known) {
+        if (!answers.has(known.hash)) paid.push(known)
+        continue
+      }
+
+      const arrived = BigInt(block.balance) - (await balanceBefore(block.previous, blocks[index + 1]))
+      if (arrived <= 0n) continue
+
+      // An asset receive collects a token rather than Kei and cannot pay for
+      // anything. `link` on one is an operation, not a send anybody signed.
+      const send = await node.blockInfo(block.link)
+      if (send?.type !== 'state' || send.subtype !== 'send') continue
+      const payment = { hash: block.link, from: send.account, amount: keiFromRaw(arrived) }
+      note(payment)
+      paid.push(payment)
+    }
+
+    // Last, so that a crash anywhere above leaves the mark where it was and the
+    // next read does this window again. Reading a block twice costs a moment;
+    // marking one unread as read loses a payment.
+    mark = frontier
+    append({ k: 'mark', issuer, frontier, since, answers: [...counted], paid })
   }
 
   /** What is in one intent's window right now, which is not yet what will be. */
   async function read(intent: { since: string; address: string }): Promise<Reading> {
-    const chain = await readChain()
-    if (!chain) return { state: 'unknown' }
-    const window = blocksAfter(chain.recent, chain.frontier, intent.since)
-    // The read did not reach that frontier — it is beyond `historyLimit`, or it
-    // is not on the chain this game is running against at all. Either way the
-    // window cannot be looked at, so nothing is claimed about it.
+    let window: Block[] | undefined
+    try {
+      // Read before the history, so that a block landing between the two leaves
+      // the history long rather than the frontier unaccounted for. It is the one
+      // hash on the chain no `previous` field names, and an intent that got no
+      // further than its own fsync recorded exactly it.
+      const info = await node.accountInfo(issuer)
+      window = await chainSince(intent.since, info?.frontier)
+    } catch {
+      return { state: 'unknown' }
+    }
+    // The read did not reach that frontier: it is not on the chain this game is
+    // running against at all. The window cannot be looked at, so nothing is
+    // claimed about it.
     if (!window) return { state: 'unknown' }
 
     const kinds = new Set<Plan['kind']>()
@@ -396,11 +522,11 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
    * Settle one intent against the chain and write the entry that closes it — or
    * leave it open, which is what everything short of an answer amounts to.
    *
-   * `count` says whether the pass over the chain has already counted an answer
-   * found here: at startup it has not run yet and will count it itself, and
-   * while running it ran long ago and this is one more than it saw.
+   * The answer found here is not counted onto the chain's side of the ledger.
+   * `catchUp` counts the blocks, this counts the entries, and one block counted
+   * by both would read as a record this file never wrote.
    */
-  async function closeIntent(intent: Intent, { count }: { count: 'later' | 'now' }): Promise<void> {
+  async function closeIntent(intent: Intent): Promise<void> {
     const evidence = await settled(intent)
 
     if (evidence.state === 'found') {
@@ -409,7 +535,6 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
       const outcome = outcomeFor(evidence.kind, intent.amount, item)
       answers.set(intent.hash, outcome)
       bump(onFile, intent.address)
-      if (count === 'now') bump(onChain, intent.address)
       note({ hash: intent.hash, from: intent.address, amount: intent.amount })
       append({ k: 'done', issuer, hash: intent.hash, address: intent.address, amount: intent.amount, outcome })
       return
@@ -445,7 +570,7 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
       return
     }
     const only = mine[0]
-    if (only) await closeIntent(only, { count: 'now' })
+    if (only) await closeIntent(only)
   }
 
   /**
@@ -455,9 +580,14 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
    * missing entry and any of its hashes could be the one that entry named, so
    * none of them can be answered — including, and this is the expensive one, by
    * being refunded.
+   *
+   * More on file than on the chain is not that, and is not a loss: it is an
+   * answer written down since the last read of the chain, which is every answer
+   * this process has given. The chain's count is never the larger of the two
+   * unless a record went missing.
    */
   function attributable(address: string): boolean {
-    return (onFile.get(address) ?? 0) === (onChain.get(address) ?? 0)
+    return (onChain.get(address) ?? 0) <= (onFile.get(address) ?? 0)
   }
 
   // ------------------------------------------------------------- one at a time
@@ -499,6 +629,14 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
         // that unsticks itself the next time the player presses the button.
         await resolveOpen(payment.from)
 
+        // And the chain is read forward from the mark, after that, because
+        // settling can put a block on it. This is what makes the count below
+        // the chain's rather than this process's memory of it — and it is a
+        // read of the blocks written since the last purchase, not of the chain.
+        // A node that will not answer leaves the mark where it is and is
+        // answered for below.
+        await catchUp().catch(() => undefined)
+
         const recorded = answers.get(payment.hash)
         if (recorded) return { status: 'answered', outcome: recorded }
         if (clouded.has(payment.from)) return { status: 'unattributable' }
@@ -534,7 +672,7 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
           // this intent's own window and shuts the door before believing an
           // empty one, so what the player is told is the chain's answer rather
           // than the exception's.
-          await closeIntent(intent, { count: 'now' })
+          await closeIntent(intent)
           const answered = answers.get(payment.hash)
           if (answered) return { status: 'answered', outcome: answered }
           if (clouded.has(payment.from)) return { status: 'unattributable' }
@@ -547,7 +685,6 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
         openIntents.delete(intent.hash)
         answers.set(payment.hash, plan.outcome)
         bump(onFile, payment.from)
-        bump(onChain, payment.from)
         append({
           k: 'done',
           issuer,
@@ -569,19 +706,12 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
 }
 
 /**
- * The blocks written on top of `since`, newest first — an intent's window.
- *
- * `undefined` is the fourth answer and the one that has to stay distinct: the
- * read cannot see that far back, so the window is not empty, it is unreadable.
- * The history is consulted first and the frontier only as a fallback, so a block
- * landing between the two reads makes the window longer rather than invisible.
+ * Whether this block is the one written on top of `since`, where `NOTHING` is
+ * the start of the chain: the first block of an account names no predecessor,
+ * so asking for everything after nothing asks for all of it.
  */
-function blocksAfter(recent: Block[], frontier: string | undefined, since: string): Block[] | undefined {
-  const at = recent.findIndex((block) => block.previous === since)
-  if (at !== -1) return recent.slice(0, at + 1)
-  // Nothing is built on it and it is the tip of the chain, so the window is
-  // genuinely empty — which is not the same as nothing being able to arrive in it.
-  return frontier === since ? [] : undefined
+function builtOn(block: Block, since: string): boolean {
+  return since === NOTHING ? /^0+$/.test(block.previous) : block.previous === since
 }
 
 /**
@@ -641,7 +771,12 @@ function readEntries(path: string): Entry[] {
 }
 
 function looksLikeEntry(entry: Entry): boolean {
-  if (typeof entry?.issuer !== 'string' || typeof entry.hash !== 'string') return false
+  if (typeof entry?.issuer !== 'string') return false
+  if (entry.k === 'mark') {
+    if (typeof entry.frontier !== 'string' || typeof entry.since !== 'string') return false
+    return Array.isArray(entry.answers) && Array.isArray(entry.paid)
+  }
+  if (typeof entry.hash !== 'string') return false
   if (entry.k === 'void') return true
   if (typeof entry.address !== 'string' || typeof entry.amount !== 'number') return false
   if (entry.k === 'intent') return typeof entry.since === 'string' && (entry.plan === 'deliver' || entry.plan === 'refund')
