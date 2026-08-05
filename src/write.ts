@@ -36,6 +36,13 @@ export async function assertWritable(directory: string, force: boolean): Promise
   const rest = blocking.length > 3 ? `, and ${blocking.length - 3} more` : ''
   fail(
     `${directory} already has files in it (${sample}${rest}). Pick a different name, or pass --force to write into it anyway.`,
+    {
+      code: 'target_not_empty',
+      stage: 'target',
+      step: 'check-target-directory',
+      retryable: false,
+      remediation: 'Choose a different project name, or pass --force to write into that directory anyway.',
+    },
   )
 }
 

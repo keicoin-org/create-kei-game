@@ -8,7 +8,7 @@
  * for the rest, so the whole harness runs unattended.
  */
 
-import { HarnessError, fail } from './errors.js'
+import { HarnessError, fail, type Failure } from './errors.js'
 import { DEFAULT_TEMPLATE, TEMPLATES } from './templates.js'
 
 export interface CliOptions {
@@ -49,9 +49,10 @@ const FLAGS = ['--template', '--currency', '--json', '--yes', '-y', '--force', '
 export class CliError extends HarnessError {
   constructor(
     message: string,
+    failure: Failure,
     readonly parsed: CliOptions,
   ) {
-    super(message)
+    super(message, failure)
   }
 }
 
@@ -61,7 +62,7 @@ export function parseArgs(argv: readonly string[]): CliOptions {
   try {
     read(argv, options)
   } catch (error) {
-    if (error instanceof HarnessError) throw new CliError(error.message, { ...options })
+    if (error instanceof HarnessError) throw new CliError(error.message, error.failure, { ...options })
     throw error
   }
 
@@ -94,7 +95,13 @@ function read(argv: readonly string[], options: CliOptions): void {
       case '--currency': {
         const value = argv[++index]
         if (value === undefined || value.startsWith('-')) {
-          fail('--currency needs a name after it, for example: --currency "Gems".')
+          fail('--currency needs a name after it, for example: --currency "Gems".', {
+            code: 'flag_missing_value',
+            stage: 'arguments',
+            step: 'read-currency-flag',
+            retryable: false,
+            remediation: 'Put the currency name after --currency, or write it as --currency=Gems.',
+          })
         }
         options.currency = value
         break
@@ -102,7 +109,13 @@ function read(argv: readonly string[], options: CliOptions): void {
       case '--template': {
         const value = argv[++index]
         if (value === undefined || value.startsWith('-')) {
-          fail('--template needs a name after it, for example: --template world-of-wonder.')
+          fail('--template needs a name after it, for example: --template world-of-wonder.', {
+            code: 'flag_missing_value',
+            stage: 'arguments',
+            step: 'read-template-flag',
+            retryable: false,
+            remediation: 'Put the template name after --template, or write it as --template=world-of-wonder.',
+          })
         }
         options.template = value
         break
@@ -119,11 +132,24 @@ function read(argv: readonly string[], options: CliOptions): void {
           break
         }
         if (arg.startsWith('-')) {
-          fail(`"${arg}" is not an option this understands. It takes: ${FLAGS.join(', ')}.`)
+          fail(`"${arg}" is not an option this understands. It takes: ${FLAGS.join(', ')}.`, {
+            code: 'flag_unknown',
+            stage: 'arguments',
+            step: 'read-flag',
+            retryable: false,
+            remediation: 'Drop the option, or check its spelling against --help.',
+          })
         }
         if (options.name !== undefined) {
           fail(
             `Two project names were given ("${options.name}" and "${arg}"), and there can only be one. Quote it if the name has a space in it.`,
+            {
+              code: 'name_repeated',
+              stage: 'arguments',
+              step: 'read-project-name',
+              retryable: false,
+              remediation: 'Pass one project name, quoted if it contains a space.',
+            },
           )
         }
         options.name = arg
