@@ -54,8 +54,11 @@ describe('the format a failure is reported in', () => {
     expect(code).toBe(1)
     expect(JSON.parse(stdout)).toEqual({
       status: 'error',
-      code: 'harness_error',
-      stage: 'execution',
+      code: 'flag_unknown',
+      stage: 'arguments',
+      step: 'read-flag',
+      retryable: false,
+      remediation: expect.any(String),
       message: expect.stringContaining('"--nope" is not an option this understands'),
     })
     expect(wrote).toEqual([])

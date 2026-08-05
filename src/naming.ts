@@ -70,10 +70,23 @@ export function slugFor(projectName: string): string {
   if (slug === '') {
     fail(
       `"${projectName}" has no letters or digits in it, so there is no directory name in it either. Try something like "star-clicker".`,
+      {
+        code: 'name_unusable',
+        stage: 'answers',
+        step: 'derive-slug',
+        retryable: false,
+        remediation: 'Use a project name with at least one letter or digit in it.',
+      },
     )
   }
   if (slug.length > MAX_SLUG_LENGTH) {
-    fail(`"${projectName}" is longer than npm allows for a package name (${MAX_SLUG_LENGTH} characters). Shorten it.`)
+    fail(`"${projectName}" is longer than npm allows for a package name (${MAX_SLUG_LENGTH} characters). Shorten it.`, {
+      code: 'name_too_long',
+      stage: 'answers',
+      step: 'derive-slug',
+      retryable: false,
+      remediation: `Shorten the project name: it becomes a package name, and ${MAX_SLUG_LENGTH} characters is the limit.`,
+    })
   }
   return slug
 }
@@ -91,6 +104,13 @@ export function symbolFor(currencyName: string): string {
   if (!SYMBOL_PATTERN.test(symbol)) {
     fail(
       `A currency called "${currencyName}" gives the ticker "${symbol}", which the chain will not accept. Tickers are 1-20 characters of A-Z, 0-9 or "-", starting with a letter or digit — so name the currency something starting with a letter, like "Gems".`,
+      {
+        code: 'currency_unusable',
+        stage: 'answers',
+        step: 'derive-symbol',
+        retryable: false,
+        remediation: 'Start the currency name with a letter or a digit, like "Gems".',
+      },
     )
   }
   return symbol
@@ -101,8 +121,24 @@ export function projectFrom(answers: { name: string; currency: string }): GamePr
   const title = answers.name.trim()
   const currency = answers.currency.trim()
 
-  if (title === '') fail('The project needs a name — it becomes the directory this is written to. Try "star-clicker".')
-  if (currency === '') fail('The currency needs a name — it is what players will see in their wallet. Try "Gems".')
+  if (title === '') {
+    fail('The project needs a name — it becomes the directory this is written to. Try "star-clicker".', {
+      code: 'name_empty',
+      stage: 'answers',
+      step: 'read-answers',
+      retryable: false,
+      remediation: 'Give the project a name.',
+    })
+  }
+  if (currency === '') {
+    fail('The currency needs a name — it is what players will see in their wallet. Try "Gems".', {
+      code: 'currency_empty',
+      stage: 'answers',
+      step: 'read-answers',
+      retryable: false,
+      remediation: 'Give the currency a name.',
+    })
+  }
 
   assertDisplayable('project name', title)
   assertDisplayable('currency name', currency)
@@ -117,11 +153,25 @@ function assertDisplayable(what: string, value: string): void {
     const code = found[0].codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')
     fail(
       `The ${what} contains U+${code}, which has no printed form — and this name is printed, in a heading, a page title and a line the dev server writes. Retype it without that character; if it was meant to be a space, type a space.`,
+      {
+        code: 'answer_unprintable',
+        stage: 'answers',
+        step: 'check-printable',
+        retryable: false,
+        remediation: `Retype the ${what} without U+${code}.`,
+      },
     )
   }
   if ([...value].length > MAX_DISPLAY_LENGTH) {
     fail(
       `The ${what} is ${[...value].length} characters long, and ${MAX_DISPLAY_LENGTH} is as much as fits in a heading. Shorten it to the name and put the rest in the README.`,
+      {
+        code: 'answer_too_long',
+        stage: 'answers',
+        step: 'check-length',
+        retryable: false,
+        remediation: `Shorten the ${what} to ${MAX_DISPLAY_LENGTH} characters or fewer.`,
+      },
     )
   }
 }

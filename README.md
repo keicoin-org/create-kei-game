@@ -90,6 +90,62 @@ it before they type the command.
 `carpet-markets` is asked one question, not two: it has no currency of its own,
 because every coin on it is launched by a player at runtime.
 
+## Failures, for a program reading them
+
+`--json` makes a failed run print one JSON object and exit 1. Nothing else about
+the run changes, and a run that succeeds prints what it always did.
+
+```console
+$ create-kei-game --json my-game --currency '!!!' --yes
+{
+  "status": "error",
+  "code": "currency_unusable",
+  "stage": "answers",
+  "step": "derive-symbol",
+  "retryable": false,
+  "remediation": "Start the currency name with a letter or a digit, like \"Gems\".",
+  "message": "A currency called \"!!!\" gives the ticker \"\", which the chain will not accept. …"
+}
+```
+
+| Field | |
+|---|---|
+| `status` | `"error"`. Present so a reader can branch before looking at anything else. |
+| `code` | What failed, as a name. Stable: adding a code is not a breaking change, renaming one is. |
+| `stage` | `arguments`, `answers`, `template`, `target` or `internal`. |
+| `step` | The operation inside the stage, for a report that wants to be specific. |
+| `retryable` | Whether the same command, unchanged, could succeed later. |
+| `remediation` | One imperative sentence: what to change before running it again. |
+| `message` | The sentence a person reads. Free prose — assert on `code`, not on this. |
+
+`retryable` is the field worth wiring up. Exactly one thing here fails for
+reasons outside the command — downloading a template that lives in its own
+repository — so `template_unreachable`, `template_corrupt`, and a
+`template_http_error` carrying a 5xx are true, and everything else is false. A
+false is a run not worth spending: the input has to change first.
+
+The codes, by stage:
+
+| Stage | Codes |
+|---|---|
+| `arguments` | `flag_missing_value`, `flag_unknown`, `name_repeated` |
+| `answers` | `name_empty`, `name_unusable`, `name_too_long`, `currency_empty`, `currency_unusable`, `answer_unprintable`, `answer_too_long`, `input_not_interactive` |
+| `template` | `template_unknown`, `template_unreachable`, `template_http_error`, `template_corrupt`, `template_drifted` |
+| `target` | `target_not_empty` |
+| `internal` | `internal_error` |
+
+`internal_error` is a bug in this package rather than in the command, and it is
+the one case where stdout is not the whole story: the envelope goes to stdout as
+always and whatever the runtime raised goes to stderr, stack included when there
+is one.
+
+`input_not_interactive` is the one an unattended caller meets first. It means the
+two questions had nowhere to be asked — pass `--yes`, or give the answers as
+flags.
+
+Without `--json`, a failure is a sentence and nothing else, which is SPEC §6.1
+and is unchanged.
+
 ## It is not a framework
 
 The generated project does not import this package, does not depend on it, and

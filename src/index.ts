@@ -15,10 +15,10 @@
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
-import { argv, cwd, exit, platform, stdout, versions } from 'node:process'
+import { argv, cwd, exit, platform, stderr, stdout, versions } from 'node:process'
 
 import { CliError, DEFAULT_CURRENCY, DEFAULT_NAME, helpText, parseArgs, type CliOptions } from './cli.js'
-import { HarnessError } from './errors.js'
+import { HarnessError, INTERNAL, type Failure } from './errors.js'
 import { projectFrom, type GameProject } from './naming.js'
 import { assertWritable, writeFiles } from './write.js'
 import { createAsker, type Asker } from './prompt.js'
@@ -173,12 +173,25 @@ function hasBun(): boolean {
   }
 }
 
-function failurePayload(message: string): string {
+/**
+ * The one shape a failed run reports in under `--json`.
+ *
+ * `message` is the sentence a person reads and is allowed to be reworded.
+ * Everything above it is the contract: `code` names the failure, `stage` and
+ * `step` say where it stopped, and `retryable` answers the only question an
+ * automated caller cannot work out for itself — whether running the same command
+ * again is worth a run. `src/errors.ts` holds the codes; `README.md` documents
+ * them.
+ */
+function failurePayload(message: string, failure: Failure): string {
   return `${JSON.stringify(
     {
       status: 'error',
-      code: 'harness_error',
-      stage: 'execution',
+      code: failure.code,
+      stage: failure.stage,
+      step: failure.step,
+      retryable: failure.retryable,
+      remediation: failure.remediation,
       message,
     },
     null,
@@ -209,11 +222,22 @@ try {
 } catch (error) {
   if (error instanceof HarnessError) {
     if (wantsJson(error, options)) {
-      stdout.write(failurePayload(error.message))
+      stdout.write(failurePayload(error.message, error.failure))
       exit(1)
     }
 
     stdout.write(`\n  ${error.message}\n\n`)
+    exit(1)
+  }
+
+  // Not one of ours, so the run ended on a bug here rather than on an answer.
+  // A caller reading stdout still gets a record it can classify — an envelope
+  // that stops at `internal_error` is a report, where a stack on stdout is a
+  // parse failure — and the stack still goes to stderr, where it was useful
+  // before and is not being taken away.
+  if (wantsJson(error, options)) {
+    stdout.write(failurePayload(error instanceof Error ? error.message : String(error), INTERNAL))
+    stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`)
     exit(1)
   }
   throw error

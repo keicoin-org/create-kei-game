@@ -23,6 +23,15 @@ export function createAsker(): Asker {
   if (!stdin.isTTY) {
     fail(
       'There is nothing to type into here, so the two questions cannot be asked. Pass the answers instead: create-kei-game <project> --currency "Gems", or --yes to take the defaults.',
+      {
+        code: 'input_not_interactive',
+        stage: 'answers',
+        step: 'open-prompt',
+        // The exact failure an unattended caller hits first, and the one it can
+        // fix without a human: the answers are flags.
+        retryable: false,
+        remediation: 'Pass --yes, or give the answers as arguments: create-kei-game <project> --currency "Gems".',
+      },
     )
   }
 

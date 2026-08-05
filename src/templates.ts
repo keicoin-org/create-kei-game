@@ -87,7 +87,13 @@ export function templateNamed(name: string): Template {
   if (found) return found
 
   const known = TEMPLATES.map((template) => template.name).join(', ')
-  fail(`There is no template called "${name}". The ones there are: ${known}.`)
+  fail(`There is no template called "${name}". The ones there are: ${known}.`, {
+    code: 'template_unknown',
+    stage: 'template',
+    step: 'resolve-template',
+    retryable: false,
+    remediation: `Pass one of: ${known}.`,
+  })
 }
 
 /**
@@ -105,10 +111,30 @@ export const fetchTarball: Fetcher = async (url) => {
   } catch (cause) {
     fail(
       `Could not reach ${url} to download the template. Check the connection — this template lives in its own repository and is not shipped inside this package.`,
+      {
+        code: 'template_unreachable',
+        stage: 'template',
+        step: 'download-template',
+        // Nothing about the command is wrong. This is the one failure here that
+        // a later run can clear without anything being changed.
+        retryable: true,
+        remediation: 'Restore network access to codeload.github.com and run it again.',
+      },
     )
   }
   if (!response.ok) {
-    fail(`${url} answered ${response.status}. If that is a 404 the template's branch has moved; report it as a bug.`)
+    fail(`${url} answered ${response.status}. If that is a 404 the template's branch has moved; report it as a bug.`, {
+      code: 'template_http_error',
+      stage: 'template',
+      step: 'download-template',
+      // A 5xx is the server having a moment; a 404 is the branch having moved,
+      // and no number of retries will move it back.
+      retryable: response.status >= 500,
+      remediation:
+        response.status >= 500
+          ? 'Run it again in a moment; GitHub answered with a server error.'
+          : 'Report it as a bug: the template repository or its branch has moved.',
+    })
   }
   return new Uint8Array(await response.arrayBuffer())
 }
@@ -149,7 +175,15 @@ export async function filesFor(
   try {
     files = extractTarGz(archive).map((entry) => ({ path: entry.path, contents: entry.contents }))
   } catch (cause) {
-    fail(`The template downloaded from ${repo} could not be unpacked: ${(cause as Error).message}`)
+    fail(`The template downloaded from ${repo} could not be unpacked: ${(cause as Error).message}`, {
+      code: 'template_corrupt',
+      stage: 'template',
+      step: 'unpack-template',
+      // A download cut short reads as a corrupt archive, and that is the common
+      // cause — so this is worth one more attempt before it is called a bug.
+      retryable: true,
+      remediation: 'Run it again; if the archive is still unreadable, report it as a bug.',
+    })
   }
 
   template.source.rewrite(files, project)
@@ -167,7 +201,16 @@ export async function filesFor(
 function find(files: readonly GeneratedFile[], path: string): GeneratedFile {
   const file = files.find((candidate) => candidate.path === path)
   if (!file) {
-    fail(`The downloaded template has no ${path}, so it is not the project this knows how to rename. Report it as a bug.`)
+    fail(
+      `The downloaded template has no ${path}, so it is not the project this knows how to rename. Report it as a bug.`,
+      {
+        code: 'template_drifted',
+        stage: 'template',
+        step: 'rewrite-template',
+        retryable: false,
+        remediation: 'Report it as a bug: the upstream template moved and this package has not caught up.',
+      },
+    )
   }
   return file
 }
@@ -186,7 +229,13 @@ function text(file: GeneratedFile): string {
 function substitute(file: GeneratedFile, find: string, replace: string): void {
   const before = text(file)
   if (!before.includes(find)) {
-    fail(`Expected to find ${JSON.stringify(find)} in the downloaded ${file.path} and did not. Report it as a bug.`)
+    fail(`Expected to find ${JSON.stringify(find)} in the downloaded ${file.path} and did not. Report it as a bug.`, {
+      code: 'template_drifted',
+      stage: 'template',
+      step: 'rewrite-template',
+      retryable: false,
+      remediation: 'Report it as a bug: the upstream template moved and this package has not caught up.',
+    })
   }
   file.contents = before.replace(find, () => replace)
 }
