@@ -7,7 +7,9 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdir, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { constants } from 'node:fs'
+import { lstat, mkdir, open, readdir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type { GitOptions, GitResult, GitRunner, SourceFs, SourcePath } from './source.js'
@@ -18,6 +20,48 @@ const ABSENT = new Set(['ENOENT', 'ENOTDIR'])
 
 function absent(error: unknown): boolean {
   return typeof (error as { code?: unknown }).code === 'string' && ABSENT.has((error as { code: string }).code)
+}
+
+function identityPart(info: Awaited<ReturnType<typeof lstat>>): string {
+  // ctime changes when Windows renames the validated entry to its private
+  // backup name. Device/inode bind the object; size+mtime bind its contents.
+  return [info.dev, info.ino, info.mode, info.nlink, info.size, info.mtimeMs].join(':')
+}
+
+function directoryIdentityPart(info: Awaited<ReturnType<typeof lstat>>): string {
+  // Child entry creation/removal legitimately changes directory timestamps and
+  // sometimes size; device/inode/mode bind the directory object itself.
+  return [info.dev, info.ino, info.mode].join(':')
+}
+
+function samePath(left: string, right: string): boolean {
+  return process.platform === 'win32'
+    ? resolve(left).toLowerCase() === resolve(right).toLowerCase()
+    : resolve(left) === resolve(right)
+}
+
+async function regularIdentity(directory: string, path: string): Promise<string | null> {
+  const root = resolve(directory)
+  const target = resolve(root, path)
+  // Adoption declarations are top-level today. Keeping this check in the real
+  // adapter means a future bad declaration cannot turn policy validation into
+  // a path traversal, even if the policy layer is accidentally weakened.
+  if (!samePath(dirname(target), root)) return null
+
+  try {
+    const [rootInfo, targetInfo, realRoot, realTarget] = await Promise.all([
+      lstat(root),
+      lstat(target),
+      realpath(root),
+      realpath(target),
+    ])
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) return null
+    if (!targetInfo.isFile() || targetInfo.isSymbolicLink()) return null
+    if (!samePath(dirname(realTarget), realRoot)) return null
+    return `${realRoot}\n${directoryIdentityPart(rootInfo)}\n${identityPart(targetInfo)}`
+  } catch {
+    return null
+  }
 }
 
 export const nodeFs: SourceFs = {
@@ -46,15 +90,32 @@ export const nodeFs: SourceFs = {
     await mkdir(directory, { recursive: true })
   },
 
-  async readTextFile(file, maxBytes) {
+  async readIdentityFile(directory, path, maxBytes) {
+    const root = resolve(directory)
+    const file = resolve(root, path)
+    if (!samePath(dirname(file), root)) return { kind: 'unsafe' }
+    const before = await regularIdentity(root, path)
+    if (before === null) {
+      try { await lstat(file) } catch (error) { if (absent(error)) return { kind: 'missing' } }
+      return { kind: 'unsafe' }
+    }
+
     let handle
     try {
-      handle = await open(file, 'r')
+      // O_NOFOLLOW is authoritative on POSIX. Windows rejects some numeric
+      // flag combinations, so lstat/realpath plus handle identity below is the
+      // no-reparse check there.
+      const flags = process.platform === 'win32'
+        ? constants.O_RDONLY
+        : constants.O_RDONLY | constants.O_NOFOLLOW
+      handle = await open(file, flags)
     } catch (error) {
       if (absent(error)) return { kind: 'missing' }
-      throw error
+      return { kind: 'unsafe' }
     }
     try {
+      const opened = await handle.stat()
+      if (!opened.isFile() || !before.endsWith(identityPart(opened))) return { kind: 'unsafe' }
       const bytes = Buffer.alloc(maxBytes + 1)
       let offset = 0
       while (offset < bytes.byteLength) {
@@ -63,13 +124,109 @@ export const nodeFs: SourceFs = {
         offset += bytesRead
       }
       if (offset > maxBytes) return { kind: 'too_large' }
+      const after = await regularIdentity(root, path)
+      if (after !== before) return { kind: 'unsafe' }
       try {
-        return { kind: 'text', contents: new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, offset)) }
+        return {
+          kind: 'text',
+          contents: new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, offset)),
+          identity: Object.freeze({ token: before }),
+        }
       } catch {
         return { kind: 'invalid_utf8' }
       }
     } finally {
       await handle.close()
+    }
+  },
+
+  async replaceIdentityFiles(directory, files) {
+    const root = resolve(directory)
+    const paths = files.map(({ path }) => path)
+    if (new Set(paths).size !== paths.length) return false
+    const entries = files.map((file) => ({
+      ...file,
+      target: resolve(root, file.path),
+      temporary: join(root, `.kei-adopt-${process.pid}-${randomUUID()}.tmp`),
+      backup: join(root, `.kei-adopt-${process.pid}-${randomUUID()}.old`),
+      staged: false,
+      backedUp: false,
+      installed: false,
+      mode: 0o600,
+    }))
+    for (const entry of entries) {
+      if (!samePath(dirname(entry.target), root)) return false
+      if (await regularIdentity(root, entry.path) !== entry.identity.token) return false
+      entry.mode = (await lstat(entry.target)).mode & 0o777
+    }
+
+    let committed = false
+    try {
+      for (const entry of entries) {
+        const handle = await open(entry.temporary, 'wx', entry.mode)
+        entry.staged = true
+        try {
+          await handle.writeFile(entry.contents, 'utf8')
+          await handle.sync()
+        } finally {
+          await handle.close()
+        }
+      }
+
+      // Validate the complete set before moving even one original. Then retain
+      // every original under a private sibling name until every replacement is
+      // installed, so a second-file failure can restore the first exactly.
+      for (const entry of entries) {
+        if (await regularIdentity(root, entry.path) !== entry.identity.token) return false
+      }
+      for (const entry of entries) {
+        await rename(entry.target, entry.backup)
+        entry.backedUp = true
+        if (await regularIdentity(root, basename(entry.backup)) !== entry.identity.token) {
+          throw new Error('identity entry changed while it was being retained')
+        }
+      }
+      for (const entry of entries) {
+        await rename(entry.temporary, entry.target)
+        entry.staged = false
+        entry.installed = true
+      }
+      committed = true
+
+      // Cleanup is not part of commit: if an OS refuses to remove a private
+      // backup, keep the original safely rather than reporting false after the
+      // requested identities already landed or deleting ambiguous state.
+      for (const entry of entries) {
+        try {
+          await unlink(entry.backup)
+          entry.backedUp = false
+        } catch { /* preserved private backup */ }
+      }
+      return true
+    } catch {
+      let restored = true
+      for (const entry of [...entries].reverse()) {
+        if (entry.installed) {
+          try { await unlink(entry.target) } catch { restored = false }
+          entry.installed = false
+        }
+        if (entry.backedUp) {
+          try {
+            await rename(entry.backup, entry.target)
+            entry.backedUp = false
+          } catch { restored = false }
+        }
+      }
+      if (!restored) throw new Error('The cloned reference identity transaction could not be restored safely.')
+      return false
+    } finally {
+      for (const entry of entries) {
+        if (entry.staged) await unlink(entry.temporary).catch(() => {})
+        // On a committed transaction a failed backup cleanup is intentionally
+        // preserved. On a failed transaction, preserve any backup that could
+        // not be restored; deleting it would destroy the last original copy.
+        if (!committed && entry.backedUp) continue
+      }
     }
   },
 

@@ -157,7 +157,7 @@
     "build": "tsc --build",
     "clean": "tsc --build --clean",
     "typecheck": "tsc --build && tsc -p tsconfig.tests.json",
-    "test": "bun test --max-concurrency=1",
+    "test": "bun ./scripts/test-gate.ts",
     "test:generated": "bun test ./test/scaffold-smoke.integration.ts --max-concurrency=1",
     "check": "bun run typecheck && bun run test && bun run test:generated"
   },

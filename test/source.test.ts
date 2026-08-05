@@ -23,6 +23,8 @@ class MemoryFs implements SourceFs {
   readonly stats = new Map<string, { readonly isDirectory: boolean } | null>()
   readonly made: string[] = []
   readonly writes = new Map<string, string>()
+  readonly unsafeIdentityPaths = new Set<string>()
+  beforeIdentityReplace: ((file: string) => void) | undefined
 
   async readdir(directory: string): Promise<readonly string[] | null> {
     return this.entries.get(directory) ?? null
@@ -36,11 +38,27 @@ class MemoryFs implements SourceFs {
     this.made.push(directory)
   }
 
-  async readTextFile(file: string, maxBytes: number) {
+  async readIdentityFile(directory: string, path: string, maxBytes: number) {
+    const file = `${directory}/${path}`
+    if (this.unsafeIdentityPaths.has(file)) return { kind: 'unsafe' as const }
     const contents = this.writes.get(file)
     if (contents === undefined) return { kind: 'missing' as const }
     if (new TextEncoder().encode(contents).byteLength > maxBytes) return { kind: 'too_large' as const }
-    return { kind: 'text' as const, contents }
+    return { kind: 'text' as const, contents, identity: { token: `${file}\u0000${contents}` } }
+  }
+
+  async replaceIdentityFiles(
+    directory: string,
+    files: readonly { readonly path: string; readonly contents: string; readonly identity: { readonly token: string } }[],
+  ) {
+    for (const { path } of files) this.beforeIdentityReplace?.(`${directory}/${path}`)
+    for (const { path, identity } of files) {
+      const file = `${directory}/${path}`
+      const current = this.writes.get(file)
+      if (this.unsafeIdentityPaths.has(file) || current === undefined || identity.token !== `${file}\u0000${current}`) return false
+    }
+    for (const { path, contents } of files) this.writes.set(`${directory}/${path}`, contents)
+    return true
   }
 
   async writeFile(file: string, contents: string): Promise<void> {
@@ -365,6 +383,8 @@ describe('cloned reference', () => {
     ['missing README heading', (fs: MemoryFs, directory: string) => fs.writes.set(`${directory}/README.md`, 'Button\n')],
     ['ambiguous README heading', (fs: MemoryFs, directory: string) => fs.writes.set(`${directory}/README.md`, '# Button\n\n# Button\n')],
     ['oversized package', (fs: MemoryFs, directory: string) => fs.writes.set(`${directory}/package.json`, ' '.repeat(256 * 1024 + 1))],
+    ['linked or non-regular package', (fs: MemoryFs, directory: string) => fs.unsafeIdentityPaths.add(`${directory}/package.json`)],
+    ['linked or non-regular README', (fs: MemoryFs, directory: string) => fs.unsafeIdentityPaths.add(`${directory}/README.md`)],
   ] as const)('fails closed before plan or renamed identity writes: %s', async (_name, mutate) => {
     const current = harness({ code: 0, stderr: '' }, (fs, directory, url) => {
       seedReference(fs, directory, url)
@@ -376,6 +396,37 @@ describe('cloned reference', () => {
     )).rejects.toThrow(/was not adopted/)
     expect(current.fs.writes.has(`/work/my-game/${PLAN_JSON_PATH}`)).toBeFalse()
     expect(current.calls.at(-1)?.args).toEqual(['remote', 'remove', 'origin'])
+  })
+
+  test('fails closed when a validated identity target changes before replacement', async () => {
+    const current = harness()
+    let changed = false
+    current.fs.beforeIdentityReplace = (file) => {
+      if (changed) return
+      changed = true
+      current.fs.writes.set(file, '{"name":"attacker"}\n')
+    }
+    await expect(prepareSource(
+      { project, selection: { kind: 'template', template: 'button' }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
+      current.deps,
+    )).rejects.toThrow(/was not adopted/)
+    expect(current.fs.writes.get('/work/my-game/package.json')).toBe('{"name":"attacker"}\n')
+    expect(current.fs.writes.has(`/work/my-game/${PLAN_JSON_PATH}`)).toBeFalse()
+  })
+
+  test('a second identity target change leaves the first identity unmodified', async () => {
+    const current = harness()
+    current.fs.beforeIdentityReplace = (file) => {
+      if (file.endsWith('/README.md')) current.fs.writes.set(file, '# Changed elsewhere\n')
+    }
+    await expect(prepareSource(
+      { project, selection: { kind: 'template', template: 'button' }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
+      current.deps,
+    )).rejects.toThrow(/was not adopted/)
+    // The fixture is seeded during clone, so recover its declared original for
+    // the first target and prove the failed batch never rewrote it.
+    expect(current.fs.writes.get('/work/my-game/package.json')).toBe(JSON.stringify({ name: 'button', private: true }, null, 2) + '\n')
+    expect(current.fs.writes.has(`/work/my-game/${PLAN_JSON_PATH}`)).toBeFalse()
   })
 
   test('fails closed when a declared repository field has the wrong type', async () => {

@@ -90,14 +90,38 @@ export interface SourceFs {
   stat(target: string): Promise<{ readonly isDirectory: boolean } | null>
   /** Recursive, and not an error when it already exists. */
   mkdir(directory: string): Promise<void>
-  /** A bounded UTF-8 read; no implementation may allocate past maxBytes + 1. */
-  readTextFile(file: string, maxBytes: number): Promise<SourceTextRead>
+  /**
+   * A bounded, no-follow UTF-8 read of a regular file directly below `directory`.
+   * The returned identity binds a later replacement to this exact directory
+   * entry; implementations must reject links, reparse points, non-files, and
+   * targets that resolve outside the directory.
+   */
+  readIdentityFile(directory: string, path: string, maxBytes: number): Promise<SourceTextRead>
+  /**
+   * Transactionally replaces the named directory entries only when every one
+   * is still the regular file observed by `readIdentityFile`. It must never
+   * follow an existing final entry while writing, and a false result must leave
+   * every observed file unmodified.
+   */
+  replaceIdentityFiles(
+    directory: string,
+    files: readonly {
+      readonly path: string
+      readonly contents: string
+      readonly identity: SourceFileIdentity
+    }[],
+  ): Promise<boolean>
   writeFile(file: string, contents: string): Promise<void>
 }
 
+export interface SourceFileIdentity {
+  /** Adapter-owned and intentionally opaque to the source policy layer. */
+  readonly token: string
+}
+
 export type SourceTextRead =
-  | { readonly kind: 'text'; readonly contents: string }
-  | { readonly kind: 'missing' | 'too_large' | 'invalid_utf8' }
+  | { readonly kind: 'text'; readonly contents: string; readonly identity: SourceFileIdentity }
+  | { readonly kind: 'missing' | 'too_large' | 'invalid_utf8' | 'unsafe' }
 
 export interface SourcePath {
   resolve(...segments: string[]): string
@@ -455,7 +479,11 @@ async function clone(
 
   // The reference arrives with the case for cloning it sitting beside it. A
   // clone with no note in it is a directory of somebody else's decisions.
-  const written = await writeFiles(directory, [...identity, ...planFiles(request.plan)], deps)
+  if (identity.length > 0 && !await deps.fs.replaceIdentityFiles(directory, identity)) {
+    return failIdentity(adoptedReference!, 'identity files')
+  }
+  const planWritten = await writeFiles(directory, planFiles(request.plan), deps)
+  const written = Object.freeze([...identity.map(({ path }) => path), ...planWritten])
   return Object.freeze({ selection, directory, created: true, written, remote: url })
 }
 
@@ -534,12 +562,18 @@ async function requiredText(
   maxBytes: number,
   reference: ReferenceProject,
   deps: SourceDeps,
-): Promise<string> {
+): Promise<{ readonly contents: string; readonly identity: SourceFileIdentity }> {
   if (path.length > 128 || path.startsWith('/') || path.includes('\\') || path.split('/').some((part) => part === '' || part === '.' || part === '..')) {
     return failIdentity(reference, path)
   }
-  const read = await deps.fs.readTextFile(deps.path.join(directory, ...path.split('/')), maxBytes)
-  return read.kind === 'text' ? read.contents : failIdentity(reference, path)
+  const read = await deps.fs.readIdentityFile(directory, path, maxBytes)
+  return read.kind === 'text'
+    ? { contents: read.contents, identity: read.identity }
+    : failIdentity(reference, path)
+}
+
+interface IdentityRewrite extends WorkspaceFile {
+  readonly identity: SourceFileIdentity
 }
 
 async function adoptedIdentityFiles(
@@ -547,12 +581,14 @@ async function adoptedIdentityFiles(
   project: ProjectIdentity,
   reference: ReferenceProject,
   deps: SourceDeps,
-): Promise<readonly WorkspaceFile[]> {
+): Promise<readonly IdentityRewrite[]> {
   if (!validAdoptionIdentity(project)) fail('The requested project identity is not safe to adopt into a cloned reference.')
 
   const declaration = reference.adoption
-  const packageText = await requiredText(directory, declaration.packagePath, MAX_ADOPTED_PACKAGE_BYTES, reference, deps)
-  const readmeText = await requiredText(directory, declaration.readmePath, MAX_ADOPTED_README_BYTES, reference, deps)
+  const packageRead = await requiredText(directory, declaration.packagePath, MAX_ADOPTED_PACKAGE_BYTES, reference, deps)
+  const readmeRead = await requiredText(directory, declaration.readmePath, MAX_ADOPTED_README_BYTES, reference, deps)
+  const packageText = packageRead.contents
+  const readmeText = readmeRead.contents
 
   let manifest: unknown
   try { manifest = JSON.parse(packageText) as unknown } catch { return failIdentity(reference, declaration.packagePath) }
@@ -588,8 +624,8 @@ async function adoptedIdentityFiles(
   const readme = `# ${project.title}${readmeText.slice(declaration.readmeHeading.length)}`
 
   return Object.freeze([
-    { path: declaration.packagePath, contents: formattedPackage(manifest, packageText) },
-    { path: declaration.readmePath, contents: readme },
+    { path: declaration.packagePath, contents: formattedPackage(manifest, packageText), identity: packageRead.identity },
+    { path: declaration.readmePath, contents: readme, identity: readmeRead.identity },
   ])
 }
 
