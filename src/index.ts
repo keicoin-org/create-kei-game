@@ -17,7 +17,7 @@ import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { argv, cwd, exit, platform, stdout, versions } from 'node:process'
 
-import { DEFAULT_CURRENCY, DEFAULT_NAME, helpText, parseArgs } from './cli.js'
+import { CliError, DEFAULT_CURRENCY, DEFAULT_NAME, helpText, parseArgs, type CliOptions } from './cli.js'
 import { HarnessError } from './errors.js'
 import { projectFrom, type GameProject } from './naming.js'
 import { assertWritable, writeFiles } from './write.js'
@@ -30,9 +30,7 @@ const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.
 }
 const { version } = manifest
 
-async function main(): Promise<void> {
-  const options = parseArgs(argv.slice(2))
-
+async function main(options: CliOptions): Promise<void> {
   if (options.help) {
     stdout.write(helpText(version))
     return
@@ -186,11 +184,29 @@ function failurePayload(message: string): string {
   )}\n`
 }
 
+/**
+ * How to report a failure, asked of the parser rather than of `argv`.
+ *
+ * The flag is spelled once, in `src/cli.ts`, and this reads what that parse
+ * concluded. Scanning `argv` for the string instead answered for invocations
+ * the parser had rejected: `--currency --json` consumes `--json` as a value,
+ * refuses it as one, and never sets the flag — so it is reported as text.
+ *
+ * A parse that failed before reaching `--json` reports as text too, for the
+ * same reason: the flag is what asks for JSON, and it was never read.
+ */
+function wantsJson(error: unknown, parsed: CliOptions | undefined): boolean {
+  if (parsed) return parsed.json
+  return error instanceof CliError && error.parsed.json
+}
+
+let options: CliOptions | undefined
 try {
-  await main()
+  options = parseArgs(argv.slice(2))
+  await main(options)
 } catch (error) {
   if (error instanceof HarnessError) {
-    if (argv.includes('--json')) {
+    if (wantsJson(error, options)) {
       stdout.write(failurePayload(error.message))
       exit(1)
     }
