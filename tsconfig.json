@@ -1,11 +1,34 @@
+// The machinery, which reads and copies the files in `templates/`. The thing it
+// copies is checked by `tsconfig.templates.json` next to this, under the
+// compiler options a generated project actually ships with.
+//
+// These options were `../../tsconfig.base.json` while this package lived inside
+// the kei-transaction monorepo. They are written out here because that file is
+// not in this repository, and an `extends` pointing outside it failed with
+// TS5083 before the compiler read a line of source — which is how `templates/`
+// went unchecked long enough for a file referencing five undefined functions to
+// ship. A config that cannot run is not a gate.
+//
+// `composite` is the one option not carried over: it existed to make this a node
+// in the monorepo's project graph, and there is no graph here.
 {
-  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
     "outDir": "dist",
     "rootDir": "src",
     "types": ["node"]
   },
-  "include": [
-    "src"
-  ]
+  "include": ["src"]
 }

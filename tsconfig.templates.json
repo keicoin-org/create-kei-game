@@ -1,0 +1,24 @@
+// The deliverable, checked here rather than in the developer's project.
+//
+// `templates/` is the game Create Kei MMO exists to emit; `src/` is only the
+// machinery that copies it. So this is the config that guards the product, and
+// `tsconfig.json` next to it guards the machinery.
+//
+// It extends `templates/tsconfig.json` — the config that ships *inside* a
+// generated project — rather than restating its options, so the two cannot
+// drift. A developer who runs `bun run typecheck` in their new game runs these
+// compiler options, and changing theirs changes this.
+//
+// Only `include` differs. The paths in theirs are relative to a project root
+// that does not exist yet, and the three placeholder identifiers a template
+// still carries need declaring before any of it parses as TypeScript.
+//
+// What the templates import is resolved out of this package's own
+// `devDependencies`, at the ranges `templates/package.json` asks for. For
+// `kei-transaction` that is not a coincidence to maintain by hand: `src/index.ts`
+// writes this package's devDependency range into the generated manifest, so the
+// SDK checked here is by construction the SDK the developer installs.
+{
+  "extends": "./templates/tsconfig.json",
+  "include": ["templates/src", "templates/server", "templates/shared", "types/template-placeholders.d.ts"]
+}

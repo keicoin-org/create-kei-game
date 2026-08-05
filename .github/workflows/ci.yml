@@ -1,12 +1,15 @@
-# The test suite, on every push and every pull request.
+# The test suite and both typechecks, on every push and every pull request.
 #
-# `bun test` only. There is deliberately no typecheck step: `tsconfig.json`
-# extends `../../tsconfig.base.json`, which does not exist in this repository —
-# it is a leftover from when this package lived inside the kei-transaction
-# monorepo — so `tsc --noEmit` fails with TS5083 before it looks at any source.
-# Adding a step that cannot pass would be worse than leaving the gap visible.
-# Restoring the typecheck means authoring a base config, which is a decision
-# about compiler options rather than a CI change.
+# The typechecks run as two steps rather than one because they check two
+# different things under two different sets of compiler options: `typecheck`
+# covers `src/`, the machinery that copies files, and `typecheck:templates`
+# covers `templates/`, the game that gets copied. The second is the one that
+# guards what a developer actually runs, and it did not exist until #56 —
+# `templates/` was outside every program in the repository, so a file
+# referencing five undefined functions passed the build.
+#
+# They run before the suite because they are seconds against its minutes, and a
+# template that does not compile has nothing to say to a test that stands it up.
 #
 # The suite stands the generated project up and runs it against an in-memory
 # chain, so it is minutes rather than seconds and needs no network.
@@ -44,5 +47,9 @@ jobs:
       # SDK, and it should fail here when the SDK it emits code against changes
       # under it rather than in somebody's new project.
       - run: bun install
+
+      - run: bun run typecheck
+
+      - run: bun run typecheck:templates
 
       - run: bun test
