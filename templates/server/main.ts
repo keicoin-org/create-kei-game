@@ -23,6 +23,8 @@ import { GameError, startGame } from './game.js'
 /** Native, and with a trailing separator — `pathname` would hand Windows `/C:/…`. */
 const root = Bun.fileURLToPath(new URL('..', import.meta.url))
 const port = Number(process.env.PORT ?? 7777)
+/** A value, not a line of source. The banner below prints it; nothing reads it. */
+const title = __PROJECT_TITLE_LITERAL__
 
 const bundle = await Bun.build({
   entrypoints: [`${root}src/main.ts`],
@@ -107,7 +109,7 @@ const server = Bun.serve({
 })
 
 console.log(`
-  __PROJECT_TITLE_TEMPLATE__
+  ${title}
 
   play          ${server.url}
   node (mock)   ${server.url}rpc

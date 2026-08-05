@@ -25,6 +25,23 @@ const SYMBOL_PATTERN = /^[A-Z0-9][A-Z0-9-]{0,19}$/
 /** npm's limit. Nobody will reach it, and a name that does is a typo. */
 const MAX_SLUG_LENGTH = 214
 
+/**
+ * The title and the currency are display text — a heading, a page title, a line
+ * the dev server prints. Anything with no printed form is not display text: a
+ * newline splits the file it lands in, an escape rewrites the terminal it is
+ * printed to, and U+202E reverses the rest of a line of source. `escape.ts`
+ * puts these two answers somewhere they cannot be code; this is the separate
+ * question of whether they are a name at all.
+ *
+ * Quotes, backticks and `$` are left alone deliberately. "Miner's Gold" is an
+ * ordinary answer to an ordinary question, and a scaffolder that refuses it is
+ * covering for an escape it does not trust.
+ */
+const UNPRINTABLE = /[\p{Cc}\p{Cf}]/u
+
+/** Room for a name, and not for a paragraph pasted into the wrong prompt. */
+const MAX_DISPLAY_LENGTH = 100
+
 /** Long enough to be a ticker, short enough to fit on a screen in the world. */
 const MAX_DERIVED_SYMBOL = 5
 
@@ -87,5 +104,24 @@ export function projectFrom(answers: { name: string; currency: string }): GamePr
   if (title === '') fail('The project needs a name — it becomes the directory this is written to. Try "star-clicker".')
   if (currency === '') fail('The currency needs a name — it is what players will see in their wallet. Try "Gems".')
 
+  assertDisplayable('project name', title)
+  assertDisplayable('currency name', currency)
+
   return { title, slug: slugFor(title), currency, symbol: symbolFor(currency) }
+}
+
+/** Names the character rather than the rule, because the rule is not the part that has to be fixed. */
+function assertDisplayable(what: string, value: string): void {
+  const found = UNPRINTABLE.exec(value)
+  if (found) {
+    const code = found[0].codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')
+    fail(
+      `The ${what} contains U+${code}, which has no printed form — and this name is printed, in a heading, a page title and a line the dev server writes. Retype it without that character; if it was meant to be a space, type a space.`,
+    )
+  }
+  if ([...value].length > MAX_DISPLAY_LENGTH) {
+    fail(
+      `The ${what} is ${[...value].length} characters long, and ${MAX_DISPLAY_LENGTH} is as much as fits in a heading. Shorten it to the name and put the rest in the README.`,
+    )
+  }
 }

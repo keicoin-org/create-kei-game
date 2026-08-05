@@ -23,7 +23,7 @@ export interface EconomyState {
   online: boolean
   /** The player's Kei — real money, and what the lantern is bought with. */
   kei: number
-  /** The player's __CURRENCY_NAME__. */
+  /** The player's own currency, the one this game issues. */
   coins: number
   symbol: string
   /** Clicks this browser has made and not yet been paid for. */
@@ -56,7 +56,7 @@ export async function connect(): Promise<Economy> {
     online: false,
     kei: 0,
     coins: 0,
-    symbol: '__CURRENCY_SYMBOL__',
+    symbol: __CURRENCY_SYMBOL_LITERAL__,
     unsaved: 0,
     saving: false,
     perClick: 1,

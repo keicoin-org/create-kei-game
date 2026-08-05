@@ -12,6 +12,7 @@
  */
 
 import { fail } from './errors.js'
+import { literal, markdownText } from './escape.js'
 import type { GameProject } from './naming.js'
 import type { GeneratedFile } from './scaffold.js'
 import { extractTarGz } from './tar.js'
@@ -175,13 +176,19 @@ function text(file: GeneratedFile): string {
   return typeof file.contents === 'string' ? file.contents : Buffer.from(file.contents).toString('utf8')
 }
 
-/** Replaces `find` once, and refuses to pretend it worked when it is not there. */
+/**
+ * Replaces `find` once, and refuses to pretend it worked when it is not there.
+ *
+ * The replacement goes in through a function, because the string form of
+ * `replace` reads `$&` and `$'` as instructions, and a currency is allowed to
+ * contain both.
+ */
 function substitute(file: GeneratedFile, find: string, replace: string): void {
   const before = text(file)
   if (!before.includes(find)) {
     fail(`Expected to find ${JSON.stringify(find)} in the downloaded ${file.path} and did not. Report it as a bug.`)
   }
-  file.contents = before.replace(find, replace)
+  file.contents = before.replace(find, () => replace)
 }
 
 /**
@@ -236,8 +243,8 @@ function rewriteWorldOfWonder(files: GeneratedFile[], project: GameProject): voi
   // The whole currency is one `as const` in one file, which is why this is two
   // lines rather than a sweep over the source.
   const economy = find(files, 'src/server/kei/Economy.ts')
-  substitute(economy, `  name: 'Gold',`, `  name: '${project.currency}',`)
-  substitute(economy, `  symbol: 'GOLD',`, `  symbol: '${project.symbol}',`)
+  substitute(economy, `  name: 'Gold',`, `  name: ${literal(project.currency)},`)
+  substitute(economy, `  symbol: 'GOLD',`, `  symbol: ${literal(project.symbol)},`)
 
   find(files, 'README.md').contents = worldOfWonderReadme(project)
 }
@@ -247,10 +254,19 @@ function rewriteCarpetMarkets(files: GeneratedFile[], project: GameProject): voi
   find(files, 'README.md').contents = carpetMarketsReadme(project)
 }
 
+/**
+ * The prose is escaped and the fenced block is not, which is the difference
+ * between the two and the reason the escaped values are named separately here:
+ * a backslash is syntax in one and a backslash in the other.
+ */
 function worldOfWonderReadme(project: GameProject): string {
-  return `# ${project.title}
+  const title = markdownText(project.title)
+  const currency = markdownText(project.currency)
+  const symbol = markdownText(project.symbol)
 
-A multiplayer 3D top-down RPG whose **${project.currency} and items live on a chain
+  return `# ${title}
+
+A multiplayer 3D top-down RPG whose **${currency} and items live on a chain
 instead of in the game's database**. A player's sword is theirs, rather than a
 row you could delete.
 
@@ -268,7 +284,7 @@ npm run server-build && npm run server-start    # http://localhost:3000
 npm run client-dev                              # http://localhost:8080
 \`\`\`
 
-Your currency is **${project.currency}**, and the chain knows it as **${project.symbol}**.
+Your currency is **${currency}**, and the chain knows it as **${symbol}**.
 It is declared in one place, \`src/server/kei/Economy.ts\`, as the \`COIN\` constant.
 
 ## Where the chain is
@@ -298,7 +314,7 @@ money** — that is the whole point, and the thing to preserve as you build on i
 }
 
 function carpetMarketsReadme(project: GameProject): string {
-  return `# ${project.title}
+  return `# ${markdownText(project.title)}
 
 A coin launchpad, in the pump.fun shape: anybody can launch a token in one click,
 it trades against a bonding curve, and if enough ends up in the reserve the coin
