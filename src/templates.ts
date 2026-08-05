@@ -317,34 +317,42 @@ function carpetMarketsReadme(project: GameProject): string {
   return `# ${markdownText(project.title)}
 
 A coin launchpad, in the pump.fun shape: anybody can launch a token in one click,
-it trades against a bonding curve, and if enough ends up in the reserve the coin
-graduates and leaves.
+is minted the whole supply, and from there it is worth whatever the next person
+will pay.
 
-The difference is the deed.
+There is no bonding curve and no house. Every trade is an offer one player wrote
+and another accepted — \`swap_offer\` and \`swap_accept\`, settled in one block by
+consensus (SPEC §9.2). This is what \`@keicoin/market\` is for.
 
 \`\`\`sh
 bun install
-bun run dev          # http://localhost:7788
+bun run dev          # client on :3000, chain and registry on :7788
+bun run seed         # six coins and a market between them, so there is something to look at
 \`\`\`
 
 Scaffolded from [carpet-markets](https://github.com/keicoin-org/carpet-markets).
 
 ## The point
 
-Every coin has a **deed**: one item, minted to whoever launched it. The deed is
-the authority to take the reserve. So "can this coin be rugged?" is not a promise
-anybody makes — it is the deed's transfer policy, chosen at launch, enforced by
-consensus, and immutable afterwards (SPEC §5.4):
+There is no mechanic here called "rug". A creator is minted the whole supply and
+can sell it, in whatever size they choose, whenever they choose. That is selling,
+which is the only thing anybody on this market can do.
 
-| | The deed | What it means |
+What the chain decides is whether that market can exist at all. A coin's
+\`transfer\` policy is chosen at issuance, enforced by consensus, and immutable
+afterwards (SPEC §5.4):
+
+| | \`transfer\` | What it means |
 |---|---|---|
-| **Carpet** | \`transfer: 'open'\` | It can be sent back. The reserve can be taken. |
-| **Nailed down** | \`transfer: 'none'\` | Soulbound. No message anybody can sign moves the reserve out. |
+| **Open** | \`'open'\` | Anybody can send it to anybody, so there is a real order book — and the creator is holding a million of them. |
+| **Issuer only** | \`'issuer-only'\` | Units move only to or from the issuing account. An offer between two holders is an invalid block, so no player-to-player market exists or can. |
+| **Soulbound** | \`'none'\` | Nothing moves, ever. It cannot be sold, by anybody, including whoever made it. |
 
 A database can hold the same flag, and a developer can edit the row. That is the
 whole difference.
 
 This template asks for no currency of its own, because it does not have one:
-every coin on it is launched by a player at runtime.
+every coin on it is launched by a player at runtime. Read \`server/registry.ts\`
+first — it is the launchpad.
 `
 }

@@ -132,13 +132,15 @@ function nextSteps(template: Template, project: GameProject, count: number): str
     return `${head}
     cd ${project.slug}
     bun install
-    bun run dev          # http://localhost:7788
+    bun run dev          # client on :3000, chain and registry on :7788
+    bun run seed         # six coins and a market between them
 
   No currency was asked for because this one has none: every coin is launched by
-  a player at runtime, and whether it can be rugged is the deed's transfer
-  policy, chosen at launch and enforced by consensus.
+  a player at runtime, and whether a market in it can exist at all is the coin's
+  own transfer policy, chosen at launch and enforced by consensus.
 
-  Read server/market.ts first — it is the launchpad, the curve, and the reserve.
+  Read server/registry.ts first — it is the launchpad. There is no curve and no
+  reserve; trades are player-written offers settled by consensus.
 `
   }
 

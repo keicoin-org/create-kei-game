@@ -265,10 +265,11 @@ export async function startGame(options: GameOptions): Promise<Game> {
   })
 
   // Issuing an asset burns Kei — the one place in Kei where something is not
-  // free, and what stops an infinite supply of worthless tokens. This game
-  // issues two: the currency and the lantern. On a real network somebody funds
-  // this address once; on a mock the faucet does it.
-  const needed = 2 * 1_000 + 100
+  // free, and what stops an infinite supply of worthless tokens. The nth asset
+  // an account issues burns n Kei, and this game issues two: the currency and
+  // the lantern, so 1 + 2 = 3. On a real network somebody funds this address
+  // once; on a mock the faucet does it.
+  const needed = 3 + 100
   if ((await kei.balance()) < needed) await kei.faucet(needed)
 
   // Idempotent: restarting this server returns the same currency rather than a
