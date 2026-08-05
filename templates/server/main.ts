@@ -17,7 +17,7 @@ import { rm } from 'node:fs/promises'
 
 import { MockNode, mockRpcHandler, randomSeed } from 'kei-transaction'
 
-import type { LanternOrder } from '../shared/game.js'
+import type { EarnOrder, LanternOrder } from '../shared/game.js'
 import { GameError, startGame } from './game.js'
 
 /** Native, and with a trailing separator — `pathname` would hand Windows `/C:/…`. */
@@ -80,8 +80,8 @@ const server = Bun.serve({
     '/game/earn': {
       async POST(request) {
         try {
-          const { address, clicks } = (await request.json()) as { address: string; clicks: number }
-          return json({ bundle: await game.earn(address, clicks) })
+          const { address, clicks, idempotencyKey } = (await request.json()) as EarnOrder
+          return json({ bundle: await game.earn(address, clicks, idempotencyKey) })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           return json({ error: message }, error instanceof GameError ? 400 : 500)

@@ -15,7 +15,7 @@
 
 import { Kei, type PlayerToken, type WalletSummary } from 'kei-transaction'
 
-import { perClickFor, type Catalogue, type LanternOrder, type LanternOutcome } from '../shared/game.js'
+import { perClickFor, type Catalogue, type EarnOrder, type LanternOrder, type LanternOutcome } from '../shared/game.js'
 
 export interface EconomyState {
   address: string
@@ -128,21 +128,36 @@ export async function connect(): Promise<Economy> {
   // ------------------------------------------------------------------- saving
 
   let timer: ReturnType<typeof setTimeout> | undefined
+  let queuedEarnOrder: { key: string; clicks: number } | undefined
 
   const save = async (): Promise<void> => {
     if (timer) clearTimeout(timer)
     timer = undefined
-    const clicks = state.unsaved
-    if (clicks <= 0 || state.saving) return
+    if (state.saving) return
 
-    state.unsaved = 0
+    const queued = queuedEarnOrder
+    let clicks: number
+    let idempotencyKey: string
+    if (queued === undefined) {
+      clicks = state.unsaved
+      if (clicks <= 0) return
+      idempotencyKey =
+        crypto.randomUUID?.() ??
+        `${Date.now().toString(36)}-${Math.floor(Math.random() * 2_000_000_000).toString(36)}`
+      queuedEarnOrder = { key: idempotencyKey, clicks }
+      state.unsaved = 0
+    } else {
+      clicks = queued.clicks
+      idempotencyKey = queued.key
+    }
+
     state.saving = true
     changed()
     try {
       const response = await fetch('/game/earn', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ address: kei.address, clicks }),
+        body: JSON.stringify({ address: kei.address, clicks, idempotencyKey } satisfies EarnOrder),
       })
       const body = (await response.json()) as { bundle?: Parameters<typeof kei.claims.add>[0]; error?: string }
       if (body.error || !body.bundle) throw new Error(body.error ?? 'The game server sent no proof back.')
@@ -151,9 +166,10 @@ export async function connect(): Promise<Economy> {
       // the claim that collects it is written by this wallet, from this account,
       // in parallel with every other player claiming against the same root.
       await kei.claims.add(body.bundle)
+      queuedEarnOrder = undefined
       state.message = null
     } catch (error) {
-      // Nothing was minted, so the clicks are still owed. Put them back.
+      // Nothing was minted, so the clicks are still owed.
       state.unsaved += clicks
       say(error)
     } finally {

@@ -10,7 +10,7 @@ import { HarnessError } from '../src/errors.js'
 
 describe('parseArgs', () => {
   test('nothing given means everything gets asked', () => {
-    expect(parseArgs([])).toEqual({ yes: false, force: false, help: false, version: false })
+    expect(parseArgs([])).toEqual({ yes: false, force: false, help: false, version: false, json: false })
   })
 
   test('takes the project name as the first positional', () => {

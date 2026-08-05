@@ -28,6 +28,7 @@ import { Kei, MockNode, mockRpcHandler, randomSeed, type KeiNode } from 'kei-tra
 import { projectFrom } from '../src/naming.js'
 import { scaffold } from '../src/scaffold.js'
 import { writeFiles } from '../src/write.js'
+import { type EarnOrder } from '../templates/shared/game.js'
 
 type LanternOutcome =
   | { outcome: 'delivered'; item: string }
@@ -37,7 +38,7 @@ type LanternOutcome =
 interface GeneratedGame {
   address: string
   catalogue(): { issuer: string; lantern: { asset: string; price: number } }
-  earn(address: string, clicks: number): Promise<unknown>
+  earn(address: string, clicks: number, idempotencyKey?: string): Promise<unknown>
   buyLantern(address: string, hash: string): Promise<LanternOutcome>
   close(): void
 }
@@ -101,9 +102,9 @@ beforeAll(async () => {
       '/game/catalogue': () => json(game.catalogue()),
       '/game/earn': {
         async POST(request) {
-          const { address, clicks } = (await request.json()) as { address: string; clicks: number }
+          const { address, clicks, idempotencyKey } = (await request.json()) as EarnOrder
           try {
-            return json({ bundle: await game.earn(address, clicks) })
+            return json({ bundle: await game.earn(address, clicks, idempotencyKey) })
           } catch (error) {
             return failed(error)
           }
@@ -228,6 +229,20 @@ describe('the generated game, run', () => {
     },
     60_000,
   )
+
+  test('replaying the same earn request returns the same claim', async () => {
+    const kei = await player()
+    try {
+      const idempotencyKey = `retry-${crypto.randomUUID()}`
+      const first = await game.earn(kei.address, 20, idempotencyKey)
+      const second = await game.earn(kei.address, 20, idempotencyKey)
+
+      expect(second).toEqual(first)
+      await expect(game.earn(kei.address, 21, idempotencyKey)).rejects.toThrow('already used')
+    } finally {
+      kei.close()
+    }
+  }, 30_000)
 
   test(
     'a payment somebody else made buys nothing',
