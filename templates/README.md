@@ -125,7 +125,11 @@ Everything above runs against a mock node. When there is a public testnet:
 
 - point this at a real endpoint and set `network: 'testnet'`
 - stop using `MockNode` and `mockRpcHandler`
-- keep the orders file; it is load-bearing on a persistent chain and should not be reset on restart
+- delete the line in `server/main.ts` that removes `.kei/dev-orders.ndjson` — it
+  is guarded by `node instanceof MockNode` and so already does nothing once the
+  node is real, but the guard names an import the line above tells you to remove
+- keep the orders file, and keep it wherever the deploy keeps state that
+  survives a restart; on a persistent chain it is load-bearing
 
 ```ts
 // server/main.ts
@@ -138,6 +142,27 @@ const kei = await Kei.start({ node: 'https://…', network: 'testnet' })
 ```
 
 Nothing else changes. That is the whole point of building against the mock.
+
+### If the orders file is lost
+
+`.kei/dev-orders.ndjson` is the only record of which payment got which answer.
+The chain shows that this game answered a wallet; it cannot show which of that
+wallet's payments the answer was for. So once the file is gone, a player who
+reposts a payment made before the loss is told:
+
+> This payment has already been answered — you were sent the lantern, or your
+> Kei was refunded — and this game no longer has the record of which.
+
+That refusal is the right answer rather than a bug. Delivering again mints a
+second lantern; refunding hands back the price of one the player is still
+holding. Only wallets the game had already answered are affected, and only for
+payments they had not yet redeemed — a wallet the game has never answered is
+unaffected, because there is nothing to confuse its payment with.
+
+Recovering means settling those wallets by hand. The issuer's own account
+history is intact on the chain and shows every mint and every refund the game
+sent, so what a wallet was given is knowable even when which payment it was for
+is not.
 
 ## Shipping it
 

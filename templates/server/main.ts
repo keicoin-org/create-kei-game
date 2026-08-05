@@ -44,10 +44,15 @@ const node = await MockNode.create()
 const rpc = mockRpcHandler({ node })
 
 // `server/orders.ts` records which payments have been answered, so that a
-// restart can tell a player who asks again what they got the first time. This
-// chain is new every run, so last run's answers are about payments that no
-// longer exist — they go with the chain they belong to. Point this at a real
-// node and the file matters as much as the chain does: keep it.
+// restart can tell a player who asks again what they got the first time. The
+// mock chain above is new every run, so last run's answers are about payments
+// that no longer exist — they go with the chain they belong to.
+//
+// Which is why the delete is guarded rather than advised against. On a chain
+// that persists, this file is the only record of which payment got which
+// answer; the chain shows that a wallet was answered and cannot show which of
+// its payments the answer was for. Point this at a real node and the line below
+// stops firing on its own. See `## When there is a testnet` in the README.
 const orders = `${root}.kei/dev-orders.ndjson`
 if (node instanceof MockNode) await rm(orders, { force: true })
 
