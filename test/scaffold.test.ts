@@ -15,6 +15,8 @@ import { scaffold, type TextFile } from '../src/scaffold.js'
 
 const project = projectFrom({ name: 'Star Clicker', currency: 'Gold Pieces' })
 const files = await scaffold(project, { sdkVersion: '^0.3.0' })
+const projectWithTemplateTitle = projectFrom({ name: '${Hazmat} Clicker', currency: 'Gold Pieces' })
+const filesWithTemplateTitle = await scaffold(projectWithTemplateTitle, { sdkVersion: '^0.3.0' })
 
 const at = (path: string): TextFile => {
   const file = files.find((candidate) => candidate.path === path)
@@ -71,6 +73,13 @@ describe('the two answers reach every corner', () => {
     expect(at('index.html').contents).toContain('<title>Star Clicker</title>')
     expect(at('README.md').contents).toContain('# Star Clicker')
     expect(at('server/main.ts').contents).toContain('Star Clicker')
+  })
+
+  test('server title interpolation is escaped when the project title contains template markers', () => {
+    const serverMain = filesWithTemplateTitle.find((candidate) => candidate.path === 'server/main.ts')
+    if (!serverMain) throw new Error('server/main.ts was not generated for template-title project')
+    expect(serverMain.contents).toContain('\\${Hazmat} Clicker')
+    expect(serverMain.contents).not.toMatch(/(?<!\\)\$\{Hazmat\} Clicker/)
   })
 
   test('the currency and its derived ticker land in the price list', () => {

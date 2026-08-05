@@ -62,6 +62,7 @@ export async function scaffold(project: GameProject, options: ScaffoldOptions): 
   const root = options.templates ?? TEMPLATE_ROOT
   const substitutions: Readonly<Record<string, string>> = {
     __PROJECT_TITLE__: project.title,
+    __PROJECT_TITLE_TEMPLATE__: escapeTemplateLiteral(project.title),
     __PROJECT_SLUG__: project.slug,
     __CURRENCY_NAME__: project.currency,
     __CURRENCY_SYMBOL__: project.symbol,
@@ -83,6 +84,14 @@ function substitute(contents: string, substitutions: Readonly<Record<string, str
     result = result.split(token).join(value)
   }
   return result
+}
+
+/** Escape values interpolated inside JavaScript template literals. */
+function escapeTemplateLiteral(text: string): string {
+  return text
+    .replaceAll('\\', '\\\\')
+    .replaceAll('`', '\\`')
+    .replaceAll('${', '\\${')
 }
 
 function rename(relative: string): string {
