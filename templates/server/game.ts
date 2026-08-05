@@ -57,19 +57,24 @@ export class GameError extends Error {}
  * because a wallet costs nothing to make: a per-wallet limit only ever limits a
  * wallet, and the attacker brings more wallets.
  *
- *   per wallet    25 clicks a second, at most 100 saved up. Fast for a finger,
- *                 slow for a script.
+ *   per wallet    25 clicks a second, at most 50 saved up. Fast for a finger,
+ *                 slow for a script. 50 is what the arithmetic this replaces
+ *                 gave an address it had never seen, so no wallet is worth more
+ *                 in a single request than it was before — what it loses is the
+ *                 hour of banking it could add to that.
  *   per process   5 000 units a second, at most 50 000 saved up — a hundred
  *                 wallets clicking flat out. A fresh keypair does not reset it,
  *                 which is the only part of this a fresh keypair cannot defeat.
  *
  * At the process ceiling, draining a `maxSupply` of 1 000 000 000 takes about 55
  * hours of uninterrupted abuse. Raise these if your game is busier than that —
- * they are a bound on the blast radius, not a gameplay balance.
+ * they are a bound on the blast radius, not a gameplay balance. The client
+ * batches every 20 clicks or 3 seconds (`src/economy.ts`), so honest play does
+ * not come near them.
  */
 export const EARN_LIMITS = {
   clicksPerSecond: 25,
-  burstClicks: 100,
+  burstClicks: 50,
   /** Whole currency units, the same unit `PER_CLICK` is counted in. */
   unitsPerSecond: 5_000,
   burstUnits: 50_000,
