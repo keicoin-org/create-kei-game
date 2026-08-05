@@ -29,6 +29,14 @@ export interface GameOptions {
    * can no longer buy, so back it up the way you would back up a database.
    */
   orders?: string
+  /**
+   * For the boot after this file has been lost anyway. Reads the chain's count
+   * of answers as the starting point for wallets whose records are gone, so they
+   * can buy again — at the price of every payment made before the loss becoming
+   * answerable a second time. `server/orders.ts` states that cost in full, on
+   * `adoptChainAsBaseline`. One boot, then take it back out.
+   */
+  adoptChainAsBaseline?: boolean
 }
 
 export interface Game {
@@ -301,6 +309,7 @@ export async function startGame(options: GameOptions): Promise<Game> {
     kei,
     item: lantern.id,
     path: options.orders ?? ORDERS_PATH,
+    adoptChainAsBaseline: options.adoptChainAsBaseline,
   })
 
   const limiter = createEarnLimiter()
