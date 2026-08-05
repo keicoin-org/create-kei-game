@@ -155,9 +155,37 @@ describe('world-of-wonder', () => {
 
   test('the developer s currency reaches the one place that declares it', async () => {
     const economy = textOf(at(await build(), 'src/server/kei/Economy.ts'))
-    expect(economy).toContain("name: 'Shards'")
-    expect(economy).toContain("symbol: 'SHARD'")
+    expect(economy).toContain('name: "Shards"')
+    expect(economy).toContain('symbol: "SHARD"')
     expect(economy).not.toContain('Gold')
+  })
+
+  /**
+   * `$&` is the whole match, and the string form of `replace` acts on it. A
+   * currency called `A$&B` used to write the line it was replacing back into
+   * the file, in the middle of a string literal.
+   */
+  test('a currency that looks like a replacement pattern is a currency', async () => {
+    const files = await filesFor(templateNamed('world-of-wonder'), projectFrom({ name: 'My Realm', currency: 'A$&B' }), {
+      sdkVersion: '^0.3.0',
+      fetcher: fetcherFor(WORLD_OF_WONDER),
+    })
+    const economy = textOf(at(files, 'src/server/kei/Economy.ts'))
+
+    expect(economy).toContain('name: "A$&B"')
+    expect(economy).not.toContain("name: 'Gold'")
+  })
+
+  test('a currency with a quote in it leaves the file parsing', async () => {
+    const files = await filesFor(
+      templateNamed('world-of-wonder'),
+      projectFrom({ name: 'My Realm', currency: "Gold'; process.exit(1); //" }),
+      { sdkVersion: '^0.3.0', fetcher: fetcherFor(WORLD_OF_WONDER) },
+    )
+    const economy = textOf(at(files, 'src/server/kei/Economy.ts'))
+
+    expect(() => new Bun.Transpiler({ loader: 'ts' }).transformSync(economy)).not.toThrow()
+    expect(JSON.parse(/name: (".*"),/.exec(economy)![1]!)).toBe("Gold'; process.exit(1); //")
   })
 
   test('the project is the developer s: their name, and none of our remotes', async () => {

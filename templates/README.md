@@ -1,6 +1,6 @@
-# __PROJECT_TITLE__
+# __PROJECT_TITLE_MD__
 
-A crystal on a plinth. Click it to earn __CURRENCY_NAME__, and buy a lantern
+A crystal on a plinth. Click it to earn __CURRENCY_NAME_MD__, and buy a lantern
 that doubles what a click is worth. Every coin and the lantern itself are on a
 chain, in a wallet the player owns.
 
@@ -87,7 +87,7 @@ are supply-limited native tokens: they show up in any Kei wallet, and a player
 can hold or trade them whether or not this game is running.
 
 **Charge in your own currency instead of Kei.** The lantern is bought with Kei,
-because a fraction of a cent is the demo. To charge in __CURRENCY_SYMBOL__
+because a fraction of a cent is the demo. To charge in __CURRENCY_SYMBOL_MD__
 instead, take a token transfer rather than a payment. The correlation does not
 change: the payer still sends you the hash of what they signed, and you still
 match it against what arrived.

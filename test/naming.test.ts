@@ -81,4 +81,30 @@ describe('projectFrom', () => {
     expect(() => projectFrom({ name: '', currency: 'Gems' })).toThrow(/project needs a name/)
     expect(() => projectFrom({ name: 'Star Clicker', currency: '  ' })).toThrow(/currency needs a name/)
   })
+
+  /** By code point, because a test file with an invisible character in it is the same trap. */
+  test('refuses a character with no printed form, and names it', () => {
+    const escape = String.fromCodePoint(0x1b)
+    const rightToLeftOverride = String.fromCodePoint(0x202e)
+
+    expect(() => projectFrom({ name: 'Star\nClicker', currency: 'Gems' })).toThrow(HarnessError)
+    expect(() => projectFrom({ name: 'Star\nClicker', currency: 'Gems' })).toThrow(/project name contains U\+000A/)
+    // An escape sequence rewrites the terminal the next-steps message is printed to.
+    expect(() => projectFrom({ name: 'Star Clicker', currency: `Gems${escape}[31m` })).toThrow(
+      /currency name contains U\+001B/,
+    )
+    // U+202E reverses everything after it, including in the source this writes.
+    expect(() => projectFrom({ name: `Star${rightToLeftOverride}Clicker`, currency: 'Gems' })).toThrow(/U\+202E/)
+  })
+
+  test('refuses a paragraph pasted into the wrong prompt', () => {
+    expect(() => projectFrom({ name: 'a'.repeat(101), currency: 'Gems' })).toThrow(/fits in a heading/)
+  })
+
+  /** Escaping is what makes these safe, so none of them is refused for looking dangerous. */
+  test('keeps the punctuation an ordinary name has in it', () => {
+    expect(projectFrom({ name: 'Star Clicker', currency: "Miner's Gold" }).currency).toBe("Miner's Gold")
+    expect(projectFrom({ name: 'Star & Co.', currency: 'Gems' }).title).toBe('Star & Co.')
+    expect(projectFrom({ name: '${Hazmat} Clicker', currency: 'Gems' }).title).toBe('${Hazmat} Clicker')
+  })
 })

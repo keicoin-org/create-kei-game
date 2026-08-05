@@ -10,8 +10,8 @@
 
 /** Your currency. Rename it here and it is renamed everywhere. */
 export const CURRENCY = {
-  name: '__CURRENCY_NAME__',
-  symbol: '__CURRENCY_SYMBOL__',
+  name: __CURRENCY_NAME_LITERAL__,
+  symbol: __CURRENCY_SYMBOL_LITERAL__,
   /** Whole units. Raise it if you want fractions. */
   decimals: 0,
   /** Caps circulating supply, not cumulative mints — burning frees headroom. */

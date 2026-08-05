@@ -15,6 +15,7 @@ import { readFile, readdir, stat } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { join, posix, sep } from 'node:path'
 
+import { htmlText, jsonText, literal, markdownText } from './escape.js'
 import type { GameProject } from './naming.js'
 
 export interface GeneratedFile {
@@ -60,13 +61,20 @@ const RENAME_ON_WRITE: Readonly<Record<string, string>> = { gitignore: '.gitigno
 
 export async function scaffold(project: GameProject, options: ScaffoldOptions): Promise<TextFile[]> {
   const root = options.templates ?? TEMPLATE_ROOT
+  // Named for where each one goes, because that is what decides how it is
+  // written. There is deliberately no `__PROJECT_TITLE__`: a template that wants
+  // the title has to say which kind of file it is putting it in.
   const substitutions: Readonly<Record<string, string>> = {
-    __PROJECT_TITLE__: project.title,
-    __PROJECT_TITLE_TEMPLATE__: escapeTemplateLiteral(project.title),
-    __PROJECT_SLUG__: project.slug,
-    __CURRENCY_NAME__: project.currency,
-    __CURRENCY_SYMBOL__: project.symbol,
-    __SDK_VERSION__: options.sdkVersion,
+    __PROJECT_TITLE_LITERAL__: literal(project.title),
+    __PROJECT_TITLE_JSON__: jsonText(project.title),
+    __PROJECT_TITLE_HTML__: htmlText(project.title),
+    __PROJECT_TITLE_MD__: markdownText(project.title),
+    __PROJECT_SLUG_JSON__: jsonText(project.slug),
+    __CURRENCY_NAME_LITERAL__: literal(project.currency),
+    __CURRENCY_NAME_MD__: markdownText(project.currency),
+    __CURRENCY_SYMBOL_LITERAL__: literal(project.symbol),
+    __CURRENCY_SYMBOL_MD__: markdownText(project.symbol),
+    __SDK_VERSION_JSON__: jsonText(options.sdkVersion),
   }
 
   const files: TextFile[] = []
@@ -77,21 +85,21 @@ export async function scaffold(project: GameProject, options: ScaffoldOptions): 
   return files
 }
 
-/** Every placeholder, everywhere. Unreplaced ones are a test failure, not a warning. */
+/**
+ * Every placeholder, everywhere. Unreplaced ones are a test failure, not a
+ * warning — which is also what catches a template asking for a hole that no
+ * longer has a name.
+ *
+ * `split`/`join` rather than `replace`, because `replace` reads its second
+ * argument as a replacement pattern and would expand `$&` in somebody's
+ * currency.
+ */
 function substitute(contents: string, substitutions: Readonly<Record<string, string>>): string {
   let result = contents
   for (const [token, value] of Object.entries(substitutions)) {
     result = result.split(token).join(value)
   }
   return result
-}
-
-/** Escape values interpolated inside JavaScript template literals. */
-function escapeTemplateLiteral(text: string): string {
-  return text
-    .replaceAll('\\', '\\\\')
-    .replaceAll('`', '\\`')
-    .replaceAll('${', '\\${')
 }
 
 function rename(relative: string): string {
