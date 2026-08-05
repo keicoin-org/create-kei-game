@@ -25,6 +25,7 @@ export const MAX_ENGINE_SESSIONS = 16
 export type ProtocolErrorCode =
   | 'invalid_json'
   | 'invalid_message'
+  | 'missing_inputs'
   | 'unsupported_version'
   | 'line_too_large'
   | 'session_exists'
@@ -85,10 +86,10 @@ function protocolFailure(code: ProtocolErrorCode, message: string, id?: string, 
 
 type ParsedRequest =
   | { readonly ok: true; readonly request: EngineRequest }
-  | { readonly ok: false; readonly field: string }
+  | { readonly ok: false; readonly field: string; readonly code?: 'missing_inputs' }
 
-function rejected(field: string): ParsedRequest {
-  return { ok: false, field }
+function rejected(field: string, code?: 'missing_inputs'): ParsedRequest {
+  return { ok: false, field, ...(code === undefined ? {} : { code }) }
 }
 
 /**
@@ -121,6 +122,13 @@ function parseRequest(value: unknown): ParsedRequest {
     }
     brief = value.brief
   } else {
+    if (isRecord(value.intent) && (
+      value.intent.dimension === undefined ||
+      value.intent.dimension === null ||
+      (typeof value.intent.dimension === 'string' && value.intent.dimension.trim() === '')
+    )) {
+      return rejected('request.intent.dimension', 'missing_inputs')
+    }
     try {
       plan = planMmo(parseMmoIntent(value.intent))
     } catch (error) {
@@ -175,7 +183,14 @@ function parseCommand(value: unknown): InputCommand | ProtocolErrorOutput {
       const parsed = parseRequest(value.request)
       return parsed.ok
         ? { v: 1, type: 'open', id, request: parsed.request }
-        : protocolFailure('invalid_message', 'Engine request is not valid.', id, parsed.field)
+        : protocolFailure(
+          parsed.code ?? 'invalid_message',
+          parsed.code === 'missing_inputs'
+            ? 'Engine request is missing required input.'
+            : 'Engine request is not valid.',
+          id,
+          parsed.field,
+        )
     }
     case 'turn':
       return hasOnlyKeys(value, ['v', 'type', 'id', 'prompt']) && typeof value.prompt === 'string' && value.prompt.trim() !== ''

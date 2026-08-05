@@ -251,10 +251,15 @@ product gate (8), or presentation polish (9). There is no account recovery,
 chunk streaming, or multi-writer store. Deleting this harness does not affect
 the generated project's dependencies, runtime, restart proof, or economy proof.
 
-When the planner clones a reference project instead, the clone arrives with
-those same two plan files written into it, including the reason it was chosen
-and the known cost of starting there. Content files are never written into a
-clone — an existing codebase is not implicitly rewritten.
+When the planner clones a reference project instead, adoption is loud. Before
+claiming success, the harness finds the reference's declared package name,
+repository metadata (or declared absence), and README heading exactly where
+expected. It rewrites the package name and heading to the requested project,
+removes stale reference repository metadata because no destination remote was
+requested, removes the clone's `origin`, and writes the same two plan files.
+Any missing, changed, wrong-typed, or ambiguous identity target fails closed.
+An explicitly opened existing project remains a separate contract and is never
+implicitly renamed.
 
 ## Command reference
 
@@ -263,7 +268,7 @@ checkout.
 
 | Option | Purpose |
 |---|---|
-| `--dimension <d>` | `2d`, `3d`, or `auto`. Default `auto`, which infers it |
+| `--dimension <d>` | `2d`, `3d`, or `auto`. Human onboarding may default to `auto`; agent mode must supply one explicitly |
 | `--2d`, `--3d` | The same thing, said shorter |
 | `--gameplay <text>` | What players do minute to minute. Required |
 | `--world <text>` | Size, regions, persistence, streaming |
@@ -287,9 +292,9 @@ checkout.
 | `--help`, `-h` | Show CLI help |
 | `--version`, `-v` | Show the package version |
 
-`--source`, `--template`, and `--from` are recognised and refused with a
-sentence saying where the decision went. A flag that silently does nothing is
-worse than one that is gone.
+`--source`, `--template`, and `--from` are recognised in spaced and `=` forms
+and refused with stable `retired_field` diagnostics naming the exact field. A
+flag that silently does nothing is worse than one that is gone.
 
 ## Safety notes
 

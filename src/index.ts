@@ -287,6 +287,12 @@ function machineError(error: unknown): Record<string, unknown> {
     return { ok: false, error: { code: error.code, message: error.message, ...machineDetails(error.details) } }
   }
   if (error instanceof HarnessError) {
+    if (error.code === 'retired_field') {
+      return {
+        ok: false,
+        error: { code: error.code, message: error.message, ...machineDetails(error.details) },
+      }
+    }
     return {
       ok: false,
       error: { code: 'invalid_arguments', message: 'Arguments or project preparation are not valid.' },

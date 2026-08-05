@@ -52,6 +52,7 @@ to see what the harness would do before letting it do anything:
 
 ```sh
 bun run src/index.ts -- "Salvage Run" --agent --json --plan-only \
+  --dimension auto \
   --gameplay "Crews salvage derelict stations and haul cargo home."
 ```
 
@@ -59,8 +60,9 @@ bun run src/index.ts -- "Salvage Run" --agent --json --plan-only \
 { "ok": true, "status": "planned", "plan": { "planVersion": 2, "...": "..." } }
 ```
 
-Required inputs collapse to `name` and `gameplay`. See [Intent, planner, and
-plan](mmo-plan.md) for the shape of what comes back.
+Required inputs collapse to `name`, `gameplay`, and an explicit `dimension`.
+`auto` is valid, but omission is not an implicit `auto` in agent mode. See
+[Intent, planner, and plan](mmo-plan.md) for the shape of what comes back.
 
 ## JSON config
 
@@ -77,7 +79,7 @@ overrides are merged.
 | `intentVersion` | `1` | Optional; refused if it is any other value |
 | `name` | string | Required |
 | `gameplay` | string | Required; what players do minute to minute |
-| `dimension` | string | Optional; `2d`, `3d`, or `auto`. Default `auto` |
+| `dimension` | string | Required; `2d`, `3d`, or explicit `auto` |
 | `world` | string | Optional; blank means the planner decides and records it |
 | `art` | string | Optional |
 | `network` | string | Optional |
@@ -145,7 +147,7 @@ POSIX shell:
 
 ```sh
 export OPENAI_API_KEY='replace-with-provider-api-key'
-printf '%s' '{"name":"Salvage Run","gameplay":"Crews salvage derelict stations.","provider":"openai","model":"provider-model-id","apiKeyEnv":"OPENAI_API_KEY","launch":false}' |
+printf '%s' '{"name":"Salvage Run","dimension":"3d","gameplay":"Crews salvage derelict stations.","provider":"openai","model":"provider-model-id","apiKeyEnv":"OPENAI_API_KEY","launch":false}' |
   bun run src/index.ts -- --agent --json --agent-config -
 ```
 
@@ -155,6 +157,7 @@ PowerShell:
 $env:OPENAI_API_KEY = 'replace-with-provider-api-key'
 @{
   name = 'Salvage Run'
+  dimension = '3d'
   gameplay = 'Crews salvage derelict stations.'
   provider = 'openai'
   model = 'provider-model-id'
@@ -241,8 +244,13 @@ platform. Serialized on one line, with the plan elided here for length:
 
 `selection` and `brief` are both derived from `plan` and cannot be supplied by a
 caller. When the planner clones instead, `selection.kind` is `"template"`,
-`prepared.remote` is the normalized URL, and `prepared.written` is just the two
-plan files, written into the clone.
+`prepared.remote` is the normalized URL. Before writing the two plan files, the
+harness exactly validates the reference's declared package name, repository
+metadata (including declared absence), and README heading. It then rewrites the
+package name and heading to the requested identity, removes the stale reference
+repository metadata, and reports those four files in `prepared.written`. A
+missing, changed, wrong-typed, or ambiguous target fails the adoption instead
+of silently producing a project with the reference's identity.
 
 For `launch: true` the status is `"built"`, the top-level launch value is
 `"completed"`, and one extra `run` object records what the turn did:
@@ -282,7 +290,7 @@ Errors use a stable envelope and exit code `1`:
   "error": {
     "code": "missing_inputs",
     "message": "Agent mode is missing required inputs.",
-    "missing": ["name", "gameplay", "provider", "model", "apiKeyEnv"]
+    "missing": ["name", "gameplay", "dimension", "provider", "model", "apiKeyEnv"]
   }
 }
 ```
@@ -323,8 +331,9 @@ OPENAI_API_KEY="$CI_OPENAI_KEY" bun run src/index.ts -- --agent --json \
 
 ## Troubleshooting
 
-**`missing_inputs`** — provide `name`, `gameplay`, `provider`, `model`, and
-`apiKeyEnv`. Under `--plan-only`, only the first two.
+**`missing_inputs`** — provide `name`, `gameplay`, `dimension`, `provider`,
+`model`, and `apiKeyEnv`. Under `--plan-only`, the first three are required.
+Use `dimension: "auto"` when the caller deliberately delegates the decision.
 
 **`retired_field`** — remove `source`, `template`, or `from`. Describe the game
 and let the planner choose; `--plan-only` shows you what it chose.

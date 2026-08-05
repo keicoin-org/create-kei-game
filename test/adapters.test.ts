@@ -7,7 +7,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { execPath } from 'node:process'
 import { join } from 'node:path'
@@ -81,6 +81,61 @@ describe('nodeFs', () => {
     await nodeFs.writeFile(file, 'first — ok')
     await nodeFs.writeFile(file, 'second — ok')
     expect(await readFile(file, 'utf8')).toBe('second — ok')
+  })
+
+  test('readIdentityFile bounds allocation and distinguishes invalid inputs', async () => {
+    const directory = join(root, 'bounded-read')
+    const file = join(directory, 'file')
+    await nodeFs.mkdir(directory)
+    expect(await nodeFs.readIdentityFile(directory, 'file', 4)).toEqual({ kind: 'missing' })
+    await writeFile(file, Buffer.from('hello'))
+    expect(await nodeFs.readIdentityFile(directory, 'file', 4)).toEqual({ kind: 'too_large' })
+    await writeFile(file, new Uint8Array([0xc3, 0x28]))
+    expect(await nodeFs.readIdentityFile(directory, 'file', 4)).toEqual({ kind: 'invalid_utf8' })
+    await writeFile(file, Buffer.from('okay'))
+    const read = await nodeFs.readIdentityFile(directory, 'file', 4)
+    expect(read).toMatchObject({ kind: 'text', contents: 'okay' })
+    if (read.kind !== 'text') throw new Error('expected an identity-bearing read')
+    expect(typeof read.identity.token).toBe('string')
+    expect(await nodeFs.replaceIdentityFiles(directory, [
+      { path: 'file', contents: 'replaced', identity: read.identity },
+    ])).toBeTrue()
+    expect(await readFile(file, 'utf8')).toBe('replaced')
+  })
+
+  test('identity replacement refuses a changed entry instead of overwriting it', async () => {
+    const directory = join(root, 'stale-identity')
+    const file = join(directory, 'file')
+    await nodeFs.mkdir(directory)
+    await writeFile(file, 'observed')
+    const read = await nodeFs.readIdentityFile(directory, 'file', 32)
+    if (read.kind !== 'text') throw new Error('expected an identity-bearing read')
+    await writeFile(file, 'changed')
+    expect(await nodeFs.replaceIdentityFiles(directory, [
+      { path: 'file', contents: 'adopted', identity: read.identity },
+    ])).toBeFalse()
+    expect(await readFile(file, 'utf8')).toBe('changed')
+  })
+
+  test.skipIf(process.platform === 'win32')('never reads or rewrites through a symlink', async () => {
+    const directory = join(root, 'symlink-identity')
+    const outside = join(root, 'outside-identity')
+    const file = join(directory, 'file')
+    await nodeFs.mkdir(directory)
+    await writeFile(outside, 'outside')
+    await symlink(outside, file, 'file')
+    expect(await nodeFs.readIdentityFile(directory, 'file', 32)).toEqual({ kind: 'unsafe' })
+
+    await unlink(file)
+    await writeFile(file, 'observed')
+    const read = await nodeFs.readIdentityFile(directory, 'file', 32)
+    if (read.kind !== 'text') throw new Error('expected an identity-bearing read')
+    await unlink(file)
+    await symlink(outside, file, 'file')
+    expect(await nodeFs.replaceIdentityFiles(directory, [
+      { path: 'file', contents: 'adopted', identity: read.identity },
+    ])).toBeFalse()
+    expect(await readFile(outside, 'utf8')).toBe('outside')
   })
 })
 
@@ -205,6 +260,82 @@ describe('the whole seam, wired up', () => {
     expect(forced.created).toBe(true)
     expect(await readFile(join(base, 'taken', 'mine.txt'), 'utf8')).toBe('mine')
   })
+
+  test('a real local git clone is detached and adopted under the requested identity', async () => {
+    const origin = join(root, 'adoption-origin')
+    const base = join(root, 'adoption-destination')
+    await nodeFs.mkdir(origin)
+    await nodeFs.writeFile(join(origin, 'package.json'), '{\n  "name": "button",\n  "private": true\n}\n')
+    await nodeFs.writeFile(join(origin, 'README.md'), '# Button\n\nReference body.\n')
+
+    for (const args of [
+      ['init'],
+      ['add', 'package.json', 'README.md'],
+      ['-c', 'user.name=Kei Test', '-c', 'user.email=kei-test@example.invalid', 'commit', '-m', 'fixture'],
+    ]) {
+      expect((await nodeGit('git', args, { cwd: origin, shell: false })).code).toBe(0)
+    }
+
+    const deps: SourceDeps = {
+      fs: nodeFs,
+      path: nodePath,
+      git: (command, args, options) => {
+        if (args[0] !== 'clone') return nodeGit(command, args, options)
+        const local = [...args]
+        local[local.length - 2] = origin
+        return nodeGit(command, local, options)
+      },
+    }
+    const prepared = await prepareSource({
+      project: { slug: 'harbour-realm', title: 'Harbour Realm' },
+      selection: { kind: 'template', template: 'button' },
+      baseDirectory: base,
+      plan: SCAFFOLD_PLAN,
+    }, deps)
+
+    expect(prepared.written).toEqual(['package.json', 'README.md', PLAN_JSON_PATH, PLAN_MARKDOWN_PATH])
+    expect(JSON.parse(await readFile(join(prepared.directory, 'package.json'), 'utf8'))).toEqual({
+      name: 'harbour-realm',
+      private: true,
+    })
+    expect((await readFile(join(prepared.directory, 'README.md'), 'utf8')).split(/\r?\n/)[0]).toBe('# Harbour Realm')
+    expect((await nodeGit('git', ['remote', 'get-url', 'origin'], { cwd: prepared.directory, shell: false })).code).not.toBe(0)
+    expect((await nodeGit('git', ['log', '-1', '--format=%s'], { cwd: prepared.directory, shell: false })).code).toBe(0)
+  }, 30_000)
+
+  test.skipIf(process.platform === 'win32')('a cloned identity symlink is refused without touching its outside target', async () => {
+    const origin = join(root, 'symlink-origin')
+    const base = join(root, 'symlink-destination')
+    const outside = join(base, 'outside-package.json')
+    await nodeFs.mkdir(origin)
+    await nodeFs.mkdir(base)
+    await writeFile(outside, '{\n  "name": "button",\n  "private": true\n}\n')
+    await symlink('../outside-package.json', join(origin, 'package.json'), 'file')
+    await nodeFs.writeFile(join(origin, 'README.md'), '# Button\n\nReference body.\n')
+    for (const args of [
+      ['init'],
+      ['add', 'package.json', 'README.md'],
+      ['-c', 'user.name=Kei Test', '-c', 'user.email=kei-test@example.invalid', 'commit', '-m', 'symlink fixture'],
+    ]) expect((await nodeGit('git', args, { cwd: origin, shell: false })).code).toBe(0)
+
+    const deps: SourceDeps = {
+      fs: nodeFs,
+      path: nodePath,
+      git: (command, args, options) => {
+        if (args[0] !== 'clone') return nodeGit(command, args, options)
+        const local = [...args]
+        local[local.length - 2] = origin
+        return nodeGit(command, local, options)
+      },
+    }
+    await expect(prepareSource({
+      project: { slug: 'harbour-realm', title: 'Harbour Realm' },
+      selection: { kind: 'template', template: 'button' },
+      baseDirectory: base,
+      plan: SCAFFOLD_PLAN,
+    }, deps)).rejects.toThrow(/package\.json.*not adopted/)
+    expect(await readFile(outside, 'utf8')).toBe('{\n  "name": "button",\n  "private": true\n}\n')
+  }, 30_000)
 
   test('a failing clone becomes a sentence, with git’s own stderr in it', async () => {
     const base = join(root, 'clone-failure')

@@ -23,6 +23,8 @@ class MemoryFs implements SourceFs {
   readonly stats = new Map<string, { readonly isDirectory: boolean } | null>()
   readonly made: string[] = []
   readonly writes = new Map<string, string>()
+  readonly unsafeIdentityPaths = new Set<string>()
+  beforeIdentityReplace: ((file: string) => void) | undefined
 
   async readdir(directory: string): Promise<readonly string[] | null> {
     return this.entries.get(directory) ?? null
@@ -36,6 +38,29 @@ class MemoryFs implements SourceFs {
     this.made.push(directory)
   }
 
+  async readIdentityFile(directory: string, path: string, maxBytes: number) {
+    const file = `${directory}/${path}`
+    if (this.unsafeIdentityPaths.has(file)) return { kind: 'unsafe' as const }
+    const contents = this.writes.get(file)
+    if (contents === undefined) return { kind: 'missing' as const }
+    if (new TextEncoder().encode(contents).byteLength > maxBytes) return { kind: 'too_large' as const }
+    return { kind: 'text' as const, contents, identity: { token: `${file}\u0000${contents}` } }
+  }
+
+  async replaceIdentityFiles(
+    directory: string,
+    files: readonly { readonly path: string; readonly contents: string; readonly identity: { readonly token: string } }[],
+  ) {
+    for (const { path } of files) this.beforeIdentityReplace?.(`${directory}/${path}`)
+    for (const { path, identity } of files) {
+      const file = `${directory}/${path}`
+      const current = this.writes.get(file)
+      if (this.unsafeIdentityPaths.has(file) || current === undefined || identity.token !== `${file}\u0000${current}`) return false
+    }
+    for (const { path, contents } of files) this.writes.set(`${directory}/${path}`, contents)
+    return true
+  }
+
   async writeFile(file: string, contents: string): Promise<void> {
     this.writes.set(file, contents)
   }
@@ -47,7 +72,33 @@ interface GitCall {
   readonly options: GitOptions
 }
 
-function harness(result: GitResult = { code: 0, stderr: '' }): {
+function seedReference(fs: MemoryFs, directory: string, url: string): void {
+  if (url.endsWith('/button.git')) {
+    fs.writes.set(`${directory}/package.json`, JSON.stringify({ name: 'button', private: true }, null, 2) + '\n')
+    fs.writes.set(`${directory}/README.md`, '# Button\n\nReference body.\n')
+    return
+  }
+  if (url.endsWith('/world-of-wonder.git')) {
+    fs.writes.set(`${directory}/package.json`, JSON.stringify({
+      name: 'world-of-wonder',
+      repository: { url: 'git+https://github.com/keicoin-org/world-of-wonder.git' },
+    }, null, 4) + '\n')
+    fs.writes.set(`${directory}/README.md`, '# world-of-wonder\n\nReference body.\n')
+    return
+  }
+  if (url.endsWith('/carpet-markets.git')) {
+    fs.writes.set(`${directory}/package.json`, JSON.stringify({
+      name: 'carpet-markets',
+      repository: { type: 'git', url: 'git+https://github.com/keicoin-org/carpet-markets.git' },
+    }, null, 2) + '\n')
+    fs.writes.set(`${directory}/README.md`, '# Carpet Markets\n\nReference body.\n')
+  }
+}
+
+function harness(
+  result: GitResult = { code: 0, stderr: '' },
+  seed: (fs: MemoryFs, directory: string, url: string) => void = seedReference,
+): {
   readonly deps: SourceDeps
   readonly fs: MemoryFs
   readonly calls: GitCall[]
@@ -62,6 +113,7 @@ function harness(result: GitResult = { code: 0, stderr: '' }): {
       path: posix,
       git: async (command, args, options) => {
         calls.push({ command, args, options })
+        if (result.code === 0 && args[0] === 'clone') seed(fs, args.at(-1)!, args.at(-2)!)
         return result
       },
     },
@@ -74,6 +126,11 @@ describe('reference catalog', () => {
   test('is the three real projects and no embedded starter', () => {
     expect(KNOWN_TEMPLATES.map(({ id }) => id)).toEqual(['button', 'world-of-wonder', 'carpet-markets'])
     expect(JSON.stringify(KNOWN_TEMPLATES)).not.toContain('star-clicker')
+    for (const reference of KNOWN_TEMPLATES) {
+      expect(Object.isFrozen(reference)).toBeTrue()
+      expect(Object.isFrozen(reference.adoption)).toBeTrue()
+      if (reference.adoption.repository !== null) expect(Object.isFrozen(reference.adoption.repository)).toBeTrue()
+    }
   })
 
   test('accepts an id or display label and lists choices on error', () => {
@@ -274,14 +331,16 @@ describe('existing local source', () => {
 })
 
 describe('cloned reference', () => {
-  test('clones with exact argv and no shell, then leaves the plan beside it', async () => {
+  test('clones with exact argv and no shell, loudly adopts identity, then leaves the plan beside it', async () => {
     const { deps, fs, calls } = harness()
     const result = await prepareSource(
       { project, selection: { kind: 'template', template: 'button' }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
       deps,
     )
     expect(result.remote).toBe('https://github.com/keicoin-org/button.git')
-    expect(result.written).toEqual([PLAN_JSON_PATH, PLAN_MARKDOWN_PATH])
+    expect(result.written).toEqual(['package.json', 'README.md', PLAN_JSON_PATH, PLAN_MARKDOWN_PATH])
+    expect(JSON.parse(fs.writes.get('/work/my-game/package.json')!)).toEqual({ name: 'my-game', private: true })
+    expect(fs.writes.get('/work/my-game/README.md')).toStartWith('# My Game\n')
     expect(fs.writes.has(`/work/my-game/${PLAN_JSON_PATH}`)).toBeTrue()
     expect(calls).toEqual([
       {
@@ -297,6 +356,107 @@ describe('cloned reference', () => {
         options: { cwd: '/work/my-game', shell: false },
       },
     ])
+  })
+
+  test.each([
+    ['button', 'https://github.com/keicoin-org/button.git'],
+    ['world-of-wonder', 'https://github.com/keicoin-org/world-of-wonder.git'],
+    ['carpet-markets', 'https://github.com/keicoin-org/carpet-markets.git'],
+  ] as const)('adopts the declared %s package, README, and repository identity exactly', async (template, url) => {
+    const { deps, fs } = harness()
+    const result = await prepareSource(
+      { project, selection: { kind: 'template', template }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
+      deps,
+    )
+    expect(result.remote).toBe(url)
+    const manifest = JSON.parse(fs.writes.get('/work/my-game/package.json')!)
+    expect(manifest.name).toBe('my-game')
+    expect(manifest).not.toHaveProperty('repository')
+    expect(fs.writes.get('/work/my-game/README.md')).toStartWith('# My Game\n')
+  })
+
+  test.each([
+    ['missing package', (fs: MemoryFs, directory: string) => fs.writes.delete(`${directory}/package.json`)],
+    ['wrong package name', (fs: MemoryFs, directory: string) => fs.writes.set(`${directory}/package.json`, '{"name":"other"}\n')],
+    ['duplicate package name', (fs: MemoryFs, directory: string) => fs.writes.set(`${directory}/package.json`, '{"name":"button","name":"button"}\n')],
+    ['unexpected repository metadata', (fs: MemoryFs, directory: string) => fs.writes.set(`${directory}/package.json`, '{"name":"button","repository":{"url":"elsewhere"}}\n')],
+    ['missing README heading', (fs: MemoryFs, directory: string) => fs.writes.set(`${directory}/README.md`, 'Button\n')],
+    ['ambiguous README heading', (fs: MemoryFs, directory: string) => fs.writes.set(`${directory}/README.md`, '# Button\n\n# Button\n')],
+    ['oversized package', (fs: MemoryFs, directory: string) => fs.writes.set(`${directory}/package.json`, ' '.repeat(256 * 1024 + 1))],
+    ['linked or non-regular package', (fs: MemoryFs, directory: string) => fs.unsafeIdentityPaths.add(`${directory}/package.json`)],
+    ['linked or non-regular README', (fs: MemoryFs, directory: string) => fs.unsafeIdentityPaths.add(`${directory}/README.md`)],
+  ] as const)('fails closed before plan or renamed identity writes: %s', async (_name, mutate) => {
+    const current = harness({ code: 0, stderr: '' }, (fs, directory, url) => {
+      seedReference(fs, directory, url)
+      mutate(fs, directory)
+    })
+    await expect(prepareSource(
+      { project, selection: { kind: 'template', template: 'button' }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
+      current.deps,
+    )).rejects.toThrow(/was not adopted/)
+    expect(current.fs.writes.has(`/work/my-game/${PLAN_JSON_PATH}`)).toBeFalse()
+    expect(current.calls.at(-1)?.args).toEqual(['remote', 'remove', 'origin'])
+  })
+
+  test('fails closed when a validated identity target changes before replacement', async () => {
+    const current = harness()
+    let changed = false
+    current.fs.beforeIdentityReplace = (file) => {
+      if (changed) return
+      changed = true
+      current.fs.writes.set(file, '{"name":"attacker"}\n')
+    }
+    await expect(prepareSource(
+      { project, selection: { kind: 'template', template: 'button' }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
+      current.deps,
+    )).rejects.toThrow(/was not adopted/)
+    expect(current.fs.writes.get('/work/my-game/package.json')).toBe('{"name":"attacker"}\n')
+    expect(current.fs.writes.has(`/work/my-game/${PLAN_JSON_PATH}`)).toBeFalse()
+  })
+
+  test('a second identity target change leaves the first identity unmodified', async () => {
+    const current = harness()
+    current.fs.beforeIdentityReplace = (file) => {
+      if (file.endsWith('/README.md')) current.fs.writes.set(file, '# Changed elsewhere\n')
+    }
+    await expect(prepareSource(
+      { project, selection: { kind: 'template', template: 'button' }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
+      current.deps,
+    )).rejects.toThrow(/was not adopted/)
+    // The fixture is seeded during clone, so recover its declared original for
+    // the first target and prove the failed batch never rewrote it.
+    expect(current.fs.writes.get('/work/my-game/package.json')).toBe(JSON.stringify({ name: 'button', private: true }, null, 2) + '\n')
+    expect(current.fs.writes.has(`/work/my-game/${PLAN_JSON_PATH}`)).toBeFalse()
+  })
+
+  test('fails closed when a declared repository field has the wrong type', async () => {
+    const current = harness({ code: 0, stderr: '' }, (fs, directory, url) => {
+      seedReference(fs, directory, url)
+      fs.writes.set(`${directory}/package.json`, JSON.stringify({
+        name: 'world-of-wonder',
+        repository: 'git+https://github.com/keicoin-org/world-of-wonder.git',
+      }))
+    })
+    await expect(prepareSource(
+      { project, selection: { kind: 'template', template: 'world-of-wonder' }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
+      current.deps,
+    )).rejects.toThrow(/package\.json#repository/)
+    expect(current.fs.writes.has(`/work/my-game/${PLAN_JSON_PATH}`)).toBeFalse()
+  })
+
+  test('bounds the adopted project identity before writing it into package or Markdown', async () => {
+    for (const unsafe of [
+      { slug: `x${'a'.repeat(214)}`, title: 'Safe' },
+      { slug: 'safe', title: 'line one\n# injected' },
+      { slug: 'safe_name', title: 'Safe' },
+    ]) {
+      const current = harness()
+      await expect(prepareSource(
+        { project: unsafe, selection: { kind: 'template', template: 'button' }, baseDirectory: '/work', plan: SCAFFOLD_PLAN },
+        current.deps,
+      )).rejects.toThrow(/identity is not safe/)
+      expect([...current.fs.writes.keys()].some((path) => path.endsWith(`/${PLAN_JSON_PATH}`))).toBeFalse()
+    }
   })
 
   test('a remote that will not detach is a failure, not a project that pushes elsewhere', async () => {
@@ -336,9 +496,9 @@ describe('cloned reference', () => {
       deps,
     )
 
-    // The parent, and afterwards only the plan directory inside the clone.
+    // The parent is created before cloning. Later writes may idempotently make
+    // the already-cloned destination and plan directory.
     expect(fs.made[0]).toBe('/work/games')
-    expect(fs.made).not.toContain('/work/games/one')
     expect(calls[0]).toEqual({
       command: 'git',
       args: ['clone', '--depth', '1', '--', 'https://github.com/keicoin-org/button.git', '/work/games/one'],

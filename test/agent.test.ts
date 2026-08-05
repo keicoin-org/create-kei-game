@@ -188,16 +188,19 @@ describe('agent request resolution', () => {
     expect(() => createAgentRequest({}, {}, '/workspace', {})).toThrow(
       expect.objectContaining({
         code: 'missing_inputs',
-        details: { missing: ['name', 'gameplay', 'provider', 'model', 'apiKeyEnv'] },
+        details: { missing: ['name', 'gameplay', 'dimension', 'provider', 'model', 'apiKeyEnv'] },
       }),
     )
   })
 
-  test('a plan-only intent needs no provider and no credential at all', () => {
-    const intent = createAgentIntent({ name: 'Plan Me', gameplay: 'Questing' }, {})
+  test('a plan-only intent needs no provider or credential, but does need an explicit dimension', () => {
+    const intent = createAgentIntent({ name: 'Plan Me', gameplay: 'Questing', dimension: 'auto' }, {})
     expect(intent).toMatchObject({ name: 'Plan Me', dimension: 'auto' })
-    expect(() => createAgentIntent({ gameplay: 'Questing' }, {})).toThrow(
+    expect(() => createAgentIntent({ gameplay: 'Questing', dimension: '3d' }, {})).toThrow(
       expect.objectContaining({ code: 'missing_inputs', details: { missing: ['name'] } }),
+    )
+    expect(() => createAgentIntent({ name: 'Plan Me', gameplay: 'Questing' }, {})).toThrow(
+      expect.objectContaining({ code: 'missing_inputs', details: { missing: ['dimension'] } }),
     )
   })
 

@@ -42,9 +42,10 @@ intent:
 
 The engine plans the intent **here**, so the plan is always harness-authored: a
 caller cannot hand the model a description the harness never derived. The intent
-is the shape in [Intent, planner, and plan](mmo-plan.md), validated to the same
-rules; a bad field comes back as `invalid_message` with `field` naming it, such
-as `request.intent.gameplay`.
+is the shape in [Intent, planner, and plan](mmo-plan.md). `dimension` must be
+present; `"auto"` is a valid explicit deferral, while omission or blank text is
+`missing_inputs` on `request.intent.dimension`. Other bad fields come back as
+`invalid_message` with `field` naming them, such as `request.intent.gameplay`.
 
 A request may carry `brief` instead of `intent` — a plain string, no planning,
 no plan. That is the compatibility path for a caller that has its own text.
@@ -138,7 +139,7 @@ Errors are stable, redacted objects:
 {"v":1,"type":"error","id":"game-1","error":{"code":"turn_limit","message":"Engine turn count exceeded its limit."}}
 ```
 
-Protocol codes are `invalid_json`, `invalid_message`, `unsupported_version`,
+Protocol codes are `invalid_json`, `invalid_message`, `missing_inputs`, `unsupported_version`,
 `line_too_large`, `session_exists`, `session_not_found`, `session_busy`,
 `session_limit`, and `internal_error`. Engine codes are `cancelled`, `timeout`,
 `prompt_limit`, `history_limit`, `turn_limit`, `output_limit`, `tool_call_limit`,

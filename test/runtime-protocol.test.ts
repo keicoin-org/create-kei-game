@@ -135,6 +135,25 @@ describe('versioned JSONL engine boundary', () => {
     expect(transport.inputs[0]!.brief).toContain('CAPABILITY PACKETS')
   })
 
+  test('an intent-opened session requires an explicit dimension, while explicit auto remains valid', async () => {
+    const { brief: _brief, ...withoutBrief } = request
+    async function* input() {
+      yield line({ v: 1, type: 'open', id: 'missing', request: { ...withoutBrief, intent: { name: 'g', gameplay: 'Questing' } } })
+      yield line({ v: 1, type: 'open', id: 'blank', request: { ...withoutBrief, intent: { name: 'g', dimension: ' ', gameplay: 'Questing' } } })
+      yield line({ v: 1, type: 'open', id: 'null', request: { ...withoutBrief, intent: { name: 'g', dimension: null, gameplay: 'Questing' } } })
+      yield line({ v: 1, type: 'open', id: 'auto', request: { ...withoutBrief, intent: { name: 'g', dimension: 'auto', gameplay: 'Questing' } } })
+      yield line({ v: 1, type: 'shutdown' })
+    }
+    const output = await execute(input(), new ScriptedTransport([]))
+    expect(output.slice(0, 3)).toEqual([
+      { v: 1, type: 'error', id: 'missing', error: { code: 'missing_inputs', message: 'Engine request is missing required input.', field: 'request.intent.dimension' } },
+      { v: 1, type: 'error', id: 'blank', error: { code: 'missing_inputs', message: 'Engine request is missing required input.', field: 'request.intent.dimension' } },
+      { v: 1, type: 'error', id: 'null', error: { code: 'missing_inputs', message: 'Engine request is missing required input.', field: 'request.intent.dimension' } },
+    ])
+    expect(output).toContainEqual({ v: 1, type: 'accepted', id: 'auto', command: 'open' })
+    expect(output.find((item) => item.type === 'plan' && item.id === 'auto')).toMatchObject({ plan: { intent: { dimension: 'auto' } } })
+  })
+
   test('a brief-opened session carries no plan, which is the compatibility path', async () => {
     async function* input() {
       yield line({ v: 1, type: 'open', id: 'game', request })
@@ -150,7 +169,7 @@ describe('versioned JSONL engine boundary', () => {
     async function* input() {
       yield line({ v: 1, type: 'open', id: 'both', request: { ...request, intent } })
       yield line({ v: 1, type: 'open', id: 'neither', request: withoutBrief })
-      yield line({ v: 1, type: 'open', id: 'bad', request: { ...withoutBrief, intent: { name: 'g' } } })
+      yield line({ v: 1, type: 'open', id: 'bad', request: { ...withoutBrief, intent: { name: 'g', dimension: '3d' } } })
       yield line({ v: 1, type: 'shutdown' })
     }
     const output = await execute(input(), new ScriptedTransport([]))

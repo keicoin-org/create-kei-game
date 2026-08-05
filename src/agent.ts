@@ -292,6 +292,7 @@ export function createAgentIntent(config: AgentAnswers, overrides: AgentOverride
   const missing: string[] = []
   if (blank(values.name)) missing.push('name')
   if (blank(values.gameplay)) missing.push('gameplay')
+  if (blank(values.dimension)) missing.push('dimension')
   if (missing.length > 0) {
     throw new AgentError('missing_inputs', 'Agent mode is missing required inputs.', {
       missing: Object.freeze(missing),
@@ -314,6 +315,7 @@ export function createAgentRequest(
   const missing: string[] = []
   if (blank(values.name)) missing.push('name')
   if (blank(values.gameplay)) missing.push('gameplay')
+  if (blank(values.dimension)) missing.push('dimension')
   if (blank(values.provider)) missing.push('provider')
   if (blank(values.model)) missing.push('model')
   if (blank(values.apiKeyEnv)) missing.push('apiKeyEnv')
