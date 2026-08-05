@@ -12,7 +12,7 @@
  * that reason, and there is no way to talk it round.
  */
 
-import { Kei, type ClaimBundle, type KeiNode } from 'kei-transaction'
+import { Kei, isAddress, type ClaimBundle, type KeiNode } from 'kei-transaction'
 
 import { CURRENCY, LANTERN, perClickFor, type Catalogue, type LanternOutcome } from '../shared/game.js'
 import { openOrders } from './orders.js'
@@ -47,8 +47,198 @@ export interface Game {
 
 export class GameError extends Error {}
 
-/** Fast for a finger, slow for a script. */
-const CLICK_RATE_CAP = 25
+/**
+ * What a wallet may be paid for, and what this process will mint at all.
+ *
+ * The browser counts its own clicks, because in single-player nothing else sees
+ * them. That is a real trust hole and nothing here closes it — put a Colyseus
+ * room in the middle and the clicks become observed. What these numbers do is
+ * bound the damage until then, and there are two ceilings rather than one
+ * because a wallet costs nothing to make: a per-wallet limit only ever limits a
+ * wallet, and the attacker brings more wallets.
+ *
+ *   per wallet    25 clicks a second, at most 100 saved up. Fast for a finger,
+ *                 slow for a script.
+ *   per process   5 000 units a second, at most 50 000 saved up — a hundred
+ *                 wallets clicking flat out. A fresh keypair does not reset it,
+ *                 which is the only part of this a fresh keypair cannot defeat.
+ *
+ * At the process ceiling, draining a `maxSupply` of 1 000 000 000 takes about 55
+ * hours of uninterrupted abuse. Raise these if your game is busier than that —
+ * they are a bound on the blast radius, not a gameplay balance.
+ */
+export const EARN_LIMITS = {
+  clicksPerSecond: 25,
+  burstClicks: 100,
+  /** Whole currency units, the same unit `PER_CLICK` is counted in. */
+  unitsPerSecond: 5_000,
+  burstUnits: 50_000,
+  /** How many wallets' allowances are remembered. See `createEarnLimiter`. */
+  wallets: 4_096,
+} as const
+
+export type EarnLimits = typeof EARN_LIMITS
+
+/** What `admit` decided, and which ceiling decided it. */
+export interface EarnAdmission {
+  /** Clicks that may be paid for now, never more than were asked for. */
+  clicks: number
+  /** Which ceiling held this back, if either did. */
+  ceiling: 'none' | 'wallet' | 'process'
+}
+
+export interface EarnLimiter {
+  /**
+   * How many of `clicks` may be paid for right now, having already taken the
+   * allowance for them.
+   *
+   * Deciding and debiting happen together, in one synchronous call, before
+   * anything is awaited and before anything is minted. A check separated from
+   * its debit by an `await` is not a limit at all: the requests this exists to
+   * stop arrive together, and every one of them would pass the check before the
+   * first of them paid for it.
+   */
+  admit(address: string, clicks: number, now: number): EarnAdmission
+  /** How many wallets are remembered. Never more than `limits.wallets`. */
+  readonly remembered: number
+}
+
+/**
+ * Tokens in hand, and when they were last brought up to date.
+ *
+ * `filledAt` advances by exactly the elapsed time that turned into whole tokens,
+ * so the remainder of the division is credited to the next refill instead of
+ * being dropped. Two refills in quick succession therefore grant what one refill
+ * after the same delay would.
+ */
+interface Bucket {
+  tokens: bigint
+  filledAt: number
+}
+
+/**
+ * Bring a bucket up to date and take up to `want` from it.
+ *
+ * An ordinary token bucket. The one line that matters is the `capacity` clamp:
+ * what this replaces added `elapsed × rate` with nothing bounding it, so an idle
+ * wallet banked allowance forever and a single request could spend an hour of
+ * it. A wallet that posts once, waits an hour and posts again was owed 90 025
+ * clicks. A bucket that is full is just full.
+ */
+function take(bucket: Bucket, want: bigint, rate: bigint, capacity: bigint, now: number): bigint {
+  const gained = (BigInt(Math.max(0, now - bucket.filledAt)) * rate) / 1_000n
+  if (gained > 0n) {
+    bucket.tokens += gained
+    bucket.filledAt += Number((gained * 1_000n) / rate)
+  }
+  if (bucket.tokens >= capacity) {
+    bucket.tokens = capacity
+    // Full, so the time not yet claimed is not owed. Discarding it here rather
+    // than only capping the total is what stops an idle bucket accruing.
+    bucket.filledAt = now
+  }
+
+  const taken = want < bucket.tokens ? want : bucket.tokens
+  bucket.tokens -= taken
+  return taken
+}
+
+export function createEarnLimiter(limits: EarnLimits = EARN_LIMITS): EarnLimiter {
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new GameError(`EARN_LIMITS.${name} must be a whole number, one or more — got ${describe(value)}.`)
+    }
+  }
+
+  /**
+   * One bucket per wallet, held in least-recently-used order.
+   *
+   * A `Map` iterates in insertion order, so re-inserting on every touch leaves
+   * the least recently used first and eviction is always the first key. What
+   * this replaces was a `Map` nothing ever deleted from, written on every call
+   * to an endpoint that needs no credentials — one entry per distinct string
+   * ever posted, for the life of the process.
+   *
+   * Evicting a wallet hands it a full bucket the next time it asks: its
+   * allowance resets. That is the trade, taken deliberately, and the process
+   * ceiling below is what makes the reset worth nothing on its own.
+   */
+  const wallets = new Map<string, Bucket>()
+  const clicksPerSecond = BigInt(limits.clicksPerSecond)
+  const burstClicks = BigInt(limits.burstClicks)
+  const unitsPerSecond = BigInt(limits.unitsPerSecond)
+  const burstUnits = BigInt(limits.burstUnits)
+
+  /**
+   * The most one click can ever pay, and what the process budget is charged.
+   *
+   * What a click is actually worth depends on whether the player holds a
+   * lantern, and that is a chain read — it cannot be known before the budget has
+   * to be taken, because the budget has to be taken before anything is minted.
+   * So the worst case is charged. A player without a lantern is charged twice
+   * what they are paid, which makes the process ceiling conservative rather than
+   * wrong, and at 5 000 units a second against one player's 50 the difference is
+   * not observable.
+   */
+  const worstPerClick = BigInt(perClickFor(1))
+
+  /** Lazily, so the first call sets the clock rather than 1970 filling it. */
+  let budget: Bucket | undefined
+
+  const bucketFor = (address: string, now: number): Bucket => {
+    const known = wallets.get(address)
+    if (known !== undefined) {
+      wallets.delete(address)
+      wallets.set(address, known)
+      return known
+    }
+
+    const fresh: Bucket = { tokens: burstClicks, filledAt: now }
+    wallets.set(address, fresh)
+    while (wallets.size > limits.wallets) {
+      const oldest = wallets.keys().next().value
+      if (oldest === undefined) break
+      wallets.delete(oldest)
+    }
+    return fresh
+  }
+
+  return {
+    get remembered() {
+      return wallets.size
+    },
+
+    admit(address, clicks, now) {
+      const wallet = bucketFor(address, now)
+      const asked = BigInt(clicks)
+      const allowed = take(wallet, asked, clicksPerSecond, burstClicks, now)
+      if (allowed === 0n) return { clicks: 0, ceiling: 'wallet' }
+
+      budget ??= { tokens: burstUnits, filledAt: now }
+      const paid = take(budget, allowed * worstPerClick, unitsPerSecond, burstUnits, now)
+
+      // Whole clicks only. A click is not divisible, and paying for part of one
+      // would credit a fraction of a coin the price list has no name for.
+      const affordable = paid / worstPerClick
+      const short = allowed - affordable
+      if (short > 0n) {
+        // Clicks the process would not pay for were never minted, so they go
+        // back to the wallet rather than being quietly charged to it.
+        wallet.tokens += short
+        budget.tokens += paid - affordable * worstPerClick
+      }
+
+      if (affordable === 0n) return { clicks: 0, ceiling: 'process' }
+      if (affordable < asked) return { clicks: Number(affordable), ceiling: short > 0n ? 'process' : 'wallet' }
+      return { clicks: Number(affordable), ceiling: 'none' }
+    },
+  }
+}
+
+/** A value as it should read inside a sentence, so an empty string is visible. */
+function describe(value: unknown): string {
+  return typeof value === 'string' ? JSON.stringify(value) : String(value)
+}
 
 /**
  * How long to wait for a payment the player says they made. They are quicker
@@ -107,7 +297,7 @@ export async function startGame(options: GameOptions): Promise<Game> {
     path: options.orders ?? ORDERS_PATH,
   })
 
-  const lastEarn = new Map<string, number>()
+  const limiter = createEarnLimiter()
   const earnInFlight = new Map<string, { address: string; clicks: number; promise: Promise<ClaimBundle> }>()
   const earnCompleted = new Map<string, { address: string; clicks: number; bundle: ClaimBundle; expiresAt: number }>()
 
@@ -127,18 +317,38 @@ export async function startGame(options: GameOptions): Promise<Game> {
     return key
   }
 
-  const performEarn = async (address: string, clicks: number): Promise<ClaimBundle> => {
-    const now = Date.now()
-    const since = now - (lastEarn.get(address) ?? now - 1_000)
-    lastEarn.set(address, now)
+  /**
+   * The address and the click count, or a sentence saying what to send instead.
+   *
+   * Both arrive from an unauthenticated POST body (`server/main.ts`) as whatever
+   * JSON happened to parse, so neither is a `string` or a `number` until it has
+   * been looked at. `Infinity` in particular used to reach the arithmetic below
+   * and come out as the whole allowance.
+   */
+  const validateEarn = (address: unknown, clicks: unknown): { address: string; clicks: number } => {
+    if (!isAddress(address)) {
+      throw new GameError(
+        `earn() takes the Kei address of the player being paid — got ${describe(address)}. Send the address the player's own wallet reports.`,
+      )
+    }
+    if (typeof clicks !== 'number' || !Number.isInteger(clicks) || clicks < 1) {
+      throw new GameError(`earn() takes a whole number of clicks, one or more — got ${describe(clicks)}.`)
+    }
+    return { address, clicks }
+  }
 
-    // The browser counts the clicks, because in single-player nothing else
-    // sees them. That is a real trust hole, and this is a ceiling rather than
-    // a fix: it makes the hole worth a few coins instead of the whole supply.
-    // Put a Colyseus room in the middle and the clicks become observed.
-    const allowed = Math.max(1, Math.ceil((since / 1_000) * CLICK_RATE_CAP) + CLICK_RATE_CAP)
-    const counted = Math.min(Math.floor(clicks), allowed)
-    if (!(counted > 0)) throw new GameError(`That was zero clicks. Got ${clicks}.`)
+  const performEarn = async (address: string, clicks: number): Promise<ClaimBundle> => {
+    // Everything that can refuse runs before anything that can mint, and the
+    // allowance is spent here rather than after the chain read below — see
+    // `admit`, which is where the reason for that ordering is written down.
+    const admitted = limiter.admit(address, clicks, Date.now())
+    if (admitted.clicks === 0) {
+      throw new GameError(
+        admitted.ceiling === 'process'
+          ? `This game is already minting ${CURRENCY.symbol} as fast as it is willing to (${EARN_LIMITS.unitsPerSecond} units a second, in server/game.ts). Nothing was paid — send these clicks again in a moment.`
+          : `That is faster than ${EARN_LIMITS.clicksPerSecond} clicks a second sustained, which is faster than a finger. Nothing was paid and the clicks are not lost — send them again in a moment.`,
+      )
+    }
 
     const owned = await lanterns.balanceOf(address)
 
@@ -148,7 +358,12 @@ export async function startGame(options: GameOptions): Promise<Game> {
     // rewritten when there are a thousand of them claiming at once. Minting
     // to each player in turn would instead make this account's chain a global
     // write lock, and the queue behind it would become the game.
-    const drop = await currency.commit([{ to: address, amount: counted * perClickFor(owned) }])
+    // Whole units, as an exact decimal string. `commit` takes a `number` too and
+    // parses it by way of the float formatter, which is not what should decide
+    // how much money is created — a BigInt cannot round and a string cannot be
+    // reinterpreted on the way in.
+    const units = BigInt(admitted.clicks) * BigInt(perClickFor(owned))
+    const drop = await currency.commit([{ to: address, amount: units.toString() }])
     return drop.proofFor(address)
   }
 
@@ -242,7 +457,11 @@ export async function startGame(options: GameOptions): Promise<Game> {
       }
     },
 
-    async earn(address, clicks, idempotencyKey) {
+    async earn(rawAddress, rawClicks, idempotencyKey) {
+      // Before the bookkeeping, not after it: a key must not be able to record an
+      // order for an address that was never an address.
+      const { address, clicks } = validateEarn(rawAddress, rawClicks)
+
       pruneEarnCompleted()
       const key = idempotencyKey === undefined ? undefined : validateEarnKey(idempotencyKey)
       if (key === undefined) return performEarn(address, clicks)
