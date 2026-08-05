@@ -1,9 +1,11 @@
 # First-encounter polish contract
 
-Issue #17 is split at the asset boundary. This slice ships no art, audio,
-presentation renderer, capture, or criterion-9 claim. It gives every fresh 2D
-and 3D scaffold an exact contract that later asset and presentation work must
-satisfy without weakening authority, persistence, or Kei custody proofs.
+Issue #17 is split at the asset boundary. This slice now ships the runtime
+criterion-9 authority path, but no recordable art, motion, SFX, VFX, camera,
+finished UI, capture, or complete criterion-9 claim. Every fresh 2D and 3D
+scaffold gets both the executable authority slice and the exact contract that
+later asset and presentation work must satisfy without weakening authority,
+persistence, or Kei custody proofs. Issue #17 therefore remains open.
 
 There is one content/source truth. `kei-mmo/content/sources.json`,
 `polish-manifest.json`, and `THIRD_PARTY_ASSETS.md` own source, admission, and
@@ -13,9 +15,31 @@ harness package and the checker remains complete after the harness is deleted.
 
 ## Authoritative encounter
 
-Recipe V1 describes a 25-35 second route with exact interact and strike phase
-timings. Its server-authored records carry monotonically ticked event ids,
-actor, target, action kind, outcome, and contact truth. The capture route must,
+`src/shared/actions.ts` defines action contract V1. An exact client message can
+name only interact or strike and the fixed training sentinel. The active shard
+binds the session actor, checks target, distance, current phase, and cooldown,
+then publishes bounded anticipation/contact/recovery events with monotonic
+event id, tick, actor, target, kind, outcome, and contact truth in every
+authoritative snapshot. Sentinel and durable player progression change once,
+and only once, at contact. Refusal paths change neither. The generated client
+reducer makes duplicate and out-of-order snapshots presentation-idempotent.
+
+Socket lifetime does not own action authority. Disconnecting removes only the
+live player projection and pending movement; an accepted action continues to
+contact/recovery for the durable player id, and its cooldown remains in force
+after resume. Completed cooldown and action guards are pruned, including for a
+player who never reconnects, while the published event log remains bounded.
+
+A process restart is a separate, deliberately fail-closed boundary. This slice
+does not pretend to durably replay an in-flight semantic timeline: work that
+has not reached its transactional contact save is cancelled without reward.
+If contact was saved, XP survives exactly once and the first resume in the new
+shard receives a conservative wall-clock guard covering the maximum remaining
+recovery plus cooldown interval. Repeated restarts cannot shorten that guard;
+clock rollback only extends it. Presentation must never describe this restart
+cancellation rule as seamless in-flight action recovery.
+
+Recipe V1 describes the corresponding 25-35 second recordable route. The capture route must,
 in order, show local and labelled scripted-remote connection, approach,
 accepted interaction, accepted strike/contact, remote observation of that same
 event, refusal, cooldown, recovery, and reset.
@@ -127,4 +151,5 @@ fixture bytes ship in generated projects.
 `polish-2d` and `polish-3d` remain `planned`. Neither becomes `available` until
 real admitted runtime bytes, presentation code, capture/check evidence, and
 human review land. This contract does not satisfy SPEC section 11.3 criterion
-9.
+9 by itself; the runtime authority prerequisite is now executable while the
+recordable presentation and reviewed capture remain absent.

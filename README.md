@@ -200,6 +200,7 @@ salvage-run/
 ├── tsconfig.json
 └── src/
     ├── client/main.ts             # renders every authoritative player
+    ├── client/action-events.ts    # one-shot semantic feedback reducer
     ├── client/connection.ts       # one browser/headless protocol path
     ├── client/headless.ts         # two-client shared-encounter smoke
     ├── economy/definitions.ts     # exact currency and item declarations
@@ -209,6 +210,7 @@ salvage-run/
     ├── server/dev-server.mjs      # loopback WebSocket + static server
     ├── server/main.ts             # authoritative fixed-tick shard
     ├── server/persistence.ts      # versioned bun:sqlite character store
+    ├── shared/actions.ts          # action-v1 intent and event contract
     ├── shared/protocol.ts         # exact versioned messages and refusals
     ├── shared/simulation.ts
     └── shared/cutscene.ts        # the player, with the cut-scenes; imports nothing
@@ -220,17 +222,36 @@ scene; a 2D scaffold
 owns a Canvas construction frame and explicitly does not claim a tile or sprite
 renderer. Both own a loopback-only game server and the same versioned connection
 path for browser and headless clients. `bun run headless -- <socket-url>` opens
-two server-assigned players, moves each once, proves each observes the other,
-and proves stale and authority-forging messages do not mutate the world.
+two server-assigned players, moves each once, runs accepted interact and strike
+actions against the training sentinel, proves both clients observe the same
+server-authored anticipation/contact/recovery events, and proves stale,
+too-far, phase-busy, cooldown, duplicate/out-of-order, and authority-forging
+paths do not replay feedback or mutate progression.
 
-Both dimensions also receive a project-owned version-1 first-encounter contract:
+Both dimensions now receive a project-owned runtime action-v1 contract and
+authoritative phase machine. Clients can name only interact/strike and the fixed
+training sentinel; the server supplies actor, tick, monotonic event id, outcome,
+and contact, and applies sentinel/progression change exactly once at contact.
+The bounded semantic timeline travels in authoritative snapshots, while the
+client reducer prevents duplicate or older snapshots from replaying feedback.
+Disconnect/resume cannot clear an accepted action, recovery, or cooldown: those
+guards belong to the durable player id and expire under bounded shard cleanup,
+not socket cleanup. A process restart intentionally cancels work that had not
+reached contact. A contact already saved remains exactly once and causes a
+conservative restart guard for the remaining recovery/cooldown horizon, so a
+restart is not an action-rate bypass and is not claimed as seamless timeline
+recovery.
+
+They also receive a project-owned version-1 presentation contract:
 `kei-mmo/polish/` owns semantic interact/strike timings, effect and cue maps,
 low/medium/high quality profiles, and exact asset requirements; the canonical
 source registry is `kei-mmo/content/sources.json`. No licensed production asset
 has been selected in this slice, so
 `bun run polish:check` deliberately exits nonzero with
 `polish_assets_pending`. The construction renderer does not consume the recipe,
-and `polish-2d` / `polish-3d` remain planned. See
+and `polish-2d` / `polish-3d` remain planned. The runtime criterion-9 authority
+slice exists; recordable art, motion, SFX, VFX, camera, UI, and capture do not,
+so criterion 9 and issue 17 remain open. See
 [First-encounter polish contract](docs/polish-contract.md).
 
 `bun run restart-proof` creates a temporary WAL database, moves and progresses a
@@ -239,6 +260,9 @@ identity and state, and proves malformed/random/duplicate tokens and forged
 position/progression/economic fields cannot alter memory or disk. Resume tokens
 remain in browser localStorage or headless memory; SQLite contains only their
 hashes, position, XP, level, and update time.
+The world database also holds one bounded, expiring action-guard row for a
+contact whose recovery/cooldown horizon has not elapsed; contact progression
+and that guard commit in the same SQLite transaction.
 
 That closes the generated-project shape of SPEC §11.3 criteria 3–6: a real
 client connects, two clients see each other move, and server-authored character
@@ -247,7 +271,7 @@ player-custodied open-transfer currency with a one-way issuer-desk promise, an
 item, mismatch refusal, and atomic trade. The game server has no Kei import,
 account, wallet, balance, item, or settlement path; SQLite has no economic state.
 It does **not** close socket-to-wallet proof of control, the broader end-to-end
-product gate (8), or presentation polish (9). There is no account recovery,
+product gate (8), or the recordable presentation portion of polish (9). There is no account recovery,
 chunk streaming, or multi-writer store. Deleting this harness does not affect
 the generated project's dependencies, runtime, restart proof, or economy proof.
 

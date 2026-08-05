@@ -3,11 +3,13 @@
 import type { WorkspaceFile } from './source.js'
 
 export const CONNECTION_PATH = 'src/client/connection.ts'
+export const ACTION_REDUCER_PATH = 'src/client/action-events.ts'
 export const HEADLESS_CLIENT_PATH = 'src/client/headless.ts'
 export const RESTART_PROOF_PATH = 'src/client/restart-proof.ts'
 export const SERVER_PATH = 'src/server/main.ts'
 export const PERSISTENCE_PATH = 'src/server/persistence.ts'
 export const PROTOCOL_PATH = 'src/shared/protocol.ts'
+export const ACTION_PATH = 'src/shared/actions.ts'
 export const DEV_SERVER_PATH = 'src/server/dev-server.mjs'
 export const HEADLESS_CLIENT_BUNDLE = 'headless/headless.js'
 export const DEV_SERVICE = 'kei-game-server'
@@ -18,7 +20,9 @@ export const WEBSOCKET_RANGE = '^8.18.3'
 
 export function networkProjectFiles(projectSlug: string): readonly WorkspaceFile[] {
   return Object.freeze([
+    { path: ACTION_PATH, contents: actionSource() },
     { path: PROTOCOL_PATH, contents: protocolSource() },
+    { path: ACTION_REDUCER_PATH, contents: actionReducerSource() },
     { path: CONNECTION_PATH, contents: connectionSource(projectSlug) },
     { path: HEADLESS_CLIENT_PATH, contents: headlessSource() },
     { path: RESTART_PROOF_PATH, contents: restartProofSource() },
@@ -28,8 +32,117 @@ export function networkProjectFiles(projectSlug: string): readonly WorkspaceFile
   ])
 }
 
+function actionSource(): string {
+  return `/** Versioned semantic contract for the training-sentinel authority slice. */
+export const ACTION_VERSION = 1 as const
+export const TRAINING_SENTINEL_ID = 'training-sentinel' as const
+export const ACTION_RANGE = 2
+export const ACTION_ANTICIPATION_TICKS = 2
+export const ACTION_RECOVERY_TICKS = 2
+export const ACTION_COOLDOWN_TICKS = 4
+export const MAX_ACTION_EVENTS = 32
+export const XP_PER_ACTION_CONTACT = 10
+
+export type ActionKind = 'interact' | 'strike'
+export type ActionPhase = 'anticipation' | 'contact' | 'recovery'
+export type ActionOutcome = 'accepted' | 'applied' | 'completed'
+
+export interface ActionIntent {
+  readonly actionVersion: typeof ACTION_VERSION
+  readonly kind: ActionKind
+  readonly targetId: typeof TRAINING_SENTINEL_ID
+}
+
+export interface ActionEvent {
+  readonly actionVersion: typeof ACTION_VERSION
+  readonly eventId: number
+  readonly tick: number
+  readonly actorId: string
+  readonly targetId: typeof TRAINING_SENTINEL_ID
+  readonly kind: ActionKind
+  readonly phase: ActionPhase
+  readonly outcome: ActionOutcome
+  readonly contact: boolean
+}
+
+export interface SentinelState {
+  readonly id: typeof TRAINING_SENTINEL_ID
+  readonly x: number
+  readonly y: number
+  readonly z: number
+  readonly interactions: number
+  readonly strikes: number
+}
+
+export interface EncounterState {
+  readonly sentinel: SentinelState
+  readonly events: readonly ActionEvent[]
+}
+
+export function emptyEncounter(): EncounterState {
+  return {
+    sentinel: { id: TRAINING_SENTINEL_ID, x: 0, y: 0, z: 0, interactions: 0, strikes: 0 },
+    events: [],
+  }
+}
+`
+}
+
+function actionReducerSource(): string {
+  return `import type { ActionEvent } from '../shared/actions.js'
+import type { WorldState } from '../shared/simulation.js'
+
+export interface ActionFeedback {
+  readonly eventId: number
+  readonly phase: ActionEvent['phase']
+  readonly kind: ActionEvent['kind']
+  readonly contact: boolean
+  readonly actorId: string
+  readonly targetId: ActionEvent['targetId']
+}
+
+export interface ActionEventReducer {
+  readonly lastEventId: () => number
+  readonly reduce: (world: WorldState) => readonly ActionFeedback[]
+}
+
+/** Duplicate and older snapshots cannot replay presentation feedback. */
+export function createActionEventReducer(initialEventId = 0): ActionEventReducer {
+  let last = initialEventId
+  return {
+    lastEventId: () => last,
+    reduce(world) {
+      const feedback: ActionFeedback[] = []
+      const ordered = [...world.encounter.events].sort((left, right) => left.eventId - right.eventId)
+      for (const event of ordered) {
+        if (event.eventId <= last) continue
+        last = event.eventId
+        feedback.push({
+          eventId: event.eventId,
+          phase: event.phase,
+          kind: event.kind,
+          contact: event.contact,
+          actorId: event.actorId,
+          targetId: event.targetId,
+        })
+      }
+      return feedback
+    },
+  }
+}
+`
+}
+
 function protocolSource(): string {
-  return `import { levelForXp, type PlayerInput, type WorldState } from './simulation.js'
+  return `import {
+  ACTION_VERSION,
+  MAX_ACTION_EVENTS,
+  TRAINING_SENTINEL_ID,
+  type ActionEvent,
+  type ActionIntent,
+  type EncounterState,
+} from './actions.js'
+import { levelForXp, type PlayerInput, type WorldState } from './simulation.js'
 
 export const PROTOCOL_VERSION = ${GAME_PROTOCOL_VERSION} as const
 export const GAME_PATH = '${GAME_SOCKET_PATH}'
@@ -46,7 +159,13 @@ export interface InputMessage extends PlayerInput {
   readonly type: 'input'
 }
 
-export type ClientMessage = HelloMessage | InputMessage
+export interface ActionMessage extends ActionIntent {
+  readonly v: typeof PROTOCOL_VERSION
+  readonly type: 'action'
+  readonly seq: number
+}
+
+export type ClientMessage = HelloMessage | InputMessage | ActionMessage
 
 export interface WelcomeMessage {
   readonly v: typeof PROTOCOL_VERSION
@@ -75,6 +194,10 @@ export type RefusalCode =
   | 'server_busy'
   | 'resume_refused'
   | 'resume_in_use'
+  | 'action_target_refused'
+  | 'action_too_far'
+  | 'action_busy'
+  | 'action_cooldown'
 
 export interface RefusedMessage {
   readonly v: typeof PROTOCOL_VERSION
@@ -89,13 +212,15 @@ export type DecodeResult =
 
 const AUTHORITY_KEYS = new Set([
   'position', 'x', 'y', 'z', 'tick', 'players', 'xp', 'level', 'progression',
-  'balance', 'balances', 'currency', 'inventory', 'items', 'seed', 'walletSeed',
+  'balance', 'balances', 'currency', 'inventory', 'items', 'seed', 'wallet', 'walletSeed',
   'item', 'mint', 'transfer', 'settlement', 'settlementResult', 'playerId', 'state',
+  'damage', 'health', 'outcome', 'contact', 'eventId', 'actorId', 'phase',
 ])
 const REFUSAL_CODES = new Set<RefusalCode>([
   'protocol_mismatch', 'invalid_message', 'authority_violation',
   'stale_input', 'session_order', 'rate_limited', 'origin_refused', 'server_busy',
-  'resume_refused', 'resume_in_use',
+  'resume_refused', 'resume_in_use', 'action_target_refused', 'action_too_far',
+  'action_busy', 'action_cooldown',
 ])
 const RESUME_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
@@ -150,7 +275,7 @@ export function decodeClientMessage(raw: string): DecodeResult {
       !finiteAxis(value.moveY) ||
       !Number.isSafeInteger(value.buttons) ||
       (value.buttons as number) < 0 ||
-      (value.buttons as number) > 1
+      value.buttons !== 0
     ) {
       return { ok: false, code: 'invalid_message' }
     }
@@ -166,14 +291,83 @@ export function decodeClientMessage(raw: string): DecodeResult {
       },
     }
   }
+  if (value.type === 'action') {
+    if (!exact(value, ['v', 'type', 'seq', 'actionVersion', 'kind', 'targetId'])) {
+      return { ok: false, code: 'invalid_message' }
+    }
+    if (!Number.isSafeInteger(value.seq) || (value.seq as number) < 0 || value.actionVersion !== ACTION_VERSION) {
+      return { ok: false, code: 'invalid_message' }
+    }
+    if (value.kind !== 'interact' && value.kind !== 'strike') {
+      return { ok: false, code: 'invalid_message' }
+    }
+    if (value.targetId !== TRAINING_SENTINEL_ID) {
+      return { ok: false, code: 'action_target_refused' }
+    }
+    return {
+      ok: true,
+      message: {
+        v: PROTOCOL_VERSION,
+        type: 'action',
+        seq: value.seq as number,
+        actionVersion: ACTION_VERSION,
+        kind: value.kind,
+        targetId: TRAINING_SENTINEL_ID,
+      },
+    }
+  }
   return { ok: false, code: 'invalid_message' }
+}
+
+function actionEventOf(value: unknown): ActionEvent | null {
+  const event = record(value)
+  if (
+    event === null ||
+    !exact(event, ['actionVersion', 'eventId', 'tick', 'actorId', 'targetId', 'kind', 'phase', 'outcome', 'contact']) ||
+    event.actionVersion !== ACTION_VERSION ||
+    !Number.isSafeInteger(event.eventId) || (event.eventId as number) < 1 ||
+    !Number.isSafeInteger(event.tick) || (event.tick as number) < 0 ||
+    typeof event.actorId !== 'string' || event.actorId.length < 1 || event.actorId.length > 128 ||
+    event.targetId !== TRAINING_SENTINEL_ID ||
+    (event.kind !== 'interact' && event.kind !== 'strike') ||
+    (event.phase !== 'anticipation' && event.phase !== 'contact' && event.phase !== 'recovery') ||
+    (event.outcome !== 'accepted' && event.outcome !== 'applied' && event.outcome !== 'completed') ||
+    typeof event.contact !== 'boolean' || event.contact !== (event.phase === 'contact')
+  ) return null
+  return event as unknown as ActionEvent
+}
+
+function encounterOf(value: unknown, worldTick: number): EncounterState | null {
+  const encounter = record(value)
+  if (encounter === null || !exact(encounter, ['sentinel', 'events']) || !Array.isArray(encounter.events)) return null
+  const sentinel = record(encounter.sentinel)
+  if (
+    sentinel === null ||
+    !exact(sentinel, ['id', 'x', 'y', 'z', 'interactions', 'strikes']) ||
+    sentinel.id !== TRAINING_SENTINEL_ID ||
+    typeof sentinel.x !== 'number' || !Number.isFinite(sentinel.x) ||
+    typeof sentinel.y !== 'number' || !Number.isFinite(sentinel.y) ||
+    typeof sentinel.z !== 'number' || !Number.isFinite(sentinel.z) ||
+    !Number.isSafeInteger(sentinel.interactions) || (sentinel.interactions as number) < 0 ||
+    !Number.isSafeInteger(sentinel.strikes) || (sentinel.strikes as number) < 0 ||
+    encounter.events.length > MAX_ACTION_EVENTS
+  ) return null
+  const events = encounter.events.map(actionEventOf)
+  if (events.some((event) => event === null || event.tick > worldTick)) return null
+  for (let index = 1; index < events.length; index += 1) {
+    if (
+      (events[index]?.eventId ?? 0) <= (events[index - 1]?.eventId ?? 0) ||
+      (events[index]?.tick ?? 0) < (events[index - 1]?.tick ?? 0)
+    ) return null
+  }
+  return { sentinel: sentinel as unknown as EncounterState['sentinel'], events: events as readonly ActionEvent[] }
 }
 
 function worldOf(value: unknown): WorldState | null {
   const candidate = record(value)
   if (
     candidate === null ||
-    !exact(candidate, ['tick', 'players']) ||
+    !exact(candidate, ['tick', 'players', 'encounter']) ||
     !Number.isSafeInteger(candidate.tick) ||
     (candidate.tick as number) < 0
   ) return null
@@ -192,7 +386,10 @@ function worldOf(value: unknown): WorldState | null {
       position.level !== levelForXp(position.xp as number)
     ) return null
   }
-  return candidate as unknown as WorldState
+  const encounter = encounterOf(candidate.encounter, candidate.tick as number)
+  return encounter === null
+    ? null
+    : { tick: candidate.tick as number, players: players as WorldState['players'], encounter }
 }
 
 export function serverMessageOf(raw: string): ServerMessage | null {
@@ -236,7 +433,8 @@ export function refused(code: RefusalCode): RefusedMessage {
 }
 
 function connectionSource(projectSlug: string): string {
-  return `import {
+  return `import { ACTION_VERSION, type ActionIntent } from '../shared/actions.js'
+import {
   GAME_PATH,
   PROTOCOL_VERSION,
   serverMessageOf,
@@ -244,6 +442,7 @@ function connectionSource(projectSlug: string): string {
   type SnapshotMessage,
 } from '../shared/protocol.js'
 import type { PlayerInput, WorldState } from '../shared/simulation.js'
+import { createActionEventReducer, type ActionFeedback } from './action-events.js'
 
 export const RESUME_STORAGE_KEY = ${JSON.stringify(`kei-game:${projectSlug}:resume-token`)}
 
@@ -260,10 +459,12 @@ export interface GameConnection {
   readonly resumeToken: string
   readonly world: () => WorldState
   readonly sendInput: (input: PlayerInput) => void
+  readonly sendAction: (intent: ActionIntent & { readonly seq: number }) => void
   readonly sendRaw: (value: unknown) => void
   readonly waitForSnapshot: (predicate: (message: SnapshotMessage) => boolean, timeoutMs?: number) => Promise<SnapshotMessage>
   readonly waitForRefusal: (code: RefusalCode, timeoutMs?: number) => Promise<void>
   readonly onSnapshot: (listener: (world: WorldState) => void) => () => void
+  readonly onActionFeedback: (listener: (feedback: readonly ActionFeedback[]) => void) => () => void
   readonly close: () => void
 }
 
@@ -294,6 +495,8 @@ export function connectGame(value: string, resumeToken?: string, timeoutMs = 5_0
       timer: ReturnType<typeof setTimeout>
     }>()
     const listeners = new Set<(world: WorldState) => void>()
+    const actionListeners = new Set<(feedback: readonly ActionFeedback[]) => void>()
+    const actions = createActionEventReducer()
     const opening = setTimeout(() => {
       socket.close()
       reject(new GameConnectionError('connect_timeout', 'The game server did not welcome this client in time.'))
@@ -332,11 +535,16 @@ export function connectGame(value: string, resumeToken?: string, timeoutMs = 5_0
         settled = true
         clearTimeout(opening)
         current = message.snapshot
+        actions.reduce(message.snapshot)
         const connection: GameConnection = {
           playerId: message.playerId,
           resumeToken: activeToken,
           world: () => current as WorldState,
           sendInput: (input) => socket.send(JSON.stringify({ v: PROTOCOL_VERSION, type: 'input', ...input })),
+          sendAction: (intent) => socket.send(JSON.stringify({
+            v: PROTOCOL_VERSION, type: 'action', seq: intent.seq,
+            actionVersion: ACTION_VERSION, kind: intent.kind, targetId: intent.targetId,
+          })),
           sendRaw: (raw) => socket.send(JSON.stringify(raw)),
           waitForSnapshot: (predicate, waitMs = 5_000) => new Promise((waitResolve, waitReject) => {
             const waiter = {
@@ -363,6 +571,7 @@ export function connectGame(value: string, resumeToken?: string, timeoutMs = 5_0
             refusalWaiters.add(waiter)
           }),
           onSnapshot: (listener) => { listeners.add(listener); listener(current as WorldState); return () => listeners.delete(listener) },
+          onActionFeedback: (listener) => { actionListeners.add(listener); return () => actionListeners.delete(listener) },
           close: () => socket.close(1000, 'client done'),
         }
         resolve(connection)
@@ -370,6 +579,8 @@ export function connectGame(value: string, resumeToken?: string, timeoutMs = 5_0
       }
       if (message.type === 'snapshot') {
         current = message.world
+        const feedback = actions.reduce(message.world)
+        if (feedback.length > 0) for (const listener of actionListeners) listener(feedback)
         for (const listener of listeners) listener(message.world)
         for (const waiter of [...snapshotWaiters]) {
           if (!waiter.predicate(message)) continue
@@ -413,6 +624,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
 
+import { ACTION_VERSION, TRAINING_SENTINEL_ID } from '../shared/actions.js'
 import { connectGame, GameConnectionError, type GameConnection } from './connection.js'
 
 const root = mkdtempSync(join(tmpdir(), 'kei-restart-proof-'))
@@ -564,10 +776,16 @@ try {
   if (initial === undefined) throw new Error('first character was not visible')
   first.sendInput({ seq: 1, moveX: 1, moveY: 0, buttons: 0 })
   await second.waitForSnapshot((message) => (message.world.players[first.playerId]?.x ?? initial.x) > initial.x)
-  first.sendInput({ seq: 2, moveX: 0, moveY: 0, buttons: 1 })
+  first.sendAction({
+    seq: 2, actionVersion: ACTION_VERSION, kind: 'interact', targetId: TRAINING_SENTINEL_ID,
+  })
   const progressed = await second.waitForSnapshot((message) => (message.world.players[first.playerId]?.xp ?? 0) > 0)
-  const authored = progressed.world.players[first.playerId]
+  const settled = await second.waitForSnapshot((message) => message.world.tick >= progressed.world.tick + 4)
+  const authored = settled.world.players[first.playerId]
   if (authored === undefined) throw new Error('progressed character disappeared')
+  if (authored.xp !== 10 || settled.world.encounter.sentinel.interactions !== 1) {
+    throw new Error('action contact did not mutate progression exactly once before restart')
+  }
   const expected = { playerId: first.playerId, ...authored }
   const resumeToken = first.resumeToken
   first.close()
@@ -585,9 +803,9 @@ try {
   const beforeForgeryTick = resumed.world().tick
   const refusal = resumed.waitForRefusal('authority_violation')
   resumed.sendRaw({
-    v: 2, type: 'input', seq: 3, moveX: 0, moveY: 0, buttons: 0,
-    position: { x: 999, y: 999, z: 999 }, xp: 999999, level: 999,
-    progression: { xp: 999999 }, inventory: ['forged'], balance: 999999,
+    v: 2, type: 'action', seq: 3, actionVersion: 1, kind: 'strike', targetId: TRAINING_SENTINEL_ID,
+    actorId: resumed.playerId, damage: 999, outcome: 'won', xp: 999999, level: 999,
+    progression: { xp: 999999 }, inventory: ['forged'], balance: 999999, wallet: { seed: 'forged' },
   })
   await refusal
   const afterForgery = await resumed.waitForSnapshot((message) => message.world.tick > beforeForgeryTick)
@@ -608,8 +826,22 @@ try {
   const columnStatement = database.prepare('PRAGMA table_info(characters)')
   const columns = columnStatement.all().map((row) => String((row as { name: unknown }).name))
   columnStatement.finalize()
+  const guardColumnStatement = database.prepare('PRAGMA table_info(action_guards)')
+  const guardColumns = guardColumnStatement.all().map((row) => String((row as { name: unknown }).name))
+  guardColumnStatement.finalize()
+  const tableStatement = database.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+  )
+  const tables = tableStatement.all().map((row) => String((row as { name: unknown }).name))
+  tableStatement.finalize()
   const forbidden = ['balance', 'currency', 'item', 'inventory', 'seed', 'resume_token']
-  if (columns.some((column) => forbidden.some((word) => column.toLowerCase().includes(word)))) {
+  if (
+    JSON.stringify(tables) !== JSON.stringify(['action_guards', 'characters', 'world_metadata']) ||
+    JSON.stringify(guardColumns) !== JSON.stringify(['player_id', 'block_until']) ||
+    [...tables, ...columns, ...guardColumns].some((name) =>
+      forbidden.some((word) => name.toLowerCase().includes(word)),
+    )
+  ) {
     throw new Error('world database contains a forbidden ownership column')
   }
   const countStatement = database.prepare('SELECT COUNT(*) AS count FROM characters')
@@ -626,6 +858,7 @@ try {
   evidence = {
     event: 'restart_proof', protocol: 2, playerId: expected.playerId,
     restoredExactly: true, progressionAuthored: expected.xp > 0,
+    actionContactPersistedOnce: expected.xp === 10,
     randomTokenRefused: true, malformedTokenRefused: true, duplicateTokenRefused: true,
     forgeryRefused: true, forgeryNotPersisted: true, plaintextTokenAbsent: true,
     durableCharacters: count.count,
@@ -657,7 +890,10 @@ if (failure !== null) {
 }
 
 function headlessSource(): string {
-  return `import { connectGame } from './connection.js'
+  return `import { ACTION_COOLDOWN_TICKS, ACTION_VERSION, TRAINING_SENTINEL_ID, type ActionEvent } from '../shared/actions.js'
+import type { WorldState } from '../shared/simulation.js'
+import { createActionEventReducer } from './action-events.js'
+import { connectGame } from './connection.js'
 
 const endpoint = process.argv[2]
 if (endpoint === undefined) {
@@ -666,6 +902,13 @@ if (endpoint === undefined) {
 }
 
 const output = (value: unknown): void => process.stdout.write(JSON.stringify(value) + '\\n')
+const eventOf = (world: WorldState, actorId: string, kind: ActionEvent['kind'], phase: ActionEvent['phase']): ActionEvent | undefined =>
+  world.encounter.events.find((event) => event.actorId === actorId && event.kind === kind && event.phase === phase)
+const waitForActionGuard = async (connection: Awaited<ReturnType<typeof connectGame>>): Promise<'action_busy' | 'action_cooldown'> =>
+  Promise.any([
+    connection.waitForRefusal('action_busy').then(() => 'action_busy' as const),
+    connection.waitForRefusal('action_cooldown').then(() => 'action_cooldown' as const),
+  ])
 
 try {
   const first = await connectGame(endpoint)
@@ -689,6 +932,176 @@ try {
     (message.world.players[second.playerId]?.z ?? secondStart.z) > secondStart.z,
   )
 
+  const xpBeforeActions = first.world().players[first.playerId]?.xp ?? 0
+  const sentinelBeforeActions = first.world().encounter.sentinel
+  const ownContactWait = first.waitForSnapshot((message) =>
+    eventOf(message.world, first.playerId, 'interact', 'contact') !== undefined,
+  )
+  const remoteContactWait = second.waitForSnapshot((message) =>
+    eventOf(message.world, first.playerId, 'interact', 'contact') !== undefined,
+  )
+  const remoteRecoveryWait = second.waitForSnapshot((message) =>
+    eventOf(message.world, first.playerId, 'interact', 'recovery') !== undefined,
+  )
+  const busyRefusal = first.waitForRefusal('action_busy')
+  first.sendAction({
+    seq: 2, actionVersion: ACTION_VERSION, kind: 'interact', targetId: TRAINING_SENTINEL_ID,
+  })
+  first.sendAction({
+    seq: 3, actionVersion: ACTION_VERSION, kind: 'strike', targetId: TRAINING_SENTINEL_ID,
+  })
+  await busyRefusal
+  const [ownContact, remoteContact, remoteRecovery] = await Promise.all([
+    ownContactWait, remoteContactWait, remoteRecoveryWait,
+  ])
+  const ownInteractEvent = eventOf(ownContact.world, first.playerId, 'interact', 'contact')
+  const remoteInteractEvent = eventOf(remoteContact.world, first.playerId, 'interact', 'contact')
+  if (
+    ownInteractEvent === undefined || remoteInteractEvent === undefined ||
+    JSON.stringify(ownInteractEvent) !== JSON.stringify(remoteInteractEvent)
+  ) throw new Error('two clients did not observe the same authored contact event')
+  const interacted = remoteContact.world.players[first.playerId]
+  if (
+    interacted?.xp !== xpBeforeActions + 10 ||
+    remoteContact.world.encounter.sentinel.interactions !== sentinelBeforeActions.interactions + 1 ||
+    remoteContact.world.encounter.sentinel.strikes !== sentinelBeforeActions.strikes
+  ) throw new Error('interact did not mutate progression and sentinel exactly once at contact')
+
+  const cooldownRefusal = first.waitForRefusal('action_cooldown')
+  first.sendAction({
+    seq: 4, actionVersion: ACTION_VERSION, kind: 'strike', targetId: TRAINING_SENTINEL_ID,
+  })
+  await cooldownRefusal
+  const recoveryEvent = eventOf(remoteRecovery.world, first.playerId, 'interact', 'recovery')
+  if (recoveryEvent === undefined) throw new Error('interact recovery was not published')
+  await first.waitForSnapshot((message) => message.world.tick >= recoveryEvent.tick + 4)
+
+  const strikeContactWait = first.waitForSnapshot((message) =>
+    eventOf(message.world, first.playerId, 'strike', 'contact') !== undefined,
+  )
+  const remoteStrikeWait = second.waitForSnapshot((message) =>
+    eventOf(message.world, first.playerId, 'strike', 'contact') !== undefined,
+  )
+  first.sendAction({
+    seq: 5, actionVersion: ACTION_VERSION, kind: 'strike', targetId: TRAINING_SENTINEL_ID,
+  })
+  const [strikeContact, remoteStrike] = await Promise.all([strikeContactWait, remoteStrikeWait])
+  const strikeEvent = eventOf(strikeContact.world, first.playerId, 'strike', 'contact')
+  const remoteStrikeEvent = eventOf(remoteStrike.world, first.playerId, 'strike', 'contact')
+  if (
+    strikeEvent === undefined || remoteStrikeEvent === undefined ||
+    JSON.stringify(strikeEvent) !== JSON.stringify(remoteStrikeEvent)
+  ) throw new Error('remote client did not observe the same strike contact')
+
+  const reducer = createActionEventReducer()
+  const firstFeedback = reducer.reduce(ownContact.world)
+  const duplicateFeedback = reducer.reduce(ownContact.world)
+  const laterFeedback = reducer.reduce(strikeContact.world)
+  const outOfOrderFeedback = reducer.reduce(remoteContact.world)
+  if (
+    firstFeedback.length === 0 || laterFeedback.length === 0 ||
+    duplicateFeedback.length !== 0 || outOfOrderFeedback.length !== 0
+  ) throw new Error('action reducer replayed duplicate or out-of-order feedback')
+
+  const afterContact = await second.waitForSnapshot((message) => message.world.tick >= strikeContact.world.tick + 3)
+  if (
+    afterContact.world.players[first.playerId]?.xp !== xpBeforeActions + 20 ||
+    afterContact.world.encounter.sentinel.interactions !== sentinelBeforeActions.interactions + 1 ||
+    afterContact.world.encounter.sentinel.strikes !== sentinelBeforeActions.strikes + 1
+  ) throw new Error('a completed action applied contact progression more than once')
+
+  const reconnecting = await connectGame(endpoint)
+  await second.waitForSnapshot((message) => message.world.players[reconnecting.playerId] !== undefined)
+  const reconnectStart = second.world().encounter.sentinel
+  const reconnectContactWait = second.waitForSnapshot((message) =>
+    eventOf(message.world, reconnecting.playerId, 'interact', 'contact') !== undefined,
+  )
+  reconnecting.sendAction({
+    seq: 1, actionVersion: ACTION_VERSION, kind: 'interact', targetId: TRAINING_SENTINEL_ID,
+  })
+  const reconnectContact = await reconnectContactWait
+  const reconnectContactEvent = eventOf(reconnectContact.world, reconnecting.playerId, 'interact', 'contact')
+  if (
+    reconnectContactEvent === undefined ||
+    reconnectContact.world.players[reconnecting.playerId]?.xp !== 10 ||
+    reconnectContact.world.encounter.sentinel.interactions !== reconnectStart.interactions + 1
+  ) throw new Error('reconnect probe contact was not authored exactly once')
+
+  reconnecting.close()
+  await second.waitForSnapshot((message) => message.world.players[reconnecting.playerId] === undefined)
+  const duringRecovery = await connectGame(endpoint, reconnecting.resumeToken)
+  const recoveryAtResume = eventOf(duringRecovery.world(), reconnecting.playerId, 'interact', 'recovery')
+  let afterContactRefusal: 'action_busy' | 'action_cooldown' | 'window_elapsed' = 'window_elapsed'
+  if (
+    recoveryAtResume === undefined ||
+    duringRecovery.world().tick + 1 < recoveryAtResume.tick + ACTION_COOLDOWN_TICKS
+  ) {
+    const recoveryRefusal = waitForActionGuard(duringRecovery)
+    duringRecovery.sendAction({
+      seq: 2, actionVersion: ACTION_VERSION, kind: 'strike', targetId: TRAINING_SENTINEL_ID,
+    })
+    afterContactRefusal = await recoveryRefusal
+  }
+  const reconnectRecovery = await second.waitForSnapshot((message) =>
+    message.world.encounter.events.some((event) =>
+      event.actorId === reconnecting.playerId && event.kind === 'interact' && event.phase === 'recovery' &&
+      event.eventId > reconnectContactEvent.eventId,
+    ),
+  )
+  if (
+    reconnectRecovery.world.players[reconnecting.playerId]?.xp !== 10 ||
+    reconnectRecovery.world.encounter.sentinel.interactions !== reconnectStart.interactions + 1
+  ) throw new Error('disconnect/resume replayed contact progression during recovery')
+
+  duringRecovery.close()
+  await second.waitForSnapshot((message) => message.world.players[reconnecting.playerId] === undefined)
+  const duringCooldown = await connectGame(endpoint, reconnecting.resumeToken)
+  const cooldownRecovery = eventOf(duringCooldown.world(), reconnecting.playerId, 'interact', 'recovery')
+  let afterRecoveryRefusal: 'action_cooldown' | 'window_elapsed' = 'window_elapsed'
+  if (
+    cooldownRecovery !== undefined &&
+    duringCooldown.world().tick + 1 < cooldownRecovery.tick + ACTION_COOLDOWN_TICKS
+  ) {
+    const reconnectCooldownRefusal = duringCooldown.waitForRefusal('action_cooldown')
+    duringCooldown.sendAction({
+      seq: 3, actionVersion: ACTION_VERSION, kind: 'strike', targetId: TRAINING_SENTINEL_ID,
+    })
+    await reconnectCooldownRefusal
+    afterRecoveryRefusal = 'action_cooldown'
+  }
+  if (
+    duringCooldown.world().players[reconnecting.playerId]?.xp !== 10 ||
+    duringCooldown.world().encounter.sentinel.interactions !== reconnectStart.interactions + 1
+  ) throw new Error('disconnect/resume replayed contact progression during cooldown')
+  duringCooldown.close()
+
+  const far = await connectGame(endpoint)
+  let farPosition = far.world().players[far.playerId]
+  if (farPosition === undefined) throw new Error('too-far probe player was missing')
+  for (let seq = 1; seq <= 12; seq += 1) {
+    const priorX = farPosition.x
+    far.sendInput({ seq, moveX: 1, moveY: 0, buttons: 0 })
+    const moved = await far.waitForSnapshot((message) => (message.world.players[far.playerId]?.x ?? priorX) > priorX)
+    farPosition = moved.world.players[far.playerId]
+    if (farPosition === undefined) throw new Error('too-far probe player disappeared')
+  }
+  if (Math.hypot(farPosition.x, farPosition.y, farPosition.z) <= 2) {
+    throw new Error('the bounded too-far probe did not reach outside action range')
+  }
+  const beforeFar = second.world().encounter.sentinel
+  const tooFarRefusal = far.waitForRefusal('action_too_far')
+  far.sendAction({
+    seq: 13, actionVersion: ACTION_VERSION, kind: 'interact', targetId: TRAINING_SENTINEL_ID,
+  })
+  await tooFarRefusal
+  const afterFar = await second.waitForSnapshot((message) => message.world.tick > afterContact.world.tick)
+  if (
+    afterFar.world.players[far.playerId]?.xp !== 0 ||
+    afterFar.world.encounter.sentinel.interactions !== beforeFar.interactions ||
+    afterFar.world.encounter.sentinel.strikes !== beforeFar.strikes
+  ) throw new Error('a refused too-far action mutated authoritative progression')
+  far.close()
+
   const beforeStale = first.world().players[first.playerId]
   const staleRefusal = first.waitForRefusal('stale_input')
   first.sendInput({ seq: 1, moveX: -1, moveY: 0, buttons: 0 })
@@ -700,12 +1113,21 @@ try {
   }
 
   const attacker = await connectGame(endpoint)
+  const beforeForgery = first.world()
   const authorityRefusal = attacker.waitForRefusal('authority_violation')
-  attacker.sendRaw({ v: 2, type: 'teleport', position: { x: 999, y: 999, z: 999 } })
+  attacker.sendRaw({
+    v: 2, type: 'action', seq: 1, actionVersion: 1, kind: 'strike', targetId: TRAINING_SENTINEL_ID,
+    actorId: first.playerId, damage: 999, outcome: 'won', progression: { xp: 999999 },
+    balance: 999999, inventory: ['forged'], wallet: { seed: 'forged' },
+  })
   await authorityRefusal
   const afterAttack = await first.waitForSnapshot((message) => message.world.tick > stopped.world.tick)
-  if (Object.values(afterAttack.world.players).some((player) => player.x === 999 || player.y === 999 || player.z === 999)) {
-    throw new Error('an authority-forging message changed the world')
+  if (
+    afterAttack.world.players[first.playerId]?.xp !== beforeForgery.players[first.playerId]?.xp ||
+    afterAttack.world.encounter.sentinel.interactions !== beforeForgery.encounter.sentinel.interactions ||
+    afterAttack.world.encounter.sentinel.strikes !== beforeForgery.encounter.sentinel.strikes
+  ) {
+    throw new Error('an authority-forging action changed progression or encounter state')
   }
 
   const flooder = await connectGame(endpoint)
@@ -731,6 +1153,18 @@ try {
     authorityViolationRefused: true,
     rateLimited: true,
     disconnectObserved: true,
+    interactAccepted: true,
+    strikeContactAccepted: true,
+    remoteSemanticEventMatched: true,
+    tooFarRefusedWithoutMutation: true,
+    cooldownRefusedWithoutMutation: true,
+    busyPhaseRefusedWithoutMutation: true,
+    duplicateAndOutOfOrderDeduped: true,
+    noDoubleProgression: true,
+    reconnectWithoutDoubleProgression: true,
+    reconnectAfterContactRefusal: afterContactRefusal,
+    reconnectAfterRecoveryRefusal: afterRecoveryRefusal,
+    forgedActionAuthorityRefused: true,
   })
 } catch (error) {
   process.stderr.write(JSON.stringify({
@@ -751,7 +1185,7 @@ import { Database } from 'bun:sqlite'
 
 import { levelForXp, type PlayerState } from '../shared/simulation.js'
 
-export const WORLD_SCHEMA_VERSION = 1
+export const WORLD_SCHEMA_VERSION = 2
 export const DEFAULT_WORLD_DB = '.kei-world/world.sqlite'
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
@@ -817,6 +1251,10 @@ function prepareSchema(database: Database): void {
         level INTEGER NOT NULL CHECK (level >= 1),
         updated_at INTEGER NOT NULL
       ) STRICT\`)
+      database.exec(\`CREATE TABLE action_guards (
+        player_id TEXT PRIMARY KEY NOT NULL REFERENCES characters(player_id) ON DELETE CASCADE,
+        block_until INTEGER NOT NULL CHECK (block_until >= 0)
+      ) STRICT\`)
       database.run('INSERT INTO world_metadata (key, value) VALUES (?, ?)', [
         'schema_version', String(WORLD_SCHEMA_VERSION),
       ])
@@ -828,7 +1266,7 @@ function prepareSchema(database: Database): void {
     return
   }
 
-  if (!tables.includes('world_metadata') || !tables.includes('characters')) {
+  if (!tables.includes('world_metadata')) {
     throw new PersistenceError('schema_invalid', 'The world database is missing its versioned schema.')
   }
   const version = row(database, 'SELECT value FROM world_metadata WHERE key = ?', 'schema_version') as
@@ -837,9 +1275,13 @@ function prepareSchema(database: Database): void {
   if (version === null || version.value !== String(WORLD_SCHEMA_VERSION)) {
     throw new PersistenceError('schema_version_unsupported', 'The world database schema version is not supported.')
   }
+  if (!tables.includes('characters') || !tables.includes('action_guards')) {
+    throw new PersistenceError('schema_invalid', 'The world database is missing its versioned schema.')
+  }
   if (
     !exactColumns(database, 'world_metadata', ['key', 'value']) ||
-    !exactColumns(database, 'characters', ['player_id', 'resume_hash', 'x', 'y', 'z', 'xp', 'level', 'updated_at'])
+    !exactColumns(database, 'characters', ['player_id', 'resume_hash', 'x', 'y', 'z', 'xp', 'level', 'updated_at']) ||
+    !exactColumns(database, 'action_guards', ['player_id', 'block_until'])
   ) {
     throw new PersistenceError('schema_invalid', 'The world database schema does not match its declared version.')
   }
@@ -942,6 +1384,67 @@ export class CharacterStore {
     }
   }
 
+  saveContact(character: CharacterRecord, blockUntil: number): void {
+    if (character.level !== levelForXp(character.xp) || !Number.isSafeInteger(blockUntil) || blockUntil < 0) {
+      throw new PersistenceError('character_invalid', 'The shard tried to persist invalid contact authority.')
+    }
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const result = this.database.run(\`UPDATE characters
+        SET x = ?, y = ?, z = ?, xp = ?, level = ?, updated_at = ?
+        WHERE player_id = ?\`, [
+        character.x, character.y, character.z, character.xp, character.level,
+        character.updatedAt, character.playerId,
+      ])
+      if (result.changes !== 1) {
+        throw new PersistenceError('character_missing', 'The shard tried to save contact for an unknown character.')
+      }
+      this.database.run(\`INSERT INTO action_guards (player_id, block_until) VALUES (?, ?)
+        ON CONFLICT(player_id) DO UPDATE SET block_until = excluded.block_until\`, [character.playerId, blockUntil])
+      this.database.exec('COMMIT')
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  actionGuard(playerId: string): number | null {
+    const found = row(this.database, 'SELECT block_until FROM action_guards WHERE player_id = ?', playerId) as
+      | { block_until: unknown }
+      | null
+    if (found === null || typeof found.block_until !== 'number' ||
+      !Number.isSafeInteger(found.block_until) || found.block_until < 0) return null
+    return found.block_until
+  }
+
+  clearExpiredActionGuards(now: number, protectedPlayerIds: readonly string[] = []): void {
+    if (!Number.isSafeInteger(now) || now < 0) return
+    const protectedIds = new Set(protectedPlayerIds)
+    const statement = this.database.prepare('SELECT player_id FROM action_guards WHERE block_until <= ?')
+    let expired: readonly string[]
+    try {
+      expired = statement.all(now)
+        .map((value) => String((value as { player_id: unknown }).player_id))
+        .filter((playerId) => !protectedIds.has(playerId))
+    } finally {
+      statement.finalize()
+    }
+    if (expired.length === 0) return
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      for (const playerId of expired) this.database.run('DELETE FROM action_guards WHERE player_id = ?', playerId)
+      this.database.exec('COMMIT')
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  actionGuardCount(): number {
+    const found = row(this.database, 'SELECT COUNT(*) AS count FROM action_guards') as { count: number }
+    return found.count
+  }
+
   close(): void {
     if (this.#closed) return
     this.#closed = true
@@ -953,11 +1456,25 @@ export class CharacterStore {
 
 function serverSource(): string {
   return `import {
+  ACTION_ANTICIPATION_TICKS,
+  ACTION_COOLDOWN_TICKS,
+  ACTION_RANGE,
+  ACTION_RECOVERY_TICKS,
+  ACTION_VERSION,
+  MAX_ACTION_EVENTS,
+  TRAINING_SENTINEL_ID,
+  XP_PER_ACTION_CONTACT,
+  type ActionEvent,
+  type ActionIntent,
+  type ActionKind,
+} from '../shared/actions.js'
+import {
   emptyWorld,
   joinWorld,
   leaveWorld,
   STEP_MS,
   step,
+  levelForXp,
   type PlayerInput,
   type WorldState,
 } from '../shared/simulation.js'
@@ -967,34 +1484,89 @@ export type JoinResult =
   | { readonly ok: true; readonly playerId: string; readonly resumeToken?: string }
   | { readonly ok: false; readonly code: 'resume_refused' | 'resume_in_use' }
 
+export type ActionResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly code: 'action_target_refused' | 'action_too_far' | 'action_busy' | 'action_cooldown' }
+
 export interface Shard {
   readonly state: WorldState
+  readonly authorityCounts: {
+    readonly active: number
+    readonly cooldowns: number
+    readonly restartGuards: number
+    readonly durableGuards: number
+  }
   readonly join: (resumeToken?: string) => JoinResult
   readonly leave: (playerId: string) => void
   readonly advance: (elapsedMs: number) => void
   readonly enqueue: (playerId: string, input: PlayerInput) => void
+  readonly requestAction: (playerId: string, intent: ActionIntent) => ActionResult
   readonly character: (playerId: string) => CharacterRecord | null
   readonly close: () => void
 }
 
-export function createShard(store = new CharacterStore()): Shard {
+export function createShard(store = new CharacterStore(), now = Date.now): Shard {
   let state: WorldState = emptyWorld(false)
   let accumulator = 0
   let pending: Record<string, PlayerInput> = {}
+  let nextEventId = 1
+  const active = new Map<string, {
+    readonly kind: ActionKind
+    readonly contactTick: number
+    readonly recoveryTick: number
+    contactApplied: boolean
+  }>()
+  const cooldownUntil = new Map<string, number>()
+  const restartGuardUntil = new Map<string, number>()
   const playerState = (character: CharacterRecord) => ({
     x: character.x, y: character.y, z: character.z, xp: character.xp, level: character.level,
   })
 
   const save = (playerIds: readonly string[]): void => {
-    const now = Date.now()
+    const savedAt = now()
     store.saveDirty(playerIds.flatMap((playerId) => {
       const player = state.players[playerId]
-      return player === undefined ? [] : [{ playerId, ...player, updatedAt: now }]
+      return player === undefined ? [] : [{ playerId, ...player, updatedAt: savedAt }]
     }))
+  }
+
+  const appendEvent = (
+    actorId: string,
+    kind: ActionKind,
+    phase: ActionEvent['phase'],
+    outcome: ActionEvent['outcome'],
+  ): void => {
+    const event: ActionEvent = {
+      actionVersion: ACTION_VERSION,
+      eventId: nextEventId,
+      tick: state.tick,
+      actorId,
+      targetId: TRAINING_SENTINEL_ID,
+      kind,
+      phase,
+      outcome,
+      contact: phase === 'contact',
+    }
+    nextEventId += 1
+    state = {
+      ...state,
+      encounter: {
+        ...state.encounter,
+        events: [...state.encounter.events, event].slice(-MAX_ACTION_EVENTS),
+      },
+    }
   }
 
   return {
     get state() { return state },
+    get authorityCounts() {
+      return {
+        active: active.size,
+        cooldowns: cooldownUntil.size,
+        restartGuards: restartGuardUntil.size,
+        durableGuards: store.actionGuardCount(),
+      }
+    },
     join(resumeToken) {
       if (resumeToken === undefined) {
         const created = store.createCharacter()
@@ -1004,29 +1576,102 @@ export function createShard(store = new CharacterStore()): Shard {
       const restored = store.findByResumeToken(resumeToken)
       if (restored === null) return { ok: false, code: 'resume_refused' }
       if (state.players[restored.playerId] !== undefined) return { ok: false, code: 'resume_in_use' }
+      const durableGuard = store.actionGuard(restored.playerId)
+      if (durableGuard !== null && durableGuard > now()) restartGuardUntil.set(restored.playerId, durableGuard)
       state = joinWorld(state, restored.playerId, playerState(restored))
       return { ok: true, playerId: restored.playerId }
     },
-    leave(playerId) { state = leaveWorld(state, playerId); delete pending[playerId] },
+    leave(playerId) {
+      state = leaveWorld(state, playerId)
+      delete pending[playerId]
+    },
     advance(elapsedMs) {
       accumulator += elapsedMs
       while (accumulator >= STEP_MS) {
         const before = state
         state = step(state, pending, STEP_MS / 1000)
-        const dirty = Object.keys(pending).filter((playerId) => {
+        const dirty = new Set(Object.keys(pending).filter((playerId) => {
           const prior = before.players[playerId]
           const next = state.players[playerId]
           return prior !== undefined && next !== undefined && (
             prior.x !== next.x || prior.y !== next.y || prior.z !== next.z ||
             prior.xp !== next.xp || prior.level !== next.level
           )
-        })
+        }))
         pending = {}
-        save(dirty)
+        const wallNow = now()
+        store.clearExpiredActionGuards(wallNow, [...active.keys(), ...cooldownUntil.keys()])
+        for (const [actorId, until] of restartGuardUntil) {
+          if (until <= wallNow) restartGuardUntil.delete(actorId)
+        }
+        for (const [actorId, until] of cooldownUntil) {
+          if (until <= state.tick) cooldownUntil.delete(actorId)
+        }
+        for (const [actorId, action] of [...active]) {
+          if (!action.contactApplied && state.tick >= action.contactTick) {
+            const connected = state.players[actorId]
+            const durable = connected ?? store.character(actorId)
+            if (durable === null) {
+              active.delete(actorId)
+              continue
+            }
+            const xp = durable.xp + XP_PER_ACTION_CONTACT
+            const progressed = {
+              x: durable.x, y: durable.y, z: durable.z, xp, level: levelForXp(xp),
+            }
+            const durableBlockUntil = Math.ceil(
+              wallNow + (ACTION_RECOVERY_TICKS + ACTION_COOLDOWN_TICKS) * STEP_MS,
+            )
+            store.saveContact({ ...progressed, playerId: actorId, updatedAt: wallNow }, durableBlockUntil)
+            const sentinel = state.encounter.sentinel
+            state = {
+              ...state,
+              players: connected === undefined ? state.players : { ...state.players, [actorId]: progressed },
+              encounter: {
+                ...state.encounter,
+                sentinel: {
+                  ...sentinel,
+                  interactions: sentinel.interactions + (action.kind === 'interact' ? 1 : 0),
+                  strikes: sentinel.strikes + (action.kind === 'strike' ? 1 : 0),
+                },
+              },
+            }
+            action.contactApplied = true
+            dirty.delete(actorId)
+            appendEvent(actorId, action.kind, 'contact', 'applied')
+          }
+          if (action.contactApplied && state.tick >= action.recoveryTick) {
+            appendEvent(actorId, action.kind, 'recovery', 'completed')
+            active.delete(actorId)
+            cooldownUntil.set(actorId, state.tick + ACTION_COOLDOWN_TICKS)
+          }
+        }
+        save([...dirty])
         accumulator -= STEP_MS
       }
     },
     enqueue(playerId, input) { if (state.players[playerId] !== undefined) pending[playerId] = input },
+    requestAction(playerId, intent) {
+      const player = state.players[playerId]
+      if (player === undefined || intent.targetId !== TRAINING_SENTINEL_ID) {
+        return { ok: false, code: 'action_target_refused' }
+      }
+      if (active.has(playerId)) return { ok: false, code: 'action_busy' }
+      if ((cooldownUntil.get(playerId) ?? 0) > state.tick) return { ok: false, code: 'action_cooldown' }
+      if ((restartGuardUntil.get(playerId) ?? 0) > now()) return { ok: false, code: 'action_cooldown' }
+      const sentinel = state.encounter.sentinel
+      const distance = Math.hypot(player.x - sentinel.x, player.y - sentinel.y, player.z - sentinel.z)
+      if (!Number.isFinite(distance) || distance > ACTION_RANGE) return { ok: false, code: 'action_too_far' }
+      const contactTick = state.tick + ACTION_ANTICIPATION_TICKS
+      active.set(playerId, {
+        kind: intent.kind,
+        contactTick,
+        recoveryTick: contactTick + ACTION_RECOVERY_TICKS,
+        contactApplied: false,
+      })
+      appendEvent(playerId, intent.kind, 'anticipation', 'accepted')
+      return { ok: true }
+    },
     character(playerId) { return store.character(playerId) },
     close() { store.close() },
   }
@@ -1222,7 +1867,14 @@ sockets.on('connection', (socket, request) => {
     if (!session.welcomed) { send(session, refused('session_order')); socket.close(4002, 'session_order'); return }
     if (message.seq <= session.lastSeq) { send(session, refused('stale_input')); return }
     session.lastSeq = message.seq
-    if (session.playerId !== null) shard.enqueue(session.playerId, message)
+    if (session.playerId === null) { send(session, refused('session_order')); return }
+    if (message.type === 'action') {
+      const result = shard.requestAction(session.playerId, message)
+      if (!result.ok) { send(session, refused(result.code)); return }
+      for (const peer of sessions) if (peer.welcomed) snapshot(peer)
+      return
+    }
+    shard.enqueue(session.playerId, message)
   })
   socket.on('close', () => {
     clearTimeout(helloTimeout)

@@ -223,8 +223,9 @@ bun run restart-proof
 \`\`\`
 
 The browser keeps its opaque resume capability under a project-namespaced
-\`localStorage\` key. Press **E** to request the fixed server-authored progression
-interaction. Losing the token starts a new character; account recovery is not
+\`localStorage\` key. Press **E** to request the fixed server-authored interaction
+with the training sentinel; press **Space** to request its strike. Both travel
+through the version-1 action contract. Losing the token starts a new character; account recovery is not
 part of this construction slice.
 
 \`bun run build\` produces the same bundle without serving it, and prints one JSON
@@ -244,6 +245,13 @@ the generated headless scenario proves two clients observe each other's movement
 Stale input and attempts to author position, progression, or economic state are
 refused without changing memory, disk, or player-custodied assets.
 
+\`src/shared/actions.ts\` and \`src/server/main.ts\` implement the first runtime
+criterion-9 authority slice: exact interact/strike intent, distance/phase/cooldown
+validation, server-authored anticipation/contact/recovery events, and progression
+applied exactly once at contact. The bounded event timeline is identical in every
+authoritative snapshot. \`src/client/action-events.ts\` deduplicates it so duplicate
+or out-of-order snapshots cannot replay presentation hooks.
+
 The project also owns a player-custodied Kei proof. Run \`bun run economy:check\`:
 it creates one private \`Kei.mock()\` chain, provisions open-transfer,
 one-way-purchase GOLD and a Founder's Sword directly to two player wallets,
@@ -255,13 +263,15 @@ The authoritative game server has no Kei import, key, balance, inventory, or
 settlement path. The mock provisioner is a separate test fixture; production
 provisioning accepts an injected issuer context and contains no seed.
 
-The project also owns the version-1 contract for a future recordable first
+The project also owns the version-1 presentation contract for a recordable first
 encounter. Its recipe, semantic action/effect timelines, quality tiers, and asset
 requirements live under \`kei-mmo/polish/\`; the canonical source registry is
 \`kei-mmo/content/sources.json\`. No production asset is admitted in this
 contract-only slice, and the primitive construction renderer is not wired to
 the recipe. Consequently \`bun run polish:check\`
-deliberately exits nonzero with \`polish_assets_pending\`; this is not criterion 9.
+deliberately exits nonzero with \`polish_assets_pending\`. The runtime authority
+slice now exists, but recordable art, motion, SFX, VFX, camera, UI, and capture do
+not, so criterion 9 and create-kei-game issue 17 remain open.
 
 \`src/server/persistence.ts\` stores only
 hashed resume capabilities, position, XP, level, and update time in the versioned
@@ -286,7 +296,8 @@ your repository, not a contract.
 | Path | What lives here |
 |---|---|
 | \`src/shared/\` | The simulation and versioned snapshot protocol. Imported by both sides. |
-| \`src/client/\` | Rendering plus one shared browser/headless connection path. Owns no authority. |
+| \`src/shared/actions.ts\` | Version-1 action intent and server-authored semantic event contract. |
+| \`src/client/\` | Rendering, a replay-safe action-event reducer, and one shared browser/headless connection path. Owns no authority. |
 | \`src/server/\` | Authoritative tick plus versioned SQLite character persistence. No Kei import, wallet, balance, item, or settlement path. |
 | \`src/economy/\` | Currency/item declarations, separate issuer provisioning, and player-signed atomic trade helpers. |
 | \`${ECONOMY_TEST_PATH}\` | The private mock-chain custody, mismatch, and settlement proof. |
@@ -506,6 +517,8 @@ function simulation(): string {
  * passed in, or the replay tests stop meaning anything.
  */
 
+import { emptyEncounter, type EncounterState } from './actions.js'
+
 export interface PlayerInput {
   /** Monotonic per player. The server echoes the last one it applied. */
   readonly seq: number
@@ -525,6 +538,7 @@ export interface PlayerState {
 export interface WorldState {
   readonly tick: number
   readonly players: Readonly<Record<string, PlayerState>>
+  readonly encounter: EncounterState
 }
 
 export const TICK_HZ = 20
@@ -535,8 +549,6 @@ export const LOCAL_PLAYER = 'local'
 
 /** Metres per second. A placeholder, and the first number the plan will argue with. */
 export const MOVE_SPEED = 4
-export const INTERACT_BUTTON = 1
-export const XP_PER_INTERACTION = 10
 export const XP_PER_LEVEL = 10
 
 /** Progression is derived by the server; clients never submit XP or levels. */
@@ -545,7 +557,11 @@ export function levelForXp(xp: number): number {
 }
 
 export function emptyWorld(withLocal = true): WorldState {
-  return { tick: 0, players: withLocal ? { [LOCAL_PLAYER]: { x: 0, y: 0, z: 0, xp: 0, level: 1 } } : {} }
+  return {
+    tick: 0,
+    players: withLocal ? { [LOCAL_PLAYER]: { x: 0, y: 0, z: 0, xp: 0, level: 1 } } : {},
+    encounter: emptyEncounter(),
+  }
 }
 
 /** Add one server-assigned or durably resumed player without mutating a prior snapshot. */
@@ -588,16 +604,15 @@ export function step(
     }
     const length = Math.hypot(input.moveX, input.moveY)
     const scale = length > 1 ? 1 / length : 1
-    const xp = player.xp + ((input.buttons & INTERACT_BUTTON) !== 0 ? XP_PER_INTERACTION : 0)
     players[id] = {
       x: player.x + input.moveX * scale * MOVE_SPEED * dtSeconds,
       y: player.y,
       z: player.z + input.moveY * scale * MOVE_SPEED * dtSeconds,
-      xp,
-      level: levelForXp(xp),
+      xp: player.xp,
+      level: player.level,
     }
   }
-  return { tick: state.tick + 1, players }
+  return { tick: state.tick + 1, players, encounter: state.encounter }
 }
 `
 }
@@ -631,6 +646,7 @@ import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder.
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial.js'
 
 import { connectGame, RESUME_STORAGE_KEY } from './connection.js'
+import { ACTION_VERSION, TRAINING_SENTINEL_ID } from '../shared/actions.js'
 import { emptyWorld, STEP_MS, type WorldState } from '../shared/simulation.js'
 
 export const TITLE = ${JSON.stringify(project.title)}
@@ -730,6 +746,7 @@ if (canvas instanceof HTMLCanvasElement) {
   let networked = false
   let shown = -1
   let ownPlayerId: string | undefined
+  let lastAction = 'no action yet'
   const client = start(canvas, (world) => {
     // The dirty check, from the first line of HUD code: writing textContent
     // every frame is layout work every frame.
@@ -737,7 +754,7 @@ if (canvas instanceof HTMLCanvasElement) {
     shown = world.tick
     const own = ownPlayerId === undefined ? undefined : world.players[ownPlayerId]
     status.textContent = Object.keys(world.players).length + ' players · ' + (networked ? 'connected' : 'offline') +
-      ' · level ' + (own?.level ?? 1) + ' · XP ' + (own?.xp ?? 0) + ' · tick ' + world.tick
+      ' · level ' + (own?.level ?? 1) + ' · XP ' + (own?.xp ?? 0) + ' · tick ' + world.tick + ' · ' + lastAction
   })
   let savedToken: string | undefined
   try { savedToken = localStorage.getItem(RESUME_STORAGE_KEY) ?? undefined } catch { /* storage can be disabled */ }
@@ -746,12 +763,22 @@ if (canvas instanceof HTMLCanvasElement) {
     ownPlayerId = connection.playerId
     try { localStorage.setItem(RESUME_STORAGE_KEY, connection.resumeToken) } catch { /* the live session still works */ }
     connection.onSnapshot((world) => client.replaceWorld(world))
+    connection.onActionFeedback((feedback) => {
+      const event = feedback.at(-1)
+      if (event !== undefined) lastAction = event.kind + ':' + event.phase + '#' + event.eventId
+    })
     const keys = new Set<string>()
     let sequence = 0
-    let interact = false
     const onKeyDown = (event: KeyboardEvent): void => {
       keys.add(event.code)
-      if (event.code === 'KeyE' && !event.repeat) interact = true
+      if (!event.repeat && (event.code === 'KeyE' || event.code === 'Space')) {
+        connection.sendAction({
+          seq: sequence += 1,
+          actionVersion: ACTION_VERSION,
+          kind: event.code === 'KeyE' ? 'interact' : 'strike',
+          targetId: TRAINING_SENTINEL_ID,
+        })
+      }
     }
     const onKeyUp = (event: KeyboardEvent): void => { keys.delete(event.code) }
     window.addEventListener('keydown', onKeyDown)
@@ -761,9 +788,8 @@ if (canvas instanceof HTMLCanvasElement) {
         seq: sequence += 1,
         moveX: Number(keys.has('KeyD') || keys.has('ArrowRight')) - Number(keys.has('KeyA') || keys.has('ArrowLeft')),
         moveY: Number(keys.has('KeyS') || keys.has('ArrowDown')) - Number(keys.has('KeyW') || keys.has('ArrowUp')),
-        buttons: Number(interact),
+        buttons: 0,
       })
-      interact = false
     }, STEP_MS)
     window.addEventListener('beforeunload', () => {
       clearInterval(input)
@@ -796,6 +822,7 @@ function client2d(project: ProjectIdentity): string {
  */
 
 import { connectGame, RESUME_STORAGE_KEY } from './connection.js'
+import { ACTION_VERSION, TRAINING_SENTINEL_ID } from '../shared/actions.js'
 import { emptyWorld, STEP_MS, type WorldState } from '../shared/simulation.js'
 
 export const TITLE = ${JSON.stringify(project.title)}
@@ -903,12 +930,13 @@ if (canvas instanceof HTMLCanvasElement) {
   let networked = false
   let shown = -1
   let ownPlayerId: string | undefined
+  let lastAction = 'no action yet'
   const client = start(canvas, (world) => {
     if (status === null || world.tick === shown) return
     shown = world.tick
     const own = ownPlayerId === undefined ? undefined : world.players[ownPlayerId]
     status.textContent = Object.keys(world.players).length + ' players · ' + (networked ? 'connected' : 'offline') +
-      ' · level ' + (own?.level ?? 1) + ' · XP ' + (own?.xp ?? 0) + ' · tick ' + world.tick
+      ' · level ' + (own?.level ?? 1) + ' · XP ' + (own?.xp ?? 0) + ' · tick ' + world.tick + ' · ' + lastAction
   })
   let savedToken: string | undefined
   try { savedToken = localStorage.getItem(RESUME_STORAGE_KEY) ?? undefined } catch { /* storage can be disabled */ }
@@ -917,12 +945,22 @@ if (canvas instanceof HTMLCanvasElement) {
     ownPlayerId = connection.playerId
     try { localStorage.setItem(RESUME_STORAGE_KEY, connection.resumeToken) } catch { /* the live session still works */ }
     connection.onSnapshot((world) => client.replaceWorld(world))
+    connection.onActionFeedback((feedback) => {
+      const event = feedback.at(-1)
+      if (event !== undefined) lastAction = event.kind + ':' + event.phase + '#' + event.eventId
+    })
     const keys = new Set<string>()
     let sequence = 0
-    let interact = false
     const onKeyDown = (event: KeyboardEvent): void => {
       keys.add(event.code)
-      if (event.code === 'KeyE' && !event.repeat) interact = true
+      if (!event.repeat && (event.code === 'KeyE' || event.code === 'Space')) {
+        connection.sendAction({
+          seq: sequence += 1,
+          actionVersion: ACTION_VERSION,
+          kind: event.code === 'KeyE' ? 'interact' : 'strike',
+          targetId: TRAINING_SENTINEL_ID,
+        })
+      }
     }
     const onKeyUp = (event: KeyboardEvent): void => { keys.delete(event.code) }
     window.addEventListener('keydown', onKeyDown)
@@ -932,9 +970,8 @@ if (canvas instanceof HTMLCanvasElement) {
         seq: sequence += 1,
         moveX: Number(keys.has('KeyD') || keys.has('ArrowRight')) - Number(keys.has('KeyA') || keys.has('ArrowLeft')),
         moveY: Number(keys.has('KeyS') || keys.has('ArrowDown')) - Number(keys.has('KeyW') || keys.has('ArrowUp')),
-        buttons: Number(interact),
+        buttons: 0,
       })
-      interact = false
     }, STEP_MS)
     window.addEventListener('beforeunload', () => {
       clearInterval(input)
