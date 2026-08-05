@@ -17,6 +17,8 @@ export interface CliOptions {
   currency?: string
   /** Which game to write. Defaults to `star-clicker`. */
   template?: string
+  /** Machine-readable diagnostics for agent-friendly automation. */
+  json: boolean
   /** Take the defaults for whatever was not given, and ask nothing. */
   yes: boolean
   /** Write into a directory that already has files in it. */
@@ -29,10 +31,10 @@ export interface CliOptions {
 export const DEFAULT_NAME = 'kei-game'
 export const DEFAULT_CURRENCY = 'Coins'
 
-const FLAGS = ['--template', '--currency', '--yes', '-y', '--force', '--help', '-h', '--version', '-v']
+const FLAGS = ['--template', '--currency', '--json', '--yes', '-y', '--force', '--help', '-h', '--version', '-v']
 
 export function parseArgs(argv: readonly string[]): CliOptions {
-  const options: CliOptions = { yes: false, force: false, help: false, version: false }
+  const options: CliOptions = { json: false, yes: false, force: false, help: false, version: false }
 
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!
@@ -52,6 +54,9 @@ export function parseArgs(argv: readonly string[]): CliOptions {
         break
       case '--force':
         options.force = true
+        break
+      case '--json':
+        options.json = true
         break
       case '--currency': {
         const value = argv[++index]
@@ -116,6 +121,7 @@ export function helpText(version: string): string {
     --template <name>   Which game to start from. Default: ${DEFAULT_TEMPLATE}
     --currency <name>   What the in-game currency is called. Default: ${DEFAULT_CURRENCY}
     --yes, -y           Take the defaults and ask nothing. For CI and agents.
+    --json              Print structured failure diagnostics for automation.
     --force             Write into a directory that already has files in it.
     --help, -h          This.
     --version, -v       Print the version and exit.

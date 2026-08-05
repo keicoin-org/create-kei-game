@@ -20,6 +20,7 @@ bun create kei-game star-clicker --currency "Gold Pieces"
 | `--template <name>` | Which game to start from. Default: `star-clicker` |
 | `--currency <name>` | What the in-game currency is called. Default: `Coins` |
 | `--yes`, `-y` | Take the defaults and ask nothing. For CI and agents. |
+| `--json` | Print structured failure diagnostics for automation. |
 | `--force` | Write into a directory that already has files in it. |
 | `--help`, `-h` | The above. |
 

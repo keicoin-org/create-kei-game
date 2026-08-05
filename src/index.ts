@@ -173,10 +173,28 @@ function hasBun(): boolean {
   }
 }
 
+function failurePayload(message: string): string {
+  return `${JSON.stringify(
+    {
+      status: 'error',
+      code: 'harness_error',
+      stage: 'execution',
+      message,
+    },
+    null,
+    2,
+  )}\n`
+}
+
 try {
   await main()
 } catch (error) {
   if (error instanceof HarnessError) {
+    if (argv.includes('--json')) {
+      stdout.write(failurePayload(error.message))
+      exit(1)
+    }
+
     stdout.write(`\n  ${error.message}\n\n`)
     exit(1)
   }
