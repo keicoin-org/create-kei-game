@@ -516,25 +516,44 @@ export async function startGame(options: GameOptions): Promise<Game> {
     },
 
     async buyLantern(address, hash) {
+      // Before anything is looked up, including the map below: a hash is not a
+      // secret (it is the `link` of a send on the issuer's public chain, and
+      // `orders.catchUp()` reads it off that chain the same way anyone else
+      // could), so this call is a claim by whoever holds `address`'s key, not
+      // by whoever happened to read the hash first. Coercing an unvalidated
+      // `address` into the map key below — say, through a `toString()` a
+      // caller controls — could otherwise land on somebody else's in-flight
+      // entry before `deliver`'s own `payment.from` check ever ran.
+      if (!isAddress(address)) {
+        throw new GameError(
+          `buyLantern() takes the Kei address of the wallet paying for the lantern — got ${describe(address)}. Send the address the player's own wallet reports.`,
+        )
+      }
       if (typeof hash !== 'string' || !/^[0-9a-f]{64}$/i.test(hash)) {
         throw new GameError('That is not a payment hash. Send the hash kei.pay() gave you.')
       }
       const paid = hash.toUpperCase()
 
-      // Exactly once, and safe to retry: the first call for a hash owns the
-      // delivery and every later one is handed its answer. A browser that loses
-      // the response and posts again must not get a second lantern, and neither
-      // must two tabs posting at the same moment. What survives a restart is in
-      // `server/orders.ts`; this map only covers posts overlapping in time.
-      const started = inFlight.get(paid)
+      // Exactly once, and safe to retry: the first call for a (hash, address)
+      // pair owns the delivery and every later one for the *same wallet* is
+      // handed its answer. Keying on the hash alone used to make a stranger
+      // who posted the same public hash at the same moment the same request
+      // as the payer — coalescing them instead of letting `deliver` refuse the
+      // stranger with "signed by a different wallet". Two tabs of the same
+      // player still share one key and so still get one delivery. What
+      // survives a restart is in `server/orders.ts`; this map only covers
+      // posts overlapping in time.
+      const key = `${paid}:${address}`
+      const started = inFlight.get(key)
       if (started) return started
 
       // A failure is not an answer — most often it means the payment has not
-      // landed here yet — so it is not remembered and the player can try again.
+      // landed here yet, or it was somebody else's — so it is not remembered
+      // and the player can try again.
       const order = deliver(address, paid).finally(() => {
-        inFlight.delete(paid)
+        inFlight.delete(key)
       })
-      inFlight.set(paid, order)
+      inFlight.set(key, order)
       return order
     },
 
