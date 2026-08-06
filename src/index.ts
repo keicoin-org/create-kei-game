@@ -20,14 +20,12 @@ import { argv, cwd, exit, platform, stderr, stdout, versions } from 'node:proces
 import { CliError, DEFAULT_CURRENCY, DEFAULT_NAME, helpText, parseArgs, type CliOptions } from './cli.js'
 import { HarnessError, INTERNAL, type Failure } from './errors.js'
 import { projectFrom, type GameProject } from './naming.js'
+import { GENERATED_SDK_VERSION } from './sdk-version.js'
 import { assertWritable, writeFiles } from './write.js'
 import { createAsker, type Asker } from './prompt.js'
 import { DEFAULT_TEMPLATE, filesFor, templateNamed, type Template } from './templates.js'
 
-const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
-  version: string
-  devDependencies: { 'kei-transaction': string }
-}
+const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
 const { version } = manifest
 
 async function main(options: CliOptions): Promise<void> {
@@ -67,7 +65,7 @@ async function main(options: CliOptions): Promise<void> {
     stdout.write(`\n  Downloading ${template.name} from ${template.source.repo}...\n`)
   }
 
-  const files = await filesFor(template, project, { sdkVersion: manifest.devDependencies['kei-transaction'] })
+  const files = await filesFor(template, project, { sdkVersion: GENERATED_SDK_VERSION })
   await writeFiles(directory, files)
 
   stdout.write(nextSteps(template, project, files.length))
