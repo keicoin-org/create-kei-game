@@ -12,7 +12,7 @@
  * that reason, and there is no way to talk it round.
  */
 
-import { Kei, isAddress, type ClaimBundle, type KeiNode } from 'kei-transaction'
+import { KEI_DECIMALS, Kei, isAddress, issuanceBurn, type ClaimBundle, type KeiNode } from 'kei-transaction'
 
 import { CURRENCY, LANTERN, perClickFor, type Catalogue, type LanternOutcome } from '../shared/game.js'
 import { openOrders } from './orders.js'
@@ -265,11 +265,23 @@ export async function startGame(options: GameOptions): Promise<Game> {
   })
 
   // Issuing an asset burns Kei — the one place in Kei where something is not
-  // free, and what stops an infinite supply of worthless tokens. The nth asset
-  // an account issues burns n Kei, and this game issues two: the currency and
-  // the lantern, so 1 + 2 = 3. On a real network somebody funds this address
-  // once; on a mock the faucet does it.
-  const needed = 3 + 100
+  // free, and what stops an infinite supply of worthless tokens (SPEC §5.6.5):
+  // the nth asset an account issues burns n Kei, and `issuanceBurn` is the SDK's
+  // own schedule for it, not a constant to keep in step with by hand. This game
+  // issues two — the currency and the lantern — but `token.issue()` and
+  // `items.create()` below are idempotent, so a restart that finds both already
+  // on this account's chain must ask for zero more: hardcoding "two issuances'
+  // worth" would re-request the same float from a real network with no faucet
+  // on every restart, forever, for burn that already happened.
+  const ASSETS_ISSUED_HERE = 2
+  const issuedAlready = (await kei.client.node.accountInfo(kei.address))?.issuedCount ?? 0
+  let burnRaw = 0n
+  for (let issuing = issuedAlready; issuing < ASSETS_ISSUED_HERE; issuing++) burnRaw += issuanceBurn(issuing)
+  // issuanceBurn is raw units; every burn this schedule produces for a game
+  // this small is a whole number of Kei, so converting by hand (rather than
+  // pulling in fromRaw, which the umbrella does not re-export) loses nothing.
+  const burn = Number(burnRaw) / 10 ** KEI_DECIMALS
+  const needed = burn + 100
   if ((await kei.balance()) < needed) await kei.faucet(needed)
 
   // Idempotent: restarting this server returns the same currency rather than a
