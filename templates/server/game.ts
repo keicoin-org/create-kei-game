@@ -403,6 +403,26 @@ export async function startGame(options: GameOptions): Promise<Game> {
     // one payment at a time, with the intent to answer this hash on the disk
     // before the block that answers it is written.
     const settled = await orders.settle(payment, async () => {
+      // Sent more than the lantern costs. The Kei already left the buyer's
+      // wallet the moment they signed the send — refusing here without moving
+      // anything back would leave it stranded at the issuer, unaccounted for,
+      // forever, which is the exact failure this file exists to prevent, just
+      // under a different name. So the whole payment goes back rather than
+      // the lantern going out for whatever happened to arrive: the price is
+      // exact, or nothing changes hands. (Below `LANTERN.price` never reaches
+      // here — it is refused before `settle`, since nothing was overpaid for
+      // this file to give back.)
+      if (payment.amount > LANTERN.price) {
+        return {
+          kind: 'refund',
+          outcome: {
+            outcome: 'refunded',
+            amount: payment.amount,
+            reason: `The lantern costs ${LANTERN.price} Kei exactly and ${payment.amount} arrived. Nothing was delivered — all of it was returned. Send exactly ${LANTERN.price} to buy it.`,
+          },
+          perform: async () => void (await kei.send(address, payment.amount)),
+        }
+      }
       // Already has one. The payment still arrived, so refund it rather than
       // keeping money for a thing that was not delivered.
       if ((await lanterns.balanceOf(address)) > 0) {
